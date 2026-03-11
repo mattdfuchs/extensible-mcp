@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "<your-token>"
+      }
+    }
+  },
+  "filters": {
+    "similarity_threshold": 0.3,
+    "access_control": {
+      "deny": ["github__delete_repo"],
+      "deny_patterns": ["*__drop_*", "*__delete_*"],
+      "allow_servers": ["filesystem", "github"]
+    }
+  }
+}
