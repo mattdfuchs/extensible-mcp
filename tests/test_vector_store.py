@@ -75,3 +75,37 @@ class TestVectorStore:
         results = _store.search("tool", top_k=4)
         scores = [r.score for r in results]
         assert scores == sorted(scores, reverse=True)
+
+    def test_add_to_existing_index(self):
+        store = VectorStore()
+        store.index(_SAMPLE_TOOLS[:2])
+        assert len(store._tools) == 2
+
+        new_tool = _make_tool("create_repo", "github", "Create a new GitHub repository", {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        })
+        store.add([new_tool])
+        assert len(store._tools) == 3
+
+        results = store.search("create a repository on github")
+        assert results[0].tool.name == "create_repo"
+
+    def test_add_to_empty_store(self):
+        store = VectorStore()
+        tool = _make_tool("list_repos", "github", "List GitHub repositories", {
+            "type": "object", "properties": {},
+        })
+        store.add([tool])
+        assert len(store._tools) == 1
+        results = store.search("repositories")
+        assert len(results) == 1
+        assert results[0].tool.name == "list_repos"
+
+    def test_add_empty_list_is_noop(self):
+        store = VectorStore()
+        store.index(_SAMPLE_TOOLS)
+        original_count = len(store._tools)
+        store.add([])
+        assert len(store._tools) == original_count

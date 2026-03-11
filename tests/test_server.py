@@ -41,7 +41,7 @@ async def test_proxy_lists_two_tools():
     async with Client(server) as client:
         tools = await client.list_tools()
         tool_names = {t.name for t in tools}
-        assert tool_names == {"search_tools", "call_tool"}
+        assert tool_names == {"search_tools", "call_tool", "load_mcp_server"}
 
 
 @pytest.mark.asyncio

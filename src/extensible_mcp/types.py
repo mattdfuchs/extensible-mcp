@@ -6,12 +6,22 @@ from typing import Any
 
 @dataclass
 class ServerConfig:
-    """Configuration for a downstream MCP server."""
+    """Configuration for a downstream MCP server.
+
+    Either ``command`` (stdio) or ``url`` (Streamable HTTP) must be set.
+    """
 
     name: str
-    command: str
+    command: str | None = None
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
+    url: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.command and not self.url:
+            raise ValueError(f"Server '{self.name}' must have either 'command' or 'url'")
+        if self.command and self.url:
+            raise ValueError(f"Server '{self.name}' must have 'command' or 'url', not both")
 
 
 @dataclass

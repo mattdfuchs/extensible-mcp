@@ -6,6 +6,7 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 import mcp.types as mcp_types
 
 from .types import ServerConfig, ToolRecord
@@ -13,8 +14,8 @@ from .types import ServerConfig, ToolRecord
 logger = logging.getLogger(__name__)
 
 
-class _ServerConnection:
-    """Manages a single downstream MCP server connection."""
+class _Connection:
+    """Manages a single downstream MCP server connection (stdio or URL)."""
 
     def __init__(self, config: ServerConfig) -> None:
         self.config = config
@@ -22,15 +23,20 @@ class _ServerConnection:
         self._stack: AsyncExitStack | None = None
 
     async def connect(self) -> None:
-        params = StdioServerParameters(
-            command=self.config.command,
-            args=self.config.args,
-            env=self.config.env,
-        )
         stack = AsyncExitStack()
         await stack.__aenter__()
         try:
-            read, write = await stack.enter_async_context(stdio_client(params))
+            if self.config.url:
+                read, write, _ = await stack.enter_async_context(
+                    streamablehttp_client(self.config.url)
+                )
+            else:
+                params = StdioServerParameters(
+                    command=self.config.command,
+                    args=self.config.args,
+                    env=self.config.env,
+                )
+                read, write = await stack.enter_async_context(stdio_client(params))
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
         except Exception:
@@ -51,7 +57,7 @@ class _ServerConnection:
 
 class ClientManager:
     def __init__(self) -> None:
-        self._connections: dict[str, _ServerConnection] = {}
+        self._connections: dict[str, _Connection] = {}
         self._tool_to_server: dict[str, str] = {}  # qualified_name -> server_name
         self._tool_original_name: dict[str, str] = {}  # qualified_name -> original name
 
@@ -59,7 +65,7 @@ class ClientManager:
         all_tools: list[ToolRecord] = []
         for config in configs:
             try:
-                conn = _ServerConnection(config)
+                conn = _Connection(config)
                 await conn.connect()
                 self._connections[config.name] = conn
                 tools = await self._index_server(config.name, conn.session)
@@ -125,6 +131,18 @@ class ClientManager:
                     "Reconnect to '%s' failed", server_name, exc_info=True
                 )
                 raise
+
+    async def connect_url(self, name: str, url: str) -> list[ToolRecord]:
+        """Connect to a remote MCP server by URL and index its tools."""
+        if name in self._connections:
+            raise ValueError(f"Server '{name}' is already connected")
+        config = ServerConfig(name=name, url=url)
+        conn = _Connection(config)
+        await conn.connect()
+        self._connections[name] = conn
+        tools = await self._index_server(name, conn.session)
+        logger.info("Connected to '%s' (%s): %d tools", name, url, len(tools))
+        return tools
 
     def get_qualified_names(self) -> set[str]:
         return set(self._tool_to_server.keys())

@@ -165,6 +165,35 @@ def create_server(config: Config) -> FastMCP:
                 output_parts.append(f"[{type(block).__name__}]")
         return "\n".join(output_parts) if output_parts else "(no output)"
 
+    @server.tool(
+        name="load_mcp_server",
+        description=(
+            "Dynamically connect to a new remote MCP server by URL. "
+            "Indexes all of the server's tools and makes them available for "
+            "search_tools and call_tool. The server_name is used as a namespace "
+            "prefix for tool names (e.g. 'myserver__tool_name')."
+        ),
+    )
+    async def load_mcp_server_handler(
+        server_name: str, url: str, ctx: Context
+    ) -> str:
+        vs: VectorStore = ctx.lifespan_context["vector_store"]
+        client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
+
+        if server_name in client_mgr._connections:
+            return f"Error: Server '{server_name}' is already connected."
+
+        try:
+            tools = await client_mgr.connect_url(server_name, url)
+        except Exception as e:
+            return f"Error connecting to '{url}': {e}"
+
+        vs.add(tools)
+        return (
+            f"Successfully connected to '{server_name}' at {url}. "
+            f"Indexed {len(tools)} tool(s). They are now available via search_tools and call_tool."
+        )
+
     return server
 
 

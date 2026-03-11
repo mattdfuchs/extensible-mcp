@@ -24,6 +24,19 @@ class VectorStore:
         embeddings = self._model.encode(texts, normalize_embeddings=True)
         self._embeddings = np.array(embeddings, dtype=np.float32)
 
+    def add(self, tools: list[ToolRecord]) -> None:
+        """Add tools incrementally to the existing index."""
+        if not tools:
+            return
+        texts = [t.embedding_text for t in tools]
+        new_embeddings = self._model.encode(texts, normalize_embeddings=True)
+        new_embeddings = np.array(new_embeddings, dtype=np.float32)
+        self._tools.extend(tools)
+        if self._embeddings is None:
+            self._embeddings = new_embeddings
+        else:
+            self._embeddings = np.vstack([self._embeddings, new_embeddings])
+
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         if self._embeddings is None or len(self._tools) == 0:
             return []

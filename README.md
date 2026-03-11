@@ -8,15 +8,16 @@ As the number of MCP servers grows, so does the number of tool definitions injec
 
 ## How It Works
 
-extensible-mcp sits between an LLM and your MCP servers. Instead of forwarding all tool definitions, it exposes just two meta-tools:
+extensible-mcp sits between an LLM and your MCP servers. Instead of forwarding all tool definitions, it exposes three meta-tools:
 
 - **`search_tools(query)`** — Describe what you want to do in natural language. Returns matching tool definitions ranked by semantic similarity.
 - **`call_tool(tool_name, arguments)`** — Invoke a tool from the search results by its qualified name (e.g. `github__create_issue`).
+- **`load_mcp_server(server_name, url)`** — Dynamically connect to a new remote MCP server by URL at runtime. Its tools are indexed and immediately available for search and invocation.
 
-On startup, the proxy connects to all configured MCP servers, indexes their tools into an in-memory vector store (using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)), and serves search queries via cosine similarity.
+On startup, the proxy connects to all configured MCP servers (via stdio), indexes their tools into an in-memory vector store (using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)), and serves search queries via cosine similarity. Additional servers can be added on the fly via `load_mcp_server`.
 
 ```
-LLM  <-->  extensible-mcp (search_tools / call_tool)  <-->  MCP Server(s)
+LLM  <-->  extensible-mcp (search_tools / call_tool / load_mcp_server)  <-->  MCP Server(s)
 ```
 
 The model decides when to search for tools and crafts its own search queries, keeping retrieval model-driven rather than automatic.
@@ -38,7 +39,7 @@ cp config.example.json config.json
 
 ## Configuration
 
-The config file uses the same `mcpServers` format as Claude Desktop, plus an optional `filters` section:
+The config file uses the same `mcpServers` format as Claude Desktop, plus an optional `filters` section. Each server can be either local (stdio via `command`) or remote (Streamable HTTP via `url`):
 
 ```json
 {
@@ -53,6 +54,9 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "<your-token>"
       }
+    },
+    "remote-tools": {
+      "url": "https://example.com/mcp"
     }
   },
   "filters": {

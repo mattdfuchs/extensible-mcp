@@ -66,11 +66,41 @@ class TestLoadConfig:
             with pytest.raises(ValueError, match="at least one server"):
                 load_config(path)
 
-    def test_rejects_missing_command(self):
+    def test_rejects_missing_command_and_url(self):
         data = {"mcpServers": {"bad": {"args": ["test"]}}}
         with tempfile.TemporaryDirectory() as tmp:
             path = _write_config(tmp, data)
-            with pytest.raises(ValueError, match="command"):
+            with pytest.raises(ValueError, match="command.*or.*url"):
+                load_config(path)
+
+    def test_loads_url_server(self):
+        data = {"mcpServers": {"remote": {"url": "https://example.com/mcp"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, data)
+            config = load_config(path)
+            assert len(config.servers) == 1
+            assert config.servers[0].url == "https://example.com/mcp"
+            assert config.servers[0].command is None
+
+    def test_loads_mixed_servers(self):
+        data = {
+            "mcpServers": {
+                "local": {"command": "echo"},
+                "remote": {"url": "https://example.com/mcp"},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, data)
+            config = load_config(path)
+            assert len(config.servers) == 2
+            assert config.servers[0].command == "echo"
+            assert config.servers[1].url == "https://example.com/mcp"
+
+    def test_rejects_both_command_and_url(self):
+        data = {"mcpServers": {"bad": {"command": "echo", "url": "https://example.com"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, data)
+            with pytest.raises(ValueError, match="not both"):
                 load_config(path)
 
 

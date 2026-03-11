@@ -74,14 +74,17 @@ def load_config(path: Path) -> Config:
 
     servers: list[ServerConfig] = []
     for name, server_def in raw.get("mcpServers", {}).items():
-        if not isinstance(server_def, dict) or "command" not in server_def:
-            raise ValueError(f"Server '{name}' must have a 'command' field")
+        if not isinstance(server_def, dict):
+            raise ValueError(f"Server '{name}' must be an object")
+        if "command" not in server_def and "url" not in server_def:
+            raise ValueError(f"Server '{name}' must have a 'command' or 'url' field")
         servers.append(
             ServerConfig(
                 name=name,
-                command=server_def["command"],
+                command=server_def.get("command"),
                 args=server_def.get("args", []),
                 env=server_def.get("env"),
+                url=server_def.get("url"),
             )
         )
 
