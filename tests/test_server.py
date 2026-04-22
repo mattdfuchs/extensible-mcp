@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastmcp import Client
 
-from extensible_mcp.config import Config, AccessControlConfig, FiltersConfig
+from extensible_mcp.config import Config, AccessControlConfig, FiltersConfig, LoadControlConfig, ToolPolicyConfig
 from extensible_mcp.server import create_server
 from extensible_mcp.types import ServerConfig
 
@@ -14,7 +14,11 @@ from extensible_mcp.types import ServerConfig
 MOCK_SERVER_PATH = str(Path(__file__).parent / "mock_server.py")
 
 
-def _make_config(deny: list[str] | None = None) -> Config:
+def _make_config(
+    deny: list[str] | None = None,
+    call_policies: list[ToolPolicyConfig] | None = None,
+    load_control: LoadControlConfig | None = None,
+) -> Config:
     return Config(
         servers=[
             ServerConfig(
@@ -30,6 +34,8 @@ def _make_config(deny: list[str] | None = None) -> Config:
                 deny_patterns=[],
                 allow_servers=[],
             ),
+            call_policies=call_policies or [],
+            load_control=load_control or LoadControlConfig(),
         ),
     )
 
@@ -72,3 +78,73 @@ async def test_access_control_blocks_denied_tool():
             {"tool_name": "mock__delete_files", "arguments": {"pattern": "*"}},
         )
         assert "blocked" in result.content[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_policy_rejects_call_without_required_argument():
+    """A call_policy should reject a call when the required argument is missing."""
+    policy = ToolPolicyConfig(
+        tool_pattern="*__delete_*",
+        required_arguments={"confirmation": "CONFIRM_DELETE"},
+    )
+    server = create_server(_make_config(call_policies=[policy]))
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__delete_files", "arguments": {"pattern": "*"}},
+        )
+        text = result.content[0].text
+        assert "error" in text.lower()
+        assert "confirmation" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_policy_allows_call_with_required_argument():
+    """A call_policy should allow a call when the required argument is present."""
+    policy = ToolPolicyConfig(
+        tool_pattern="*__delete_*",
+        required_arguments={"confirmation": "CONFIRM_DELETE"},
+    )
+    server = create_server(_make_config(call_policies=[policy]))
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "call_tool",
+            {
+                "tool_name": "mock__delete_files",
+                "arguments": {"pattern": "*", "confirmation": "CONFIRM_DELETE"},
+            },
+        )
+        text = result.content[0].text
+        assert "deleted" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_search_results_include_security_requirements():
+    """When a policy matches, search results should include requirement text."""
+    policy = ToolPolicyConfig(
+        tool_pattern="*__delete_*",
+        required_arguments={"confirmation": "CONFIRM_DELETE"},
+    )
+    server = create_server(_make_config(call_policies=[policy]))
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "search_tools", {"query": "delete files", "top_k": 5}
+        )
+        text = result.content[0].text
+        assert "SECURITY REQUIREMENTS" in text
+        assert "confirmation" in text
+
+
+@pytest.mark.asyncio
+async def test_load_mcp_server_rejected_by_load_control():
+    """load_mcp_server should reject URLs blocked by load_control policy."""
+    lc = LoadControlConfig(deny_url_patterns=["http://*"])
+    server = create_server(_make_config(load_control=lc))
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "load_mcp_server",
+            {"server_name": "evil", "url": "http://evil.example.com/mcp"},
+        )
+        text = result.content[0].text
+        assert "error" in text.lower()
+        assert "http://evil.example.com/mcp" in text

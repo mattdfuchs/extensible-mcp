@@ -15,9 +15,15 @@ from .client_manager import ClientManager
 from .config import Config, find_config_path, load_config
 from .filters import (
     AccessControlFilter,
+    CallFilterPipeline,
     FilterPipeline,
+    RequirementInjectionFilter,
+    RequirementValidationFilter,
+    ServerLoadAccessControlFilter,
+    ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
 )
+from .types import CallRequest, ServerLoadRequest, ToolPolicy
 from .vector_store import VectorStore
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -30,17 +36,45 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_filter_pipeline(config: Config) -> tuple[FilterPipeline, AccessControlFilter]:
+def _build_pipelines(
+    config: Config,
+) -> tuple[FilterPipeline, CallFilterPipeline, ServerLoadFilterPipeline]:
     ac = AccessControlFilter(
         deny=config.filters.access_control.deny,
         deny_patterns=config.filters.access_control.deny_patterns,
         allow_servers=config.filters.access_control.allow_servers or None,
     )
-    pipeline = FilterPipeline([
+
+    policies = [
+        ToolPolicy(
+            tool_pattern=p.tool_pattern,
+            required_arguments=p.required_arguments,
+        )
+        for p in config.filters.call_policies
+    ]
+
+    search_pipeline = FilterPipeline([
         SimilarityThresholdFilter(config.filters.similarity_threshold),
         ac,
     ])
-    return pipeline, ac
+    if policies:
+        search_pipeline.add(RequirementInjectionFilter(policies))
+
+    call_pipeline = CallFilterPipeline([ac])
+    if policies:
+        call_pipeline.add(RequirementValidationFilter(policies))
+
+    lc = config.filters.load_control
+    server_load_pipeline = ServerLoadFilterPipeline()
+    if lc.deny_names or lc.deny_name_patterns or lc.deny_url_patterns or lc.allow_url_patterns:
+        server_load_pipeline.add(ServerLoadAccessControlFilter(
+            deny_names=lc.deny_names,
+            deny_name_patterns=lc.deny_name_patterns,
+            deny_url_patterns=lc.deny_url_patterns,
+            allow_url_patterns=lc.allow_url_patterns,
+        ))
+
+    return search_pipeline, call_pipeline, server_load_pipeline
 
 
 def _format_search_results(results: list[Any]) -> str:
@@ -64,7 +98,7 @@ def _format_search_results(results: list[Any]) -> str:
 
 async def _setup(config: Config) -> dict[str, Any]:
     """Connect to downstream servers, build vector index, return lifespan context."""
-    pipeline, ac_filter = _build_filter_pipeline(config)
+    search_pipeline, call_pipeline, server_load_pipeline = _build_pipelines(config)
 
     client_mgr = ClientManager()
     logger.info("Connecting to %d downstream server(s)...", len(config.servers))
@@ -78,8 +112,9 @@ async def _setup(config: Config) -> dict[str, Any]:
 
     return {
         "vector_store": vector_store,
-        "filter_pipeline": pipeline,
-        "ac_filter": ac_filter,
+        "filter_pipeline": search_pipeline,
+        "call_filter_pipeline": call_pipeline,
+        "server_load_filter_pipeline": server_load_pipeline,
         "client_manager": client_mgr,
     }
 
@@ -130,14 +165,21 @@ def create_server(config: Config) -> FastMCP:
     async def call_tool_handler(
         tool_name: str, arguments: dict[str, Any], ctx: Context
     ) -> str:
-        ac: AccessControlFilter = ctx.lifespan_context["ac_filter"]
+        call_pipeline: CallFilterPipeline = ctx.lifespan_context["call_filter_pipeline"]
         client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
 
         parts = tool_name.split("__", 1)
         server_name = parts[0] if len(parts) == 2 else ""
 
-        if not ac.is_allowed(tool_name, server_name):
-            return f"Error: Tool '{tool_name}' is blocked by access control policy."
+        request = CallRequest(
+            tool_name=tool_name, arguments=arguments, server_name=server_name
+        )
+        filter_result = await call_pipeline.apply(request)
+        if not filter_result.allowed:
+            return f"Error: {filter_result.reason}"
+
+        tool_name = filter_result.tool_name
+        arguments = filter_result.arguments
 
         if tool_name not in client_mgr.get_qualified_names():
             return f"Error: Unknown tool '{tool_name}'. Use search_tools to find available tools."
@@ -177,8 +219,16 @@ def create_server(config: Config) -> FastMCP:
     async def load_mcp_server_handler(
         server_name: str, url: str, ctx: Context
     ) -> str:
+        server_load_pipeline: ServerLoadFilterPipeline = ctx.lifespan_context[
+            "server_load_filter_pipeline"
+        ]
         vs: VectorStore = ctx.lifespan_context["vector_store"]
         client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
+
+        load_request = ServerLoadRequest(server_name=server_name, url=url)
+        load_result = await server_load_pipeline.apply(load_request)
+        if not load_result.allowed:
+            return f"Error: {load_result.reason}"
 
         if server_name in client_mgr._connections:
             return f"Error: Server '{server_name}' is already connected."

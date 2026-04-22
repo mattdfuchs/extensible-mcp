@@ -1,26 +1,36 @@
 # extensible-mcp
 
-An MCP proxy that replaces static tool definitions with semantic search.
+A programmable proxy layer for MCP that adds dynamic tool discovery, RAG-based tool retrieval, and pluggable filter pipelines.
 
-## Problem
+## Why
 
-As the number of MCP servers grows, so does the number of tool definitions injected into the LLM's context window. This wastes tokens, degrades performance, and hits context limits — even when most tools aren't relevant to the current task.
+MCP gives every tool-providing server the same interface, but the LLM client is left to deal with the consequences: a flat list of every tool from every server, injected wholesale into the context window. As the number of servers grows, this causes token bloat, degraded model performance, and hard context-limit failures — even when most tools aren't relevant to the current turn.
+
+Beyond scale, there's no standard control plane. If you want to block dangerous operations, enforce argument policies, or gate which servers an LLM can connect to, you have to build that into each client or each server individually.
+
+extensible-mcp sits between the LLM and your MCP servers and solves three problems at once:
+
+1. **Dynamic tool discovery** — Connect to MCP servers at startup from config, or at runtime by URL. The LLM can pull in new capabilities from across the network on demand.
+2. **RAG-based tool retrieval** — Tool definitions are embedded into a vector index and retrieved by semantic search, not dumped into the prompt. The model sees only what's relevant.
+3. **Pluggable filter pipelines** — Every operation (search, call, server load) passes through a configurable filter chain. Use it for access control, argument validation, security policies, logging, or custom transformations.
+
+```
+LLM  <-->  extensible-mcp  <-->  MCP Server(s)
+              |
+              +-- search_tools(query)         → vector search over indexed tools
+              +-- call_tool(name, args)        → proxied to the right server
+              +-- load_mcp_server(name, url)   → connect a new server at runtime
+```
 
 ## How It Works
 
-extensible-mcp sits between an LLM and your MCP servers. Instead of forwarding all tool definitions, it exposes three meta-tools:
+The proxy exposes three meta-tools to the LLM:
 
-- **`search_tools(query)`** — Describe what you want to do in natural language. Returns matching tool definitions ranked by semantic similarity.
-- **`call_tool(tool_name, arguments)`** — Invoke a tool from the search results by its qualified name (e.g. `github__create_issue`).
-- **`load_mcp_server(server_name, url)`** — Dynamically connect to a new remote MCP server by URL at runtime. Its tools are indexed and immediately available for search and invocation.
+- **`search_tools(query)`** — Describe what you want to do in natural language. The proxy embeds the query with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), runs cosine similarity against the tool index, and returns matching definitions.
+- **`call_tool(tool_name, arguments)`** — Invoke a tool by its qualified name (e.g. `github__create_issue`). The proxy routes the call to the correct downstream server.
+- **`load_mcp_server(server_name, url)`** — Connect to a new remote MCP server at runtime. Its tools are indexed immediately and become available for search and invocation.
 
-On startup, the proxy connects to all configured MCP servers (via stdio), indexes their tools into an in-memory vector store (using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)), and serves search queries via cosine similarity. Additional servers can be added on the fly via `load_mcp_server`.
-
-```
-LLM  <-->  extensible-mcp (search_tools / call_tool / load_mcp_server)  <-->  MCP Server(s)
-```
-
-The model decides when to search for tools and crafts its own search queries, keeping retrieval model-driven rather than automatic.
+Retrieval is model-driven: the LLM decides when to search and crafts its own queries, so there's no wasted retrieval on turns where no tools are needed.
 
 ## Setup
 
@@ -39,7 +49,7 @@ cp config.example.json config.json
 
 ## Configuration
 
-The config file uses the same `mcpServers` format as Claude Desktop, plus an optional `filters` section. Each server can be either local (stdio via `command`) or remote (Streamable HTTP via `url`):
+The config file uses the same `mcpServers` format as Claude Desktop, plus an optional `filters` section. Servers can be local (stdio via `command`) or remote (Streamable HTTP via `url`):
 
 ```json
 {
@@ -65,19 +75,54 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
       "deny": ["github__delete_repo"],
       "deny_patterns": ["*__drop_*", "*__delete_*"],
       "allow_servers": ["filesystem", "github"]
-    }
+    },
+    "load_control": {
+      "deny_url_patterns": ["http://*"],
+      "allow_url_patterns": ["https://github.com/*", "https://internal.corp/*"]
+    },
+    "call_policies": [
+      {
+        "tool_pattern": "*__delete_*",
+        "required_arguments": { "confirmation": "CONFIRM_DELETE" }
+      }
+    ]
   }
 }
 ```
 
-### Filter options
+### Filter pipelines
+
+Every request flows through a filter pipeline before it's executed. There are three independent pipelines, one per operation. Filters implement simple protocols (`ToolFilter`, `CallFilter`, `ServerLoadFilter`), so you can add your own — the built-in filters described below are just the ones that ship out of the box:
+
+**Search filters** — applied to `search_tools` results before they're returned to the LLM.
 
 | Field | Description |
 |---|---|
-| `similarity_threshold` | Minimum cosine similarity score to include a tool in results (default: `0.3`) |
-| `access_control.deny` | Exact qualified tool names to block (e.g. `github__delete_repo`) |
-| `access_control.deny_patterns` | Glob patterns to block (e.g. `*__delete_*`) |
-| `access_control.allow_servers` | If non-empty, only tools from these servers are allowed |
+| `similarity_threshold` | Minimum cosine similarity score (default: `0.3`) |
+| `access_control.deny` | Exact qualified tool names to hide (e.g. `github__delete_repo`) |
+| `access_control.deny_patterns` | Glob patterns to hide (e.g. `*__delete_*`) |
+| `access_control.allow_servers` | If non-empty, only tools from these servers appear in results |
+
+**Call filters** — applied to `call_tool` invocations before they're proxied downstream.
+
+| Field | Description |
+|---|---|
+| `access_control.*` | Same deny/allow rules as search — blocks calls even if the LLM knows the tool name |
+| `call_policies[].tool_pattern` | Glob pattern matching tool names this policy applies to |
+| `call_policies[].required_arguments` | Key-value pairs that must be present in the call arguments; stripped before forwarding |
+
+Call policies let you inject a confirmation gate: the LLM sees the requirement in the tool description (via search-side injection) and must include the exact argument to proceed. The argument is validated and then stripped so the downstream server never sees it.
+
+**Server load filters** — applied to `load_mcp_server` requests before any connection is made.
+
+| Field | Description |
+|---|---|
+| `load_control.deny_names` | Exact server names to block |
+| `load_control.deny_name_patterns` | Glob patterns on server names (e.g. `evil_*`) |
+| `load_control.deny_url_patterns` | Glob patterns on URLs (e.g. `http://*` to require HTTPS) |
+| `load_control.allow_url_patterns` | If non-empty, only URLs matching at least one pattern are allowed (whitelist) |
+
+Without `load_control`, an LLM could be prompt-injected into connecting to a malicious server. Use `allow_url_patterns` to whitelist trusted domains and `deny_url_patterns` to block insecure protocols.
 
 ### Config resolution order
 
@@ -98,6 +143,15 @@ uv run extensible-mcp --config /path/to/config.json
 ```
 
 The proxy runs as a stdio-based MCP server. Connect to it from any MCP client the same way you would connect to any other MCP server.
+
+## Examples
+
+The [`examples/`](examples/) directory has ready-to-use configs for proxying GitHub's official MCP server through extensible-mcp, with all delete operations blocked via `*__delete_*`:
+
+- **Claude Desktop** — [`examples/claude-desktop-config.json`](examples/claude-desktop-config.json)
+- **OpenClaw** — [`examples/openclaw-config.json`](examples/openclaw-config.json)
+
+See [`examples/README.md`](examples/README.md) for setup instructions and suggested prompts to try.
 
 ## Development
 

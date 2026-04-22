@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "extensible-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory", "/Users/matthewfuchs/Documents/ideas/mcp-alternative",
+        "extensible-mcp",
+        "--config", "/Users/matthewfuchs/Documents/ideas/mcp-alternative/examples/github-proxy-config.json"
+      ]
+    }
+  }
+}

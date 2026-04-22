@@ -1,7 +1,21 @@
-from extensible_mcp.types import SearchResult, ToolRecord
+import pytest
+
+from extensible_mcp.types import (
+    CallFilterResult,
+    CallRequest,
+    SearchResult,
+    ServerLoadRequest,
+    ToolPolicy,
+    ToolRecord,
+)
 from extensible_mcp.filters import (
     AccessControlFilter,
+    CallFilterPipeline,
     FilterPipeline,
+    RequirementInjectionFilter,
+    RequirementValidationFilter,
+    ServerLoadAccessControlFilter,
+    ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
 )
 
@@ -151,3 +165,232 @@ class TestFilterPipeline:
         ]
         filtered = pipeline.apply(results, "query")
         assert len(filtered) == 1
+
+
+def make_call_request(tool_name="test_server__test_tool", arguments=None, server_name="test_server"):
+    return CallRequest(
+        tool_name=tool_name,
+        arguments=arguments or {},
+        server_name=server_name,
+    )
+
+
+class TestCallFilterPipeline:
+    @pytest.mark.asyncio
+    async def test_allows_when_all_pass(self):
+        ac = AccessControlFilter()
+        pipeline = CallFilterPipeline([ac])
+        result = await pipeline.apply(make_call_request())
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_short_circuits_on_first_rejection(self):
+        ac = AccessControlFilter(deny=["test_server__test_tool"])
+        validation = RequirementValidationFilter(policies=[])
+        pipeline = CallFilterPipeline([ac, validation])
+        result = await pipeline.apply(make_call_request())
+        assert result.allowed is False
+        assert "blocked" in result.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_empty_pipeline_allows_all(self):
+        pipeline = CallFilterPipeline()
+        result = await pipeline.apply(make_call_request())
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_carries_modified_arguments(self):
+        """A filter that modifies arguments should carry them forward."""
+
+        class ArgModifier:
+            async def check(self, request: CallRequest) -> CallFilterResult:
+                new_args = dict(request.arguments)
+                new_args["injected"] = True
+                return CallFilterResult(
+                    allowed=True,
+                    tool_name=request.tool_name,
+                    arguments=new_args,
+                )
+
+        pipeline = CallFilterPipeline([ArgModifier()])
+        result = await pipeline.apply(make_call_request(arguments={"a": 1}))
+        assert result.allowed is True
+        assert result.arguments == {"a": 1, "injected": True}
+
+
+class TestAccessControlCallFilter:
+    @pytest.mark.asyncio
+    async def test_check_allows(self):
+        ac = AccessControlFilter()
+        result = await ac.check(make_call_request())
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_check_rejects_denied(self):
+        ac = AccessControlFilter(deny=["test_server__test_tool"])
+        result = await ac.check(make_call_request())
+        assert result.allowed is False
+        assert "blocked" in result.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_check_rejects_pattern(self):
+        ac = AccessControlFilter(deny_patterns=["*__delete_*"])
+        result = await ac.check(make_call_request(tool_name="fs__delete_files", server_name="fs"))
+        assert result.allowed is False
+
+
+class TestRequirementValidationFilter:
+    @pytest.mark.asyncio
+    async def test_passes_when_requirement_met(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementValidationFilter(policies=[policy])
+        request = make_call_request(
+            tool_name="fs__delete_files",
+            arguments={"pattern": "*", "confirmation": "CONFIRM_DELETE"},
+            server_name="fs",
+        )
+        result = await f.check(request)
+        assert result.allowed is True
+        # Policy args should be stripped from forwarded arguments
+        assert "confirmation" not in result.arguments
+        assert result.arguments == {"pattern": "*"}
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_missing(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementValidationFilter(policies=[policy])
+        request = make_call_request(
+            tool_name="fs__delete_files",
+            arguments={"pattern": "*"},
+            server_name="fs",
+        )
+        result = await f.check(request)
+        assert result.allowed is False
+        assert "confirmation" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_wrong_value(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementValidationFilter(policies=[policy])
+        request = make_call_request(
+            tool_name="fs__delete_files",
+            arguments={"pattern": "*", "confirmation": "wrong"},
+            server_name="fs",
+        )
+        result = await f.check(request)
+        assert result.allowed is False
+        assert "expected" in result.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_matching_tools(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementValidationFilter(policies=[policy])
+        request = make_call_request(
+            tool_name="fs__search_files",
+            arguments={"pattern": "*"},
+            server_name="fs",
+        )
+        result = await f.check(request)
+        assert result.allowed is True
+
+
+class TestRequirementInjectionFilter:
+    def test_injects_requirements_into_matching_tools(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementInjectionFilter(policies=[policy])
+        results = [
+            make_result(make_tool("delete_files", "fs", "Delete files matching a pattern")),
+            make_result(make_tool("search_files", "fs", "Search for files")),
+        ]
+        filtered = f.filter(results, "query")
+        assert len(filtered) == 2
+        assert "SECURITY REQUIREMENTS" in filtered[0].tool.description
+        assert "confirmation" in filtered[0].tool.description
+        assert "SECURITY REQUIREMENTS" not in filtered[1].tool.description
+
+    def test_preserves_embedding_text(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementInjectionFilter(policies=[policy])
+        tool = make_tool("delete_files", "fs", "Delete files")
+        original_embedding = tool.embedding_text
+        results = [make_result(tool)]
+        filtered = f.filter(results, "query")
+        assert filtered[0].tool.embedding_text == original_embedding
+
+    def test_leaves_non_matching_unchanged(self):
+        policy = ToolPolicy(tool_pattern="*__delete_*", required_arguments={"confirmation": "CONFIRM_DELETE"})
+        f = RequirementInjectionFilter(policies=[policy])
+        tool = make_tool("search_files", "fs", "Search for files")
+        results = [make_result(tool)]
+        filtered = f.filter(results, "query")
+        assert filtered[0].tool.description == "Search for files"
+
+
+def make_load_request(server_name="test_server", url="https://example.com/mcp"):
+    return ServerLoadRequest(server_name=server_name, url=url)
+
+
+class TestServerLoadFilterPipeline:
+    @pytest.mark.asyncio
+    async def test_allows_when_all_pass(self):
+        f = ServerLoadAccessControlFilter()
+        pipeline = ServerLoadFilterPipeline([f])
+        result = await pipeline.apply(make_load_request())
+        assert result.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_short_circuits_on_rejection(self):
+        f1 = ServerLoadAccessControlFilter(deny_names=["test_server"])
+        f2 = ServerLoadAccessControlFilter()  # would allow
+        pipeline = ServerLoadFilterPipeline([f1, f2])
+        result = await pipeline.apply(make_load_request())
+        assert result.allowed is False
+        assert "test_server" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_empty_pipeline_allows_all(self):
+        pipeline = ServerLoadFilterPipeline()
+        result = await pipeline.apply(make_load_request())
+        assert result.allowed is True
+
+
+class TestServerLoadAccessControlFilter:
+    @pytest.mark.asyncio
+    async def test_denies_by_name(self):
+        f = ServerLoadAccessControlFilter(deny_names=["evil_server"])
+        result = await f.check(make_load_request(server_name="evil_server"))
+        assert result.allowed is False
+        assert "evil_server" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_denies_by_name_pattern(self):
+        f = ServerLoadAccessControlFilter(deny_name_patterns=["evil_*"])
+        result = await f.check(make_load_request(server_name="evil_corp"))
+        assert result.allowed is False
+        assert "evil_corp" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_denies_by_url_pattern(self):
+        f = ServerLoadAccessControlFilter(deny_url_patterns=["http://*"])
+        result = await f.check(make_load_request(url="http://insecure.example.com/mcp"))
+        assert result.allowed is False
+        assert "http://insecure.example.com/mcp" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_allows_only_whitelisted_urls(self):
+        f = ServerLoadAccessControlFilter(
+            allow_url_patterns=["https://github.com/*", "https://internal.corp/*"]
+        )
+        # Allowed
+        result = await f.check(make_load_request(url="https://github.com/org/repo"))
+        assert result.allowed is True
+        # Denied — not in allowlist
+        result = await f.check(make_load_request(url="https://evil.com/mcp"))
+        assert result.allowed is False
+        assert "does not match" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_allows_all_when_no_rules(self):
+        f = ServerLoadAccessControlFilter()
+        result = await f.check(make_load_request())
+        assert result.allowed is True

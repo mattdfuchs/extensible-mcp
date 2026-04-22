@@ -18,9 +18,25 @@ class AccessControlConfig:
 
 
 @dataclass
+class ToolPolicyConfig:
+    tool_pattern: str
+    required_arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LoadControlConfig:
+    deny_names: list[str] = field(default_factory=list)
+    deny_name_patterns: list[str] = field(default_factory=list)
+    deny_url_patterns: list[str] = field(default_factory=list)
+    allow_url_patterns: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FiltersConfig:
     similarity_threshold: float = 0.3
     access_control: AccessControlConfig = field(default_factory=AccessControlConfig)
+    call_policies: list[ToolPolicyConfig] = field(default_factory=list)
+    load_control: LoadControlConfig = field(default_factory=LoadControlConfig)
 
 
 @dataclass
@@ -95,9 +111,25 @@ def load_config(path: Path) -> Config:
         deny_patterns=ac_raw.get("deny_patterns", []),
         allow_servers=ac_raw.get("allow_servers", []),
     )
+    call_policies = [
+        ToolPolicyConfig(
+            tool_pattern=p["tool_pattern"],
+            required_arguments=p.get("required_arguments", {}),
+        )
+        for p in filters_raw.get("call_policies", [])
+    ]
+    lc_raw = filters_raw.get("load_control", {})
+    load_control = LoadControlConfig(
+        deny_names=lc_raw.get("deny_names", []),
+        deny_name_patterns=lc_raw.get("deny_name_patterns", []),
+        deny_url_patterns=lc_raw.get("deny_url_patterns", []),
+        allow_url_patterns=lc_raw.get("allow_url_patterns", []),
+    )
     filters = FiltersConfig(
         similarity_threshold=filters_raw.get("similarity_threshold", 0.3),
         access_control=access_control,
+        call_policies=call_policies,
+        load_control=load_control,
     )
 
     if not servers:

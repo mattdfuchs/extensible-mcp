@@ -1,0 +1,15 @@
+{
+  "mcp": {
+    "servers": {
+      "extensible-mcp": {
+        "command": "uv",
+        "args": [
+          "run",
+          "--directory", "/path/to/extensible-mcp",
+          "extensible-mcp",
+          "--config", "/path/to/extensible-mcp/examples/github-proxy-config.json"
+        ]
+      }
+    }
+  }
+}
