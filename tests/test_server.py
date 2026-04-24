@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastmcp import Client
 
-from extensible_mcp.config import Config, AccessControlConfig, FiltersConfig, LoadControlConfig, ToolPolicyConfig
+from extensible_mcp.config import Config, AccessControlConfig, FiltersConfig, LoadControlConfig
 from extensible_mcp.server import create_server
 from extensible_mcp.types import ServerConfig
 
@@ -16,8 +16,8 @@ MOCK_SERVER_PATH = str(Path(__file__).parent / "mock_server.py")
 
 def _make_config(
     deny: list[str] | None = None,
-    call_policies: list[ToolPolicyConfig] | None = None,
     load_control: LoadControlConfig | None = None,
+    rego_policy: str | None = None,
 ) -> Config:
     return Config(
         servers=[
@@ -34,7 +34,7 @@ def _make_config(
                 deny_patterns=[],
                 allow_servers=[],
             ),
-            call_policies=call_policies or [],
+            rego_policy=rego_policy,
             load_control=load_control or LoadControlConfig(),
         ),
     )
@@ -81,58 +81,31 @@ async def test_access_control_blocks_denied_tool():
 
 
 @pytest.mark.asyncio
-async def test_policy_rejects_call_without_required_argument():
-    """A call_policy should reject a call when the required argument is missing."""
-    policy = ToolPolicyConfig(
-        tool_pattern="*__delete_*",
-        required_arguments={"confirmation": "CONFIRM_DELETE"},
-    )
-    server = create_server(_make_config(call_policies=[policy]))
+async def test_call_rejected_without_prior_search():
+    """Calling a tool without searching first should be rejected by DiscoveredToolsFilter."""
+    server = create_server(_make_config())
     async with Client(server) as client:
         result = await client.call_tool(
             "call_tool",
-            {"tool_name": "mock__delete_files", "arguments": {"pattern": "*"}},
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
         )
         text = result.content[0].text
-        assert "error" in text.lower()
-        assert "confirmation" in text.lower()
+        assert "not been discovered" in text.lower()
 
 
 @pytest.mark.asyncio
-async def test_policy_allows_call_with_required_argument():
-    """A call_policy should allow a call when the required argument is present."""
-    policy = ToolPolicyConfig(
-        tool_pattern="*__delete_*",
-        required_arguments={"confirmation": "CONFIRM_DELETE"},
-    )
-    server = create_server(_make_config(call_policies=[policy]))
+async def test_call_allowed_after_search():
+    """Calling a tool after discovering it via search_tools should succeed."""
+    server = create_server(_make_config())
     async with Client(server) as client:
+        # Search first to discover the tool
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        # Now the call should work
         result = await client.call_tool(
             "call_tool",
-            {
-                "tool_name": "mock__delete_files",
-                "arguments": {"pattern": "*", "confirmation": "CONFIRM_DELETE"},
-            },
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}},
         )
-        text = result.content[0].text
-        assert "deleted" in text.lower()
-
-
-@pytest.mark.asyncio
-async def test_search_results_include_security_requirements():
-    """When a policy matches, search results should include requirement text."""
-    policy = ToolPolicyConfig(
-        tool_pattern="*__delete_*",
-        required_arguments={"confirmation": "CONFIRM_DELETE"},
-    )
-    server = create_server(_make_config(call_policies=[policy]))
-    async with Client(server) as client:
-        result = await client.call_tool(
-            "search_tools", {"query": "delete files", "top_k": 5}
-        )
-        text = result.content[0].text
-        assert "SECURITY REQUIREMENTS" in text
-        assert "confirmation" in text
+        assert "12" in result.content[0].text
 
 
 @pytest.mark.asyncio
@@ -148,3 +121,29 @@ async def test_load_mcp_server_rejected_by_load_control():
         text = result.content[0].text
         assert "error" in text.lower()
         assert "http://evil.example.com/mcp" in text
+
+
+try:
+    import regopy  # noqa: F401
+    HAS_REGOPY = True
+except ImportError:
+    HAS_REGOPY = False
+
+REGO_POLICY_PATH = str(Path(__file__).parent / "policies" / "deny_delete.rego")
+
+
+@pytest.mark.skipif(not HAS_REGOPY, reason="regopy not installed")
+@pytest.mark.asyncio
+async def test_rego_policy_blocks_call():
+    """Rego policy should block a matching tool call after search."""
+    server = create_server(_make_config(rego_policy=REGO_POLICY_PATH))
+    async with Client(server) as client:
+        # Search first to discover the tool
+        await client.call_tool("search_tools", {"query": "delete files", "top_k": 5})
+        # Call should be blocked by Rego
+        result = await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__delete_files", "arguments": {"pattern": "*"}},
+        )
+        text = result.content[0].text
+        assert "delete operations are not allowed" in text.lower()

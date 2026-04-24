@@ -11,19 +11,19 @@ from fastmcp import FastMCP, Context
 from fastmcp.server.lifespan import lifespan
 import mcp.types as mcp_types
 
-from .client_manager import ClientManager
+from .client_manager import ClientManager, TokenExpiredError
 from .config import Config, find_config_path, load_config
 from .filters import (
     AccessControlFilter,
     CallFilterPipeline,
+    DiscoveredToolsFilter,
     FilterPipeline,
-    RequirementInjectionFilter,
-    RequirementValidationFilter,
+    RegoPolicyFilter,
     ServerLoadAccessControlFilter,
     ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
 )
-from .types import CallRequest, ServerLoadRequest, ToolPolicy
+from .types import CallRequest, ServerLoadRequest
 from .vector_store import VectorStore
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -38,31 +38,23 @@ def _parse_args() -> argparse.Namespace:
 
 def _build_pipelines(
     config: Config,
-) -> tuple[FilterPipeline, CallFilterPipeline, ServerLoadFilterPipeline]:
+) -> tuple[FilterPipeline, CallFilterPipeline, ServerLoadFilterPipeline, DiscoveredToolsFilter]:
     ac = AccessControlFilter(
         deny=config.filters.access_control.deny,
         deny_patterns=config.filters.access_control.deny_patterns,
         allow_servers=config.filters.access_control.allow_servers or None,
     )
 
-    policies = [
-        ToolPolicy(
-            tool_pattern=p.tool_pattern,
-            required_arguments=p.required_arguments,
-        )
-        for p in config.filters.call_policies
-    ]
-
     search_pipeline = FilterPipeline([
         SimilarityThresholdFilter(config.filters.similarity_threshold),
         ac,
     ])
-    if policies:
-        search_pipeline.add(RequirementInjectionFilter(policies))
 
-    call_pipeline = CallFilterPipeline([ac])
-    if policies:
-        call_pipeline.add(RequirementValidationFilter(policies))
+    discovered_filter = DiscoveredToolsFilter()
+    call_pipeline = CallFilterPipeline([ac, discovered_filter])
+
+    if config.filters.rego_policy:
+        call_pipeline.add(RegoPolicyFilter(config.filters.rego_policy))
 
     lc = config.filters.load_control
     server_load_pipeline = ServerLoadFilterPipeline()
@@ -74,7 +66,7 @@ def _build_pipelines(
             allow_url_patterns=lc.allow_url_patterns,
         ))
 
-    return search_pipeline, call_pipeline, server_load_pipeline
+    return search_pipeline, call_pipeline, server_load_pipeline, discovered_filter
 
 
 def _format_search_results(results: list[Any]) -> str:
@@ -98,9 +90,9 @@ def _format_search_results(results: list[Any]) -> str:
 
 async def _setup(config: Config) -> dict[str, Any]:
     """Connect to downstream servers, build vector index, return lifespan context."""
-    search_pipeline, call_pipeline, server_load_pipeline = _build_pipelines(config)
+    search_pipeline, call_pipeline, server_load_pipeline, discovered_filter = _build_pipelines(config)
 
-    client_mgr = ClientManager()
+    client_mgr = ClientManager(tokens_file=config.tokens_file)
     logger.info("Connecting to %d downstream server(s)...", len(config.servers))
     tools = await client_mgr.connect_all(config.servers)
     logger.info("Indexed %d tools total", len(tools))
@@ -116,6 +108,7 @@ async def _setup(config: Config) -> dict[str, Any]:
         "call_filter_pipeline": call_pipeline,
         "server_load_filter_pipeline": server_load_pipeline,
         "client_manager": client_mgr,
+        "discovered_filter": discovered_filter,
     }
 
 
@@ -132,9 +125,22 @@ def create_server(config: Config) -> FastMCP:
     server = FastMCP(
         name="extensible-mcp",
         instructions=(
-            "This server provides semantic search over tools from multiple MCP servers. "
-            "Use `search_tools` to find relevant tools by describing what you want to do, "
-            "then use `call_tool` to invoke the selected tool."
+            "This server is a proxy to other MCP tool servers. "
+            "You do not have direct tool definitions — discover them on demand.\n\n"
+            "Workflow:\n"
+            "1. Use `search_tools` with a natural language query to find relevant tools.\n"
+            "2. Use `call_tool` with the qualified name from search results "
+            "(e.g. 'github__create_issue') and arguments matching the returned schema.\n"
+            "3. You may only call tools you have previously discovered via search_tools.\n\n"
+            "Dynamic servers:\n"
+            "- Use `load_mcp_server` to connect to a new remote MCP server by URL.\n"
+            "- If the server requires authentication, ask the user to add a token "
+            "for that server name to the tokens file before loading.\n\n"
+            "Authentication errors:\n"
+            "- If a call_tool fails with an authentication/token error, ask the user "
+            "to update the token in the tokens file, then retry the same call.\n"
+            "- Never ask the user to provide tokens in the conversation. "
+            "Tokens are managed through the tokens file only."
         ),
         lifespan=configured_lifespan,
     )
@@ -150,8 +156,10 @@ def create_server(config: Config) -> FastMCP:
     async def search_tools_handler(query: str, ctx: Context, top_k: int = 5) -> str:
         vs: VectorStore = ctx.lifespan_context["vector_store"]
         pipeline: FilterPipeline = ctx.lifespan_context["filter_pipeline"]
+        discovered_filter: DiscoveredToolsFilter = ctx.lifespan_context["discovered_filter"]
         results = vs.search(query, top_k=top_k)
         results = pipeline.apply(results, query)
+        discovered_filter.register([r.tool.qualified_name for r in results])
         return _format_search_results(results)
 
     @server.tool(
@@ -188,6 +196,13 @@ def create_server(config: Config) -> FastMCP:
             result: mcp_types.CallToolResult = await client_mgr.call_tool(
                 tool_name, arguments
             )
+        except TokenExpiredError as e:
+            return (
+                f"Error: Authentication failed for server '{e.server_name}' "
+                f"(token unchanged for {e.token_age_minutes} minutes). "
+                f"The token may have expired. Ask the user to update the token "
+                f"for '{e.server_name}' in the tokens file, then retry the call."
+            )
         except Exception as e:
             return f"Error calling tool '{tool_name}': {e}"
 
@@ -213,7 +228,9 @@ def create_server(config: Config) -> FastMCP:
             "Dynamically connect to a new remote MCP server by URL. "
             "Indexes all of the server's tools and makes them available for "
             "search_tools and call_tool. The server_name is used as a namespace "
-            "prefix for tool names (e.g. 'myserver__tool_name')."
+            "prefix for tool names (e.g. 'myserver__tool_name'). "
+            "If the server requires authentication, the user must add the token "
+            "to the tokens file before calling this."
         ),
     )
     async def load_mcp_server_handler(
@@ -238,7 +255,9 @@ def create_server(config: Config) -> FastMCP:
         except Exception as e:
             return f"Error connecting to '{url}': {e}"
 
+        logger.info("Indexing %d tools from '%s'...", len(tools), server_name)
         vs.add(tools)
+        logger.info("Indexing complete for '%s'", server_name)
         return (
             f"Successfully connected to '{server_name}' at {url}. "
             f"Indexed {len(tools)} tool(s). They are now available via search_tools and call_tool."

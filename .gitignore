@@ -5,6 +5,7 @@ dist/
 build/
 .venv/
 .env
+tokens
 .pytest_cache/
 *.egg
 .claude/

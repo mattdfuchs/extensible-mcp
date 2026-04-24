@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import fnmatch
-from typing import Protocol
+import json
+import re
+from typing import Any, Protocol
 
 from .types import (
     CallFilterResult,
@@ -9,8 +11,6 @@ from .types import (
     SearchResult,
     ServerLoadRequest,
     ServerLoadResult,
-    ToolPolicy,
-    ToolRecord,
 )
 
 
@@ -117,57 +117,87 @@ class CallFilterPipeline:
         )
 
 
-class RequirementInjectionFilter:
-    """Search-side filter: appends security requirement text to matching tool descriptions."""
+class DiscoveredToolsFilter:
+    """Call-side filter: only allows tools previously returned by search_tools."""
 
-    def __init__(self, policies: list[ToolPolicy]) -> None:
-        self.policies = policies
+    def __init__(self) -> None:
+        self._discovered: set[str] = set()
 
-    def filter(self, results: list[SearchResult], query: str) -> list[SearchResult]:
-        out: list[SearchResult] = []
-        for r in results:
-            matching = [p for p in self.policies if p.matches(r.tool.qualified_name)]
-            if matching:
-                extra = "\n\n".join(p.describe_requirements() for p in matching)
-                modified_tool = ToolRecord(
-                    name=r.tool.name,
-                    qualified_name=r.tool.qualified_name,
-                    description=r.tool.description + "\n\n" + extra,
-                    input_schema=r.tool.input_schema,
-                    server_name=r.tool.server_name,
-                    embedding_text=r.tool.embedding_text,
-                )
-                out.append(SearchResult(tool=modified_tool, score=r.score))
-            else:
-                out.append(r)
-        return out
-
-
-class RequirementValidationFilter:
-    """Call-side filter: validates that arguments satisfy policy requirements."""
-
-    def __init__(self, policies: list[ToolPolicy]) -> None:
-        self.policies = policies
+    def register(self, tool_names: list[str]) -> None:
+        self._discovered.update(tool_names)
 
     async def check(self, request: CallRequest) -> CallFilterResult:
-        policy_keys: set[str] = set()
-        for policy in self.policies:
-            if policy.matches(request.tool_name):
-                valid, reason = policy.validate(request.arguments)
-                if not valid:
-                    return CallFilterResult(
-                        allowed=False,
-                        reason=reason,
-                        tool_name=request.tool_name,
-                        arguments=request.arguments,
-                    )
-                policy_keys.update(policy.required_arguments.keys())
-        # Strip policy-enforced arguments before forwarding to downstream server
-        forwarded = {k: v for k, v in request.arguments.items() if k not in policy_keys}
+        if request.tool_name in self._discovered:
+            return CallFilterResult(
+                allowed=True,
+                tool_name=request.tool_name,
+                arguments=request.arguments,
+            )
         return CallFilterResult(
-            allowed=True,
+            allowed=False,
+            reason=f"Tool '{request.tool_name}' has not been discovered via search_tools. Search for tools first.",
             tool_name=request.tool_name,
-            arguments=forwarded,
+            arguments=request.arguments,
+        )
+
+
+class RegoPolicyFilter:
+    """Call-side filter: evaluates a Rego policy to allow or deny tool calls."""
+
+    def __init__(self, policy_path: str) -> None:
+        try:
+            import regopy  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "regopy is required for Rego policy support. "
+                "Install it with: uv sync --group rego"
+            )
+        with open(policy_path) as f:
+            self._policy_source = f.read()
+        match = re.search(r"^package\s+(\S+)", self._policy_source, re.MULTILINE)
+        if not match:
+            raise ValueError(f"Rego policy at '{policy_path}' must declare a package")
+        self._package = match.group(1)
+
+    async def check(self, request: CallRequest) -> CallFilterResult:
+        import regopy
+
+        interpreter = regopy.Interpreter()
+        interpreter.add_module("policy", self._policy_source)
+        input_data: dict[str, Any] = {
+            "tool_name": request.tool_name,
+            "arguments": request.arguments,
+            "server_name": request.server_name,
+        }
+        interpreter.set_input(input_data)
+
+        output = interpreter.query(f"data.{self._package}.allow")
+        output_str = str(output)
+
+        if output_str != "undefined":
+            parsed = json.loads(output_str)
+            if parsed.get("expressions", [None])[0] is True:
+                return CallFilterResult(
+                    allowed=True,
+                    tool_name=request.tool_name,
+                    arguments=request.arguments,
+                )
+
+        # Denied — try to get a reason
+        reason = f"Tool '{request.tool_name}' blocked by Rego policy."
+        reason_output = interpreter.query(f"data.{self._package}.deny_reason")
+        reason_str = str(reason_output)
+        if reason_str != "undefined":
+            parsed_reason = json.loads(reason_str)
+            exprs = parsed_reason.get("expressions", [])
+            if exprs and isinstance(exprs[0], str):
+                reason = exprs[0]
+
+        return CallFilterResult(
+            allowed=False,
+            reason=reason,
+            tool_name=request.tool_name,
+            arguments=request.arguments,
         )
 
 

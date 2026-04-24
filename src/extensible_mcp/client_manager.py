@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 import mcp.types as mcp_types
 
 from .types import ServerConfig, ToolRecord
@@ -14,21 +17,104 @@ from .types import ServerConfig, ToolRecord
 logger = logging.getLogger(__name__)
 
 
+def _read_tokens_file(path: Path) -> dict[str, str]:
+    """Read server_name=token pairs from a tokens property file."""
+    if not path.exists():
+        return {}
+    tokens: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        tokens[key.strip()] = value
+    return tokens
+
+
+class TokenExpiredError(Exception):
+    """Raised when an HTTP call fails with 401/403, suggesting the token has expired."""
+
+    def __init__(self, server_name: str, token_age_minutes: int) -> None:
+        self.server_name = server_name
+        self.token_age_minutes = token_age_minutes
+        super().__init__(
+            f"Authentication failed for server '{server_name}' "
+            f"(token unchanged for {token_age_minutes} minutes)"
+        )
+
+
 class _Connection:
     """Manages a single downstream MCP server connection (stdio or URL)."""
 
-    def __init__(self, config: ServerConfig) -> None:
+    def __init__(self, config: ServerConfig, tokens_file: Path | None = None) -> None:
         self.config = config
         self.session: ClientSession | None = None
         self._stack: AsyncExitStack | None = None
+        self._tokens_file = tokens_file
+        self._last_token_value: str | None = None
+        self._token_set_at: float | None = None
+
+    @property
+    def is_url(self) -> bool:
+        return self.config.url is not None
+
+    @property
+    def token_age_minutes(self) -> int:
+        if self._token_set_at is None:
+            return 0
+        return int((time.monotonic() - self._token_set_at) / 60)
+
+    def _resolve_token(self) -> str | None:
+        """Read the current token for this server from the tokens file.
+
+        Tracks when the token value last changed for age reporting.
+        """
+        if not self._tokens_file:
+            return None
+        tokens = _read_tokens_file(self._tokens_file)
+        value = tokens.get(self.config.name)
+        if value is None:
+            self._last_token_value = None
+            self._token_set_at = None
+            return None
+        if value != self._last_token_value:
+            self._last_token_value = value
+            self._token_set_at = time.monotonic()
+        return value
+
+    def _make_http_client(self) -> httpx.AsyncClient | None:
+        """Build an httpx client with auth headers if a token is available."""
+        token = self._resolve_token()
+        if not token:
+            return None
+        return httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    def _check_auth_error(self, exc: Exception) -> None:
+        """Raise TokenExpiredError if the exception looks like a 401/403."""
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 403):
+            raise TokenExpiredError(self.config.name, self.token_age_minutes) from exc
+        msg = str(exc).lower()
+        if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg:
+            raise TokenExpiredError(self.config.name, self.token_age_minutes) from exc
 
     async def connect(self) -> None:
+        """Open a persistent connection. Used for stdio servers."""
         stack = AsyncExitStack()
         await stack.__aenter__()
         try:
             if self.config.url:
+                http_client = self._make_http_client()
+                if http_client:
+                    await stack.enter_async_context(http_client)
                 read, write, _ = await stack.enter_async_context(
-                    streamablehttp_client(self.config.url)
+                    streamable_http_client(self.config.url, http_client=http_client)
                 )
             else:
                 params = StdioServerParameters(
@@ -45,6 +131,43 @@ class _Connection:
         self._stack = stack
         self.session = session
 
+    async def list_tools_ephemeral(self) -> list[mcp_types.Tool]:
+        """Connect, list tools, and disconnect. Used for URL servers to avoid
+        background tasks interfering with the stdio transport."""
+        async with AsyncExitStack() as stack:
+            http_client = self._make_http_client()
+            if http_client:
+                await stack.enter_async_context(http_client)
+            read, write, _ = await stack.enter_async_context(
+                streamable_http_client(self.config.url, http_client=http_client)
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            result = await session.list_tools()
+            return result.tools
+
+    async def call_tool_ephemeral(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> mcp_types.CallToolResult:
+        """Connect, call a tool, and disconnect. Used for URL servers."""
+        try:
+            async with AsyncExitStack() as stack:
+                http_client = self._make_http_client()
+                if http_client:
+                    await stack.enter_async_context(http_client)
+                read, write, _ = await stack.enter_async_context(
+                    streamable_http_client(self.config.url, http_client=http_client)
+                )
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                return await session.call_tool(tool_name, arguments)
+        except TokenExpiredError:
+            raise
+        except Exception as exc:
+            if self._last_token_value:
+                self._check_auth_error(exc)
+            raise
+
     async def close(self) -> None:
         if self._stack:
             try:
@@ -56,19 +179,26 @@ class _Connection:
 
 
 class ClientManager:
-    def __init__(self) -> None:
+    def __init__(self, tokens_file: Path | None = None) -> None:
         self._connections: dict[str, _Connection] = {}
         self._tool_to_server: dict[str, str] = {}  # qualified_name -> server_name
         self._tool_original_name: dict[str, str] = {}  # qualified_name -> original name
+        self._tokens_file = tokens_file
 
     async def connect_all(self, configs: list[ServerConfig]) -> list[ToolRecord]:
         all_tools: list[ToolRecord] = []
         for config in configs:
             try:
-                conn = _Connection(config)
-                await conn.connect()
-                self._connections[config.name] = conn
-                tools = await self._index_server(config.name, conn.session)
+                conn = _Connection(config, tokens_file=self._tokens_file)
+                if conn.is_url:
+                    tools_raw = await conn.list_tools_ephemeral()
+                    self._connections[config.name] = conn
+                    tools = self._index_tools(config.name, tools_raw)
+                else:
+                    await conn.connect()
+                    self._connections[config.name] = conn
+                    result = await conn.session.list_tools()
+                    tools = self._index_tools(config.name, result.tools)
                 all_tools.extend(tools)
                 logger.info(
                     "Connected to '%s': %d tools", config.name, len(tools)
@@ -81,12 +211,11 @@ class ClientManager:
             raise RuntimeError("Could not connect to any downstream MCP server")
         return all_tools
 
-    async def _index_server(
-        self, server_name: str, session: ClientSession
+    def _index_tools(
+        self, server_name: str, tools: list[mcp_types.Tool]
     ) -> list[ToolRecord]:
-        result = await session.list_tools()
         records: list[ToolRecord] = []
-        for tool in result.tools:
+        for tool in tools:
             qualified = f"{server_name}__{tool.name}"
             self._tool_to_server[qualified] = server_name
             self._tool_original_name[qualified] = tool.name
@@ -109,10 +238,16 @@ class ClientManager:
             raise ValueError(f"Unknown tool: {qualified_name}")
 
         conn = self._connections.get(server_name)
-        if not conn or not conn.session:
+        if not conn:
             raise RuntimeError(f"Server '{server_name}' is not connected")
 
         original_name = self._tool_original_name[qualified_name]
+
+        if conn.is_url:
+            return await conn.call_tool_ephemeral(original_name, arguments)
+
+        if not conn.session:
+            raise RuntimeError(f"Server '{server_name}' is not connected")
 
         try:
             return await conn.session.call_tool(original_name, arguments)
@@ -124,7 +259,8 @@ class ClientManager:
             try:
                 await conn.close()
                 await conn.connect()
-                await self._index_server(server_name, conn.session)
+                result = await conn.session.list_tools()
+                self._index_tools(server_name, result.tools)
                 return await conn.session.call_tool(original_name, arguments)
             except Exception:
                 logger.error(
@@ -137,10 +273,10 @@ class ClientManager:
         if name in self._connections:
             raise ValueError(f"Server '{name}' is already connected")
         config = ServerConfig(name=name, url=url)
-        conn = _Connection(config)
-        await conn.connect()
+        conn = _Connection(config, tokens_file=self._tokens_file)
+        tools_raw = await conn.list_tools_ephemeral()
         self._connections[name] = conn
-        tools = await self._index_server(name, conn.session)
+        tools = self._index_tools(name, tools_raw)
         logger.info("Connected to '%s' (%s): %d tools", name, url, len(tools))
         return tools
 

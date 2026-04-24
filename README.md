@@ -79,13 +79,7 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
     "load_control": {
       "deny_url_patterns": ["http://*"],
       "allow_url_patterns": ["https://github.com/*", "https://internal.corp/*"]
-    },
-    "call_policies": [
-      {
-        "tool_pattern": "*__delete_*",
-        "required_arguments": { "confirmation": "CONFIRM_DELETE" }
-      }
-    ]
+    }
   }
 }
 ```
@@ -108,10 +102,36 @@ Every request flows through a filter pipeline before it's executed. There are th
 | Field | Description |
 |---|---|
 | `access_control.*` | Same deny/allow rules as search — blocks calls even if the LLM knows the tool name |
-| `call_policies[].tool_pattern` | Glob pattern matching tool names this policy applies to |
-| `call_policies[].required_arguments` | Key-value pairs that must be present in the call arguments; stripped before forwarding |
 
-Call policies let you inject a confirmation gate: the LLM sees the requirement in the tool description (via search-side injection) and must include the exact argument to proceed. The argument is validated and then stripped so the downstream server never sees it.
+Tools must be discovered via `search_tools` before they can be called. This is always active and prevents the LLM from calling tools it hasn't searched for first.
+
+**Rego policies** — for fine-grained call-time policy evaluation, you can point to a `.rego` file:
+
+```json
+{
+  "filters": {
+    "rego_policy": "policies/deny_dangerous.rego"
+  }
+}
+```
+
+The policy receives this input on every `call_tool` invocation:
+
+```json
+{
+  "tool_name": "github__delete_repo",
+  "arguments": {"repo": "my-org/my-repo"},
+  "server_name": "github"
+}
+```
+
+The policy must define `allow` (boolean). Optionally define `deny_reason` (string) for a custom error message. See [`examples/deny_dangerous.rego`](examples/deny_dangerous.rego) for a working example. Relative paths in the config are resolved relative to the config file's directory.
+
+Rego support requires the optional `regopy` dependency:
+
+```bash
+uv sync --group rego
+```
 
 **Server load filters** — applied to `load_mcp_server` requests before any connection is made.
 

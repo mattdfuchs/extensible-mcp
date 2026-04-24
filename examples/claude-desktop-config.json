@@ -1,13 +1,14 @@
 {
   "mcpServers": {
     "extensible-mcp": {
-      "command": "uv",
+      "command": "/Users/matthewfuchs/Documents/ideas/mcp-alternative/.venv/bin/python",
       "args": [
-        "run",
-        "--directory", "/Users/matthewfuchs/Documents/ideas/mcp-alternative",
-        "extensible-mcp",
+        "-m", "extensible_mcp.server",
         "--config", "/Users/matthewfuchs/Documents/ideas/mcp-alternative/examples/github-proxy-config.json"
-      ]
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/matthewfuchs/Documents/ideas/mcp-alternative/src"
+      }
     }
   }
 }

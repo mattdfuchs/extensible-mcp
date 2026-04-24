@@ -6,13 +6,17 @@
         "run", "-i", "--rm",
         "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
         "ghcr.io/github/github-mcp-server"
-      ]
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
+      }
     }
   },
   "filters": {
     "similarity_threshold": 0.3,
     "access_control": {
       "deny_patterns": ["*__delete_*"]
-    }
+    },
+    "rego_policy": "deny_close_issue.rego"
   }
 }

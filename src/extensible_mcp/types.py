@@ -81,36 +81,6 @@ class CallFilterResult:
 
 
 @dataclass
-class ToolPolicy:
-    """Policy for a tool pattern — used by both search-side injection and call-side validation."""
-
-    tool_pattern: str
-    required_arguments: dict[str, Any] = field(default_factory=dict)
-
-    def matches(self, qualified_name: str) -> bool:
-        import fnmatch
-
-        return fnmatch.fnmatch(qualified_name, self.tool_pattern)
-
-    def validate(self, arguments: dict[str, Any]) -> tuple[bool, str]:
-        for key, expected in self.required_arguments.items():
-            if key not in arguments:
-                return False, f"Missing required argument '{key}' (expected value: {expected!r})"
-            if arguments[key] != expected:
-                return False, (
-                    f"Argument '{key}' has value {arguments[key]!r}, "
-                    f"expected {expected!r}"
-                )
-        return True, ""
-
-    def describe_requirements(self) -> str:
-        parts = []
-        for key, value in self.required_arguments.items():
-            parts.append(f"'{key}' must be {value!r}")
-        return "SECURITY REQUIREMENTS: " + "; ".join(parts)
-
-
-@dataclass
 class ServerLoadRequest:
     """Input to the server load filter pipeline."""
 
