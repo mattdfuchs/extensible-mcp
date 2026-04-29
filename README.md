@@ -1,18 +1,22 @@
 # extensible-mcp
 
-A programmable proxy layer for MCP that adds dynamic tool discovery, RAG-based tool retrieval, and pluggable filter pipelines.
+extensible-mcp is a proxy that sits between an LLM and the universe of MCP servers, providing on-demand tool retrieval and a deterministic enforcement point for access control. Tool definitions don't need to live in the prompt, sensitive credentials don't need to live in the LLM's context, and security policies are evaluated by code rather than by the model.
 
 ## Why
 
-MCP gives every tool-providing server the same interface, but the LLM client is left to deal with the consequences: a flat list of every tool from every server, injected wholesale into the context window. As the number of servers grows, this causes token bloat, degraded model performance, and hard context-limit failures — even when most tools aren't relevant to the current turn.
+Connecting an LLM client to a set of MCP servers is normally a startup-time decision: list servers in a config, launch the client, hope you guessed right. There's no clean way to add a server mid-conversation, or to have the LLM itself reach for a capability that wasn't pre-configured.
 
-Beyond scale, there's no standard control plane. If you want to block dangerous operations, enforce argument policies, or gate which servers an LLM can connect to, you have to build that into each client or each server individually.
+Even once servers are connected, the LLM client is handed a flat list of every tool from every server, injected wholesale into the context window. As the number of servers grows, this causes token bloat, degraded model performance, and hard context-limit failures — even when most tools aren't relevant to the current turn.
 
-extensible-mcp sits between the LLM and your MCP servers and solves three problems at once:
+And there's no standard control plane. If you want to block dangerous operations, enforce argument-shape policies, or gate which servers an LLM is allowed to connect to in the first place, you have to build that into each client or each server individually.
 
-1. **Dynamic tool discovery** — Connect to MCP servers at startup from config, or at runtime by URL. The LLM can pull in new capabilities from across the network on demand.
-2. **RAG-based tool retrieval** — Tool definitions are embedded into a vector index and retrieved by semantic search, not dumped into the prompt. The model sees only what's relevant.
-3. **Pluggable filter pipelines** — Every operation (search, call, server load) passes through a configurable filter chain. Use it for access control, argument validation, security policies, logging, or custom transformations.
+The temptation is to push these decisions onto the LLM itself — but anything an LLM sees is both transported across the network on every turn and vulnerable to prompt injection from any document, tool result, or web page it reads. Secrets have to stay out of the model's context, and security cannot be left to LLMs communicating with external systems of any type. Enforcement has to live somewhere deterministic, between the model and the outside world.
+
+extensible-mcp sits between the LLM and your MCP servers and addresses all three:
+
+1. **Dynamic server loading** — Connect to MCP servers at startup from config, or at runtime by URL. The LLM can pull in entirely new servers and their capabilities from across the network on demand, without restarting the client.
+2. **RAG-based tool search and retrieval** — Tool definitions are embedded into a vector index. The LLM searches semantically with `search_tools(query)` and pulls back only the matches it needs, instead of every tool definition occupying space in every prompt.
+3. **Pluggable filter pipelines for security and beyond** — Every operation (search, call, server load) passes through a configurable filter chain. The primary use is **security** — access control, deny patterns, Rego policy evaluation, server-load whitelists — but the same pipeline supports argument validation, logging, or any custom transformation you want to write.
 
 ```
 LLM  <-->  extensible-mcp  <-->  MCP Server(s)
@@ -32,6 +36,47 @@ The proxy exposes three meta-tools to the LLM:
 
 Retrieval is model-driven: the LLM decides when to search and crafts its own queries, so there's no wasted retrieval on turns where no tools are needed.
 
+## Status
+
+v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, filter pipelines (access control, Rego policy evaluation, server-load gating, discovery-gated calls), and credential handling all ship today. 69 tests pass; the example configs work against the official GitHub MCP server.
+
+The architecture is grounded in [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which formalizes ABAC policies as dependent types. This proxy is the runtime target. Active research directions:
+
+- **Signed-claim verification** at call time — push approvals, signed documents, Verifiable Credentials. See the threat-model section for the argument.
+- **Compiling Policy-as-Type policies to Rego** for runtime enforcement, with WASM evaluation in the call filter. Lean handles authoring and proof; Rego handles execution; the proxy verifies what runs against what was proven.
+
+Both directions extend the existing filter pipeline without architectural change.
+
+## Threat Model
+
+LLMs cannot be trusted to manage their own security. They are open to prompt injection attacks from any material they ingest, they can be influenced by material in their training set in non-obvious ways, including treating data as instructions, they hallucinate, they can forget instructions, and any information passed to them must be considered compromised. Therefore any serious attempt to enforce rules must live outside the LLM in code not subject to all these weaknesses. That is our premise.
+
+The pipeline allows for control at all points of contact between the LLM and the external world:
+- At server loading time, we can filter and prohibit the agent from loading untrusted servers. Beyond just the tools, the server and tool descriptions can contain prompt injection attacks. 
+- At search time, we can, again, hide dangerous or untrusted tools. In the current release, we include a sample filter to hide any tool containing "delete"; not only can't such a tool be called, it can't be found.
+- At call time, further policies can prevent illegitimate use of an allowed tool. In the sample code we prevent the closing of an issue, but allow other uses of the same tool to allow updating issues.
+- The LLM cannot call any tools it didn't find during search. This ensures the LLM calls only tools in the protected set and is not vulnerable to attempts to call outside the protected envelope.
+- We do not pass secrets (in particular, security tokens) to the LLM. Tokens to be used in HTTP Authorization headers are kept in a separate file. The LLM can prompt the user to update a token when it appears to have expired, but it never sees the tokens themselves.
+
+Of course, we can only apply these protections within the context of the LLM itself. We cannot protect against:
+- Security flaws in the user's configuration, 
+- The behavior of downstream servers (although limiting to trusted servers can mitigate that), 
+- Policies that trust unverified LLM claims (such as whether the user has agreed to some action) 
+- Otherwise ineffective policies (for example, our simple Rego script prohibits one action, but allows all others).
+
+It's tempting to use required argument values as a way to extend policies, such as requiring ```confirmation: 'CONFIRM_DELETE'``` before a delete proceeds. We considered this and discarded it: an LLM that can be prompt-injected into deleting a file can also be prompt-injected into supplying the confirmation string. The user's acquiescence is unproven. The mechanism prevents accidents but not adversaries. We will address this pattern using signed claims, evidence whose validity depends on a channel the LLM cannot influence.
+
+By adding support for signed claims as parameters, we can ensure that values come from valid sources, such as the user, and cannot have been forged by the LLM. Examples of this include Duo or CIBA push approvals, W3C Verifiable Credentials (which are used for Google's AP2 and its extension, the Universal Commerce Protocol), or DocuSign-grade envelopes.
+
+With the addition of signed claims, we can inject this level of security in three parts:
+- First, before handing a tool definition to the LLM the prefilter modifies the parameter schemas to specify which must be signed.
+- These requirements force the LLM to retrieve valid claims for these parameters, either from the user or from other parties. The signing requirement prevents the LLM from spoofing.
+- Finally, at tool call time, policies validate the signed parameters as part of approving the call.
+
+This addresses the unverified claims issue and can also be used to strengthen the guarantee that an MCP Server is permitted. Verified claims are now key to agentic commerce, as shown by Google's Universal Commerce Protocol, but the requirement will hold for many non-commercial operations, such as deleting files.
+
+We can improve the strength of policies by using a more powerful framework for expressing them. Rego is the current forerunner for complex ABAC policies, but has minimal support for type checking policy correctness (as opposed to using JSON Schema to type check inputs). We will incorporate the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) which treats policies as dependent types allowing properties of the policy to be mathematically proven, rather than just tested.
+
 ## Setup
 
 Requires Python 3.10+.
@@ -46,6 +91,8 @@ uv sync
 cp config.example.json config.json
 # Edit config.json with your MCP servers
 ```
+
+`config.example.json` is intentionally a minimal starter — see the Configuration section below for the full set of options (URL servers, `rego_policy`, `load_control`, etc.).
 
 ## Configuration
 
@@ -83,6 +130,28 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
   }
 }
 ```
+
+### Authentication
+
+Many MCP servers require credentials — OAuth Bearer tokens, PATs, API keys. extensible-mcp supports two paths, depending on how the downstream server is reached:
+
+**Stdio servers** (launched as child processes via `command`) — pass credentials through the `env` block in `mcpServers`, the same way you would for any MCP server. The GitHub example in [`examples/`](examples/) uses this pattern with `$GITHUB_PERSONAL_ACCESS_TOKEN` resolved from a `.env` file or the proxy's environment.
+
+**URL servers** (Streamable HTTP via `url`) — drop a `tokens` file next to your config:
+
+```
+# tokens — gitignored by default
+notion=secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+internal-api=eyJhbGciOiJIUzI1NiIs...
+```
+
+Format: one `server_name=value` pair per line, `#` for comments, surrounding quotes on values are stripped. The proxy automatically picks up `tokens` if it exists in the same directory as the loaded config.
+
+Tokens are sent as `Authorization: Bearer <token>` headers. The file is read fresh on every connection, so you can rotate credentials without restarting the proxy — overwrite the line, save, and the next request picks up the new value.
+
+extensible-mcp does **not** run an OAuth flow itself. If a server uses OAuth, mint the access token externally (CLI, browser flow, headless service-account auth, whatever you have) and drop it into the `tokens` file. Refresh is your responsibility.
+
+**Token expiry.** If a downstream call returns 401/403 (or an error message containing "unauthorized"/"forbidden"), the proxy translates it into a clear error to the LLM naming the server and reporting how long the token has been unchanged. The proxy's system instructions tell the LLM to ask the user to update the token in the `tokens` file and retry — never to request a token in the conversation. Tokens stay out of the chat transcript by design.
 
 ### Filter pipelines
 
@@ -127,11 +196,7 @@ The policy receives this input on every `call_tool` invocation:
 
 The policy must define `allow` (boolean). Optionally define `deny_reason` (string) for a custom error message. See [`examples/deny_dangerous.rego`](examples/deny_dangerous.rego) for a working example. Relative paths in the config are resolved relative to the config file's directory.
 
-Rego support requires the optional `regopy` dependency:
-
-```bash
-uv sync --group rego
-```
+Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which is installed by default with `uv sync` — no extra step needed.
 
 **Server load filters** — applied to `load_mcp_server` requests before any connection is made.
 
@@ -166,7 +231,7 @@ The proxy runs as a stdio-based MCP server. Connect to it from any MCP client th
 
 ## Examples
 
-The [`examples/`](examples/) directory has ready-to-use configs for proxying GitHub's official MCP server through extensible-mcp, with all delete operations blocked via `*__delete_*`:
+The [`examples/`](examples/) directory has ready-to-use configs for proxying GitHub's official MCP server through extensible-mcp, with two layers of security in the filter pipeline: a glob deny pattern (`*__delete_*`) that blocks all delete operations, and a Rego policy that blocks closing issues based on argument shape.
 
 - **Claude Desktop** — [`examples/claude-desktop-config.json`](examples/claude-desktop-config.json)
 - **OpenClaw** — [`examples/openclaw-config.json`](examples/openclaw-config.json)

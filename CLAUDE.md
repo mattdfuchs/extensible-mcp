@@ -36,7 +36,7 @@ The proxy is a FastMCP server that connects to downstream MCP servers as a clien
 
 - **`server.py`** — FastMCP server setup, lifespan management, `search_tools`/`call_tool` handler registration. Entry point via `main()`.
 - **`client_manager.py`** — Manages stdio connections to downstream MCP servers. Handles connect/reconnect, tool indexing, and proxying `call_tool` requests. Tools are namespaced as `{server_name}__{tool_name}`.
-- **`vector_store.py`** — In-memory vector index using `sentence-transformers` (`all-MiniLM-L6-v2`). Encodes tool definitions and does cosine similarity search via normalized dot product.
+- **`vector_store.py`** — In-memory vector index using FastEmbed (ONNX runtime) with `all-MiniLM-L6-v2`. Encodes tool definitions and does cosine similarity search via normalized dot product.
 - **`filters.py`** — Pluggable `FilterPipeline` applied to search results. Includes `SimilarityThresholdFilter` and `AccessControlFilter` (deny lists, deny patterns via fnmatch, server allowlists). Filters implement a `ToolFilter` protocol.
 - **`config.py`** — Loads JSON config (same `mcpServers` format as Claude Desktop). Config resolution order: `--config` flag → `EXTENSIBLE_MCP_CONFIG` env var → platform-specific default paths → `./config.json`.
 - **`types.py`** — Shared dataclasses: `ServerConfig`, `ToolRecord` (builds its own `embedding_text` from name + description + params), `SearchResult`.
