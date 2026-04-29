@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +16,16 @@ from .client_manager import ClientManager, TokenExpiredError
 from .config import Config, find_config_path, load_config
 from .filters import (
     AccessControlFilter,
+    CallFilter,
     CallFilterPipeline,
     DiscoveredToolsFilter,
     FilterPipeline,
     RegoPolicyFilter,
     ServerLoadAccessControlFilter,
+    ServerLoadFilter,
     ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
+    ToolFilter,
 )
 from .types import CallRequest, ServerLoadRequest
 from .vector_store import VectorStore
@@ -38,6 +42,10 @@ def _parse_args() -> argparse.Namespace:
 
 def _build_pipelines(
     config: Config,
+    *,
+    extra_search_filters: Sequence[ToolFilter] = (),
+    extra_call_filters: Sequence[CallFilter] = (),
+    extra_load_filters: Sequence[ServerLoadFilter] = (),
 ) -> tuple[FilterPipeline, CallFilterPipeline, ServerLoadFilterPipeline, DiscoveredToolsFilter]:
     ac = AccessControlFilter(
         deny=config.filters.access_control.deny,
@@ -49,12 +57,17 @@ def _build_pipelines(
         SimilarityThresholdFilter(config.filters.similarity_threshold),
         ac,
     ])
+    for f in extra_search_filters:
+        search_pipeline.add(f)
 
     discovered_filter = DiscoveredToolsFilter()
     call_pipeline = CallFilterPipeline([ac, discovered_filter])
 
     if config.filters.rego_policy:
         call_pipeline.add(RegoPolicyFilter(config.filters.rego_policy))
+
+    for f in extra_call_filters:
+        call_pipeline.add(f)
 
     lc = config.filters.load_control
     server_load_pipeline = ServerLoadFilterPipeline()
@@ -65,6 +78,9 @@ def _build_pipelines(
             deny_url_patterns=lc.deny_url_patterns,
             allow_url_patterns=lc.allow_url_patterns,
         ))
+
+    for f in extra_load_filters:
+        server_load_pipeline.add(f)
 
     return search_pipeline, call_pipeline, server_load_pipeline, discovered_filter
 
@@ -88,9 +104,20 @@ def _format_search_results(results: list[Any]) -> str:
     return header + "\n".join(lines)
 
 
-async def _setup(config: Config) -> dict[str, Any]:
+async def _setup(
+    config: Config,
+    *,
+    extra_search_filters: Sequence[ToolFilter] = (),
+    extra_call_filters: Sequence[CallFilter] = (),
+    extra_load_filters: Sequence[ServerLoadFilter] = (),
+) -> dict[str, Any]:
     """Connect to downstream servers, build vector index, return lifespan context."""
-    search_pipeline, call_pipeline, server_load_pipeline, discovered_filter = _build_pipelines(config)
+    search_pipeline, call_pipeline, server_load_pipeline, discovered_filter = _build_pipelines(
+        config,
+        extra_search_filters=extra_search_filters,
+        extra_call_filters=extra_call_filters,
+        extra_load_filters=extra_load_filters,
+    )
 
     client_mgr = ClientManager(tokens_file=config.tokens_file)
     logger.info("Connecting to %d downstream server(s)...", len(config.servers))
@@ -112,12 +139,30 @@ async def _setup(config: Config) -> dict[str, Any]:
     }
 
 
-def create_server(config: Config) -> FastMCP:
-    """Create a configured FastMCP proxy server for the given config."""
+def create_server(
+    config: Config,
+    *,
+    extra_search_filters: Sequence[ToolFilter] = (),
+    extra_call_filters: Sequence[CallFilter] = (),
+    extra_load_filters: Sequence[ServerLoadFilter] = (),
+) -> FastMCP:
+    """Create a configured FastMCP proxy server for the given config.
+
+    The ``extra_*_filters`` arguments accept user-defined filters (anything
+    matching the ``ToolFilter``, ``CallFilter``, or ``ServerLoadFilter``
+    Protocol). They are appended to the corresponding pipeline after the
+    built-in reference filters; the discovered-tools guarantee is always
+    enforced regardless.
+    """
 
     @lifespan
     async def configured_lifespan(server: FastMCP):
-        ctx = await _setup(config)
+        ctx = await _setup(
+            config,
+            extra_search_filters=extra_search_filters,
+            extra_call_filters=extra_call_filters,
+            extra_load_filters=extra_load_filters,
+        )
         yield ctx
         logger.info("Shutting down, closing connections...")
         await ctx["client_manager"].close_all()

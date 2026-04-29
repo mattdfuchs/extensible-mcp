@@ -16,7 +16,7 @@ extensible-mcp sits between the LLM and your MCP servers and addresses all three
 
 1. **Dynamic server loading** — Connect to MCP servers at startup from config, or at runtime by URL. The LLM can pull in entirely new servers and their capabilities from across the network on demand, without restarting the client.
 2. **RAG-based tool search and retrieval** — Tool definitions are embedded into a vector index. The LLM searches semantically with `search_tools(query)` and pulls back only the matches it needs, instead of every tool definition occupying space in every prompt.
-3. **Pluggable filter pipelines for security and beyond** — Every operation (search, call, server load) passes through a configurable filter chain. The primary use is **security** — access control, deny patterns, Rego policy evaluation, server-load whitelists — but the same pipeline supports argument validation, logging, or any custom transformation you want to write.
+3. **Pluggable filter pipelines** — Every operation (search, call, server load) passes through a filter chain. The proxy enforces one structural guarantee: the LLM can only call tools it has previously surfaced via `search_tools`. Beyond that, the filter logic is yours: ship-with reference filters cover access control, Rego policy evaluation, and server-load whitelisting; bring your own for argument validation, audit logging, signed-claim verification, or anything else.
 
 ```
 LLM  <-->  extensible-mcp  <-->  MCP Server(s)
@@ -38,7 +38,7 @@ Retrieval is model-driven: the LLM decides when to search and crafts its own que
 
 ## Status
 
-v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, filter pipelines (access control, Rego policy evaluation, server-load gating, discovery-gated calls), and credential handling all ship today. 69 tests pass; the example configs work against the official GitHub MCP server.
+v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and credential handling all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. 71 tests pass; the example configs work against the official GitHub MCP server.
 
 The architecture is grounded in [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which formalizes ABAC policies as dependent types. This proxy is the runtime target. Active research directions:
 
@@ -155,7 +155,9 @@ extensible-mcp does **not** run an OAuth flow itself. If a server uses OAuth, mi
 
 ### Filter pipelines
 
-Every request flows through a filter pipeline before it's executed. There are three independent pipelines, one per operation. Filters implement simple protocols (`ToolFilter`, `CallFilter`, `ServerLoadFilter`), so you can add your own — the built-in filters described below are just the ones that ship out of the box:
+Three independent pipelines — search, call, and server-load — each pass requests through an ordered chain of filters before the operation runs. The proxy enforces one structural guarantee: **the LLM can only call tools it has previously surfaced via `search_tools`.** That gate is built into the call pipeline and cannot be bypassed.
+
+Beyond the discovery gate, the filter logic is yours to define. The filters described below ship as reference implementations and are configured via the JSON config; for anything beyond them, write your own — see [Writing a custom filter](#writing-a-custom-filter).
 
 **Search filters** — applied to `search_tools` results before they're returned to the LLM.
 
@@ -171,8 +173,6 @@ Every request flows through a filter pipeline before it's executed. There are th
 | Field | Description |
 |---|---|
 | `access_control.*` | Same deny/allow rules as search — blocks calls even if the LLM knows the tool name |
-
-Tools must be discovered via `search_tools` before they can be called. This is always active and prevents the LLM from calling tools it hasn't searched for first.
 
 **Rego policies** — for fine-grained call-time policy evaluation, you can point to a `.rego` file:
 
@@ -208,6 +208,43 @@ Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which 
 | `load_control.allow_url_patterns` | If non-empty, only URLs matching at least one pattern are allowed (whitelist) |
 
 Without `load_control`, an LLM could be prompt-injected into connecting to a malicious server. Use `allow_url_patterns` to whitelist trusted domains and `deny_url_patterns` to block insecure protocols.
+
+### Writing a custom filter
+
+The reference filters described above are starting points, not the limit of what the pipeline can do. Filters are plain Python objects implementing one of three Protocols:
+
+- **`ToolFilter`** — `filter(results: list[SearchResult], query: str) -> list[SearchResult]`. Applied to `search_tools` results.
+- **`CallFilter`** — `async check(request: CallRequest) -> CallFilterResult`. Applied to `call_tool` invocations.
+- **`ServerLoadFilter`** — `async check(request: ServerLoadRequest) -> ServerLoadResult`. Applied to `load_mcp_server` requests.
+
+A custom call filter that audits every invocation:
+
+```python
+from extensible_mcp import CallFilter, CallRequest, CallFilterResult
+
+class AuditLogFilter:
+    async def check(self, request: CallRequest) -> CallFilterResult:
+        log_to_my_system(request.tool_name, request.arguments, request.server_name)
+        return CallFilterResult(
+            allowed=True,
+            tool_name=request.tool_name,
+            arguments=request.arguments,
+        )
+```
+
+Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, and `extra_load_filters`:
+
+```python
+from extensible_mcp.config import find_config_path, load_config
+from extensible_mcp.server import create_server
+from myorg.filters import AuditLogFilter
+
+config = load_config(find_config_path(None))
+server = create_server(config, extra_call_filters=[AuditLogFilter()])
+server.run()
+```
+
+Custom filters run after the built-in reference filters in each pipeline. To deny a call, return `CallFilterResult(allowed=False, reason="...", tool_name=..., arguments=...)`. The discovered-tools guarantee runs before any custom call filter and is always enforced regardless of your filter set.
 
 ### Config resolution order
 

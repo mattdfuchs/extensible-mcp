@@ -123,6 +123,56 @@ async def test_load_mcp_server_rejected_by_load_control():
         assert "http://evil.example.com/mcp" in text
 
 
+@pytest.mark.asyncio
+async def test_extra_call_filter_runs_after_builtins():
+    """User-supplied CallFilter passed via create_server kwargs should be invoked."""
+    from extensible_mcp import CallFilterResult
+
+    invoked: list[str] = []
+
+    class TrackingFilter:
+        async def check(self, request):
+            invoked.append(request.tool_name)
+            return CallFilterResult(
+                allowed=True,
+                tool_name=request.tool_name,
+                arguments=request.arguments,
+            )
+
+    server = create_server(_make_config(), extra_call_filters=[TrackingFilter()])
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
+        )
+        assert invoked == ["mock__add_numbers"]
+
+
+@pytest.mark.asyncio
+async def test_extra_call_filter_can_deny():
+    """User-supplied CallFilter returning allowed=False should block the call."""
+    from extensible_mcp import CallFilterResult
+
+    class BlockingFilter:
+        async def check(self, request):
+            return CallFilterResult(
+                allowed=False,
+                reason="blocked by custom policy",
+                tool_name=request.tool_name,
+                arguments=request.arguments,
+            )
+
+    server = create_server(_make_config(), extra_call_filters=[BlockingFilter()])
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        result = await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
+        )
+        assert "blocked by custom policy" in result.content[0].text
+
+
 try:
     import regopy  # noqa: F401
     HAS_REGOPY = True
