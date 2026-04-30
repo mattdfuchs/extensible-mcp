@@ -287,3 +287,7 @@ uv run pytest
 # Run a single test file
 uv run pytest tests/test_filters.py -v
 ```
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

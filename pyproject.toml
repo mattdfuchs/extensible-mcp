@@ -3,6 +3,9 @@ name = "extensible-mcp"
 version = "0.1.0"
 description = "MCP proxy that replaces tool definitions with semantic search"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Matthew Fuchs" }]
 dependencies = [
     "fastmcp>=2.0.0",
     "mcp>=1.0.0",

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Matthew Fuchs
+# SPDX-License-Identifier: Apache-2.0
+
 """A fake downstream MCP server with known tools for testing."""
 
 from fastmcp import FastMCP
