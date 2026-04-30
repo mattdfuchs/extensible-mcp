@@ -43,7 +43,7 @@ v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an
 The pipeline is policy-engine-agnostic: Rego is hooked into the call filter today as a reference, but the architecture doesn't privilege any single engine — drop in OPA, Cedar, custom Python, or whatever fits your stack. Active research directions:
 
 - **Signed-claim verification** at call time — push approvals, signed documents, Verifiable Credentials. See the threat-model section for the argument.
-- **Native Policy-as-Type integration** — incorporating the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types. Properties of the policy can be mathematically proven rather than just tested.
+- **Native Policy-as-Type integration** — linking to the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types. Properties of the policy can be mathematically proven rather than just tested.
 
 Both directions extend the existing filter pipeline without architectural change.
 
@@ -75,7 +75,7 @@ With the addition of signed claims, we can inject this level of security in thre
 
 This addresses the unverified claims issue and can also be used to strengthen the guarantee that an MCP Server is permitted. Verified claims are now key to agentic commerce, as shown by Google's Universal Commerce Protocol, but the requirement will hold for many non-commercial operations, such as deleting files.
 
-We currently ship Rego hooked into the call filter as a reference policy engine, but the pipeline isn't tied to it — any policy engine can plug in via a custom `CallFilter`. Rego's strength is broad ABAC expressiveness; its weakness is minimal support for type-checking policy correctness (input shapes can be checked with JSON Schema, but the policy logic itself isn't verified). We plan to incorporate the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types and lets properties of a policy be mathematically proven rather than just tested.
+We currently ship Rego hooked into the call filter as a reference policy engine, but the pipeline isn't tied to it — any policy engine can plug in via a custom `CallFilter`. Rego's strength is broad ABAC expressiveness; its weakness is minimal support for type-checking policy correctness (input shapes can be checked with JSON Schema, but the policy logic itself isn't verified). We plan to link to the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types and lets properties of a policy be mathematically proven rather than just tested.
 
 ## Setup
 
