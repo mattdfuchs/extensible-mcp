@@ -6,9 +6,15 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-from extensible_mcp.client_manager import ClientManager
+from extensible_mcp.client_manager import (
+    ClientManager,
+    TokenExpiredError,
+    _Connection,
+    _read_tokens_file,
+)
 from extensible_mcp.types import ServerConfig
 
 
@@ -94,3 +100,127 @@ class TestClientManager:
         ]
         with pytest.raises(RuntimeError, match="Could not connect"):
             await mgr.connect_all(configs)
+
+
+class TestReadTokensFile:
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert _read_tokens_file(tmp_path / "nope") == {}
+
+    def test_parses_simple_pairs(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("github=ghp_xxx\nnotion=secret_yyy\n")
+        assert _read_tokens_file(path) == {"github": "ghp_xxx", "notion": "secret_yyy"}
+
+    def test_strips_whitespace_around_key_and_value(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("  github  =  ghp_xxx  \n")
+        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+
+    def test_skips_blank_lines(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("\n\ngithub=ghp_xxx\n\n")
+        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+
+    def test_skips_comments(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("# this is a comment\ngithub=ghp_xxx\n# trailing comment\n")
+        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+
+    def test_skips_lines_without_equals(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("garbage line\ngithub=ghp_xxx\n")
+        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+
+    def test_strips_matching_double_quotes(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text('github="ghp_xxx"\n')
+        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+
+    def test_strips_matching_single_quotes(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("github='ghp_xxx'\n")
+        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+
+    def test_keeps_mismatched_quotes(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("github=\"ghp_xxx'\n")
+        assert _read_tokens_file(path) == {"github": '"ghp_xxx\''}
+
+    def test_value_with_internal_equals(self, tmp_path):
+        # `partition` splits on first `=`, so JWT-style values with `=` survive.
+        path = tmp_path / "tokens"
+        path.write_text("api=eyJhbGc=signature\n")
+        assert _read_tokens_file(path) == {"api": "eyJhbGc=signature"}
+
+    def test_later_entry_overrides_earlier(self, tmp_path):
+        path = tmp_path / "tokens"
+        path.write_text("github=old\ngithub=new\n")
+        assert _read_tokens_file(path) == {"github": "new"}
+
+
+def _make_conn(server_name: str = "test-server") -> _Connection:
+    """Build a _Connection whose token-age machinery is initialized."""
+    conn = _Connection(ServerConfig(name=server_name, url="https://example.com/mcp"))
+    conn._last_token_value = "some-token"
+    conn._token_set_at = 0.0
+    return conn
+
+
+def _httpx_status_error(code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://example.com/mcp")
+    response = httpx.Response(code, request=request)
+    return httpx.HTTPStatusError(f"HTTP {code}", request=request, response=response)
+
+
+class TestCheckAuthError:
+    def test_httpx_401_raises_token_expired(self):
+        conn = _make_conn()
+        with pytest.raises(TokenExpiredError) as info:
+            conn._check_auth_error(_httpx_status_error(401))
+        assert info.value.server_name == "test-server"
+
+    def test_httpx_403_raises_token_expired(self):
+        conn = _make_conn()
+        with pytest.raises(TokenExpiredError):
+            conn._check_auth_error(_httpx_status_error(403))
+
+    def test_httpx_500_does_not_raise(self):
+        conn = _make_conn()
+        # Returns None; caller is expected to re-raise the original exception.
+        assert conn._check_auth_error(_httpx_status_error(500)) is None
+
+    def test_message_contains_401(self):
+        conn = _make_conn()
+        with pytest.raises(TokenExpiredError):
+            conn._check_auth_error(RuntimeError("Got status 401 from server"))
+
+    def test_message_contains_403(self):
+        conn = _make_conn()
+        with pytest.raises(TokenExpiredError):
+            conn._check_auth_error(RuntimeError("Got status 403 from server"))
+
+    def test_message_contains_unauthorized(self):
+        conn = _make_conn()
+        with pytest.raises(TokenExpiredError):
+            conn._check_auth_error(RuntimeError("Request unauthorized"))
+
+    def test_message_contains_forbidden(self):
+        conn = _make_conn()
+        with pytest.raises(TokenExpiredError):
+            conn._check_auth_error(RuntimeError("Action FORBIDDEN by policy"))
+
+    def test_unrelated_exception_passes_through(self):
+        conn = _make_conn()
+        assert conn._check_auth_error(ValueError("totally unrelated")) is None
+
+    def test_exception_group_with_401_raises(self):
+        """anyio's TaskGroup wraps inner errors; the check should recurse."""
+        conn = _make_conn()
+        eg = ExceptionGroup("task group failed", [_httpx_status_error(401)])
+        with pytest.raises(TokenExpiredError):
+            conn._check_auth_error(eg)
+
+    def test_exception_group_with_unrelated_passes_through(self):
+        conn = _make_conn()
+        eg = ExceptionGroup("task group failed", [ValueError("unrelated")])
+        assert conn._check_auth_error(eg) is None

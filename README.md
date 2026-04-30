@@ -38,7 +38,7 @@ Retrieval is model-driven: the LLM decides when to search and crafts its own que
 
 ## Status
 
-v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and credential handling all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. 78 tests pass; the example configs work against the official GitHub MCP server.
+v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and credential handling all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. 104 tests pass; the example configs work against the official GitHub MCP server.
 
 The pipeline is policy-engine-agnostic: Rego is hooked into the call filter today as a reference, but the architecture doesn't privilege any single engine — drop in OPA, Cedar, custom Python, or whatever fits your stack. Active research directions:
 
@@ -93,6 +93,8 @@ cp config.example.json config.json
 ```
 
 `config.example.json` is intentionally a minimal starter — see the Configuration section below for the full set of options (URL servers, `rego_policy`, `load_control`, etc.).
+
+If your config references `$VAR_NAME`-style values (e.g. `"GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"` in a stdio server's `env` block), drop a `.env` file in the same directory as the loaded config or export the variables in your shell — the proxy resolves dotenv first, then `os.environ`. The `.env` lookup is per-config-directory, so a `.env` at the repo root won't apply to configs loaded from elsewhere.
 
 ## Configuration
 

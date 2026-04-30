@@ -99,13 +99,17 @@ class _Connection:
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    def _check_auth_error(self, exc: Exception) -> None:
+    def _check_auth_error(self, exc: BaseException) -> None:
         """Raise TokenExpiredError if the exception looks like a 401/403."""
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 403):
             raise TokenExpiredError(self.config.name, self.token_age_minutes) from exc
         msg = str(exc).lower()
         if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg:
             raise TokenExpiredError(self.config.name, self.token_age_minutes) from exc
+        # anyio TaskGroups wrap downstream errors in an ExceptionGroup; recurse.
+        if isinstance(exc, BaseExceptionGroup):
+            for sub in exc.exceptions:
+                self._check_auth_error(sub)
 
     async def connect(self) -> None:
         """Open a persistent connection. Used for stdio servers."""
