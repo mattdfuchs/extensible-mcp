@@ -79,7 +79,7 @@ We currently ship Rego hooked into the call filter as a reference policy engine,
 
 ## Setup
 
-Requires Python 3.10+.
+Requires Python 3.11+.
 
 ```bash
 # Clone and install
