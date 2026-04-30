@@ -173,7 +173,20 @@ def load_config(path: Path) -> Config:
     if not servers:
         raise ValueError("Config must define at least one server in 'mcpServers'")
 
-    tokens_path = path.parent / "tokens"
-    tokens_file = tokens_path if tokens_path.exists() else None
+    tokens_env = os.environ.get("EXTENSIBLE_MCP_TOKENS_FILE") or dotenv.get(
+        "EXTENSIBLE_MCP_TOKENS_FILE"
+    )
+    if tokens_env:
+        tokens_path = Path(os.path.expanduser(tokens_env))
+        if not tokens_path.is_absolute():
+            tokens_path = path.parent / tokens_path
+        if not tokens_path.exists():
+            raise FileNotFoundError(
+                f"Tokens file specified via EXTENSIBLE_MCP_TOKENS_FILE not found: {tokens_path}"
+            )
+        tokens_file = tokens_path
+    else:
+        tokens_path = path.parent / "tokens"
+        tokens_file = tokens_path if tokens_path.exists() else None
 
     return Config(servers=servers, filters=filters, tokens_file=tokens_file)

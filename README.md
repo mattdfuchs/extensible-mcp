@@ -38,12 +38,12 @@ Retrieval is model-driven: the LLM decides when to search and crafts its own que
 
 ## Status
 
-v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and credential handling all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. 71 tests pass; the example configs work against the official GitHub MCP server.
+v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and credential handling all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. 78 tests pass; the example configs work against the official GitHub MCP server.
 
-The architecture is grounded in [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which formalizes ABAC policies as dependent types. This proxy is the runtime target. Active research directions:
+The pipeline is policy-engine-agnostic: Rego is hooked into the call filter today as a reference, but the architecture doesn't privilege any single engine — drop in OPA, Cedar, custom Python, or whatever fits your stack. Active research directions:
 
 - **Signed-claim verification** at call time — push approvals, signed documents, Verifiable Credentials. See the threat-model section for the argument.
-- **Compiling Policy-as-Type policies to Rego** for runtime enforcement, with WASM evaluation in the call filter. Lean handles authoring and proof; Rego handles execution; the proxy verifies what runs against what was proven.
+- **Native Policy-as-Type integration** — incorporating the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types. Properties of the policy can be mathematically proven rather than just tested.
 
 Both directions extend the existing filter pipeline without architectural change.
 
@@ -75,7 +75,7 @@ With the addition of signed claims, we can inject this level of security in thre
 
 This addresses the unverified claims issue and can also be used to strengthen the guarantee that an MCP Server is permitted. Verified claims are now key to agentic commerce, as shown by Google's Universal Commerce Protocol, but the requirement will hold for many non-commercial operations, such as deleting files.
 
-We can improve the strength of policies by using a more powerful framework for expressing them. Rego is the current forerunner for complex ABAC policies, but has minimal support for type checking policy correctness (as opposed to using JSON Schema to type check inputs). We will incorporate the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) which treats policies as dependent types allowing properties of the policy to be mathematically proven, rather than just tested.
+We currently ship Rego hooked into the call filter as a reference policy engine, but the pipeline isn't tied to it — any policy engine can plug in via a custom `CallFilter`. Rego's strength is broad ABAC expressiveness; its weakness is minimal support for type-checking policy correctness (input shapes can be checked with JSON Schema, but the policy logic itself isn't verified). We plan to incorporate the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types and lets properties of a policy be mathematically proven rather than just tested.
 
 ## Setup
 
@@ -146,6 +146,8 @@ internal-api=eyJhbGciOiJIUzI1NiIs...
 ```
 
 Format: one `server_name=value` pair per line, `#` for comments, surrounding quotes on values are stripped. The proxy automatically picks up `tokens` if it exists in the same directory as the loaded config.
+
+**Moving the tokens file outside the project.** If your setup includes a filesystem MCP server (or any other tool) that can read paths inside the project directory, the default `tokens` location is reachable by the agent. To keep credentials out of reach, set `EXTENSIBLE_MCP_TOKENS_FILE` to a path the agent can't see — e.g. `~/.secrets/extensible-mcp-tokens`. The variable can be set in the proxy's environment or in the `.env` file next to the config; relative paths are resolved relative to the config directory, and `~` is expanded. If the variable is set but the file doesn't exist, the proxy refuses to start. Without the variable, behavior is unchanged: the proxy looks for `tokens` next to the config and runs without one if it isn't there. The resolved path is logged at startup so you can confirm which file is in use.
 
 Tokens are sent as `Authorization: Bearer <token>` headers. The file is read fresh on every connection, so you can rotate credentials without restarting the proxy — overwrite the line, save, and the next request picks up the new value.
 

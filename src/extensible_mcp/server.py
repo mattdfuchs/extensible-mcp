@@ -123,6 +123,10 @@ async def _setup(
     )
 
     client_mgr = ClientManager(tokens_file=config.tokens_file)
+    logger.info(
+        "Tokens file: %s",
+        config.tokens_file if config.tokens_file else "(none configured)",
+    )
     logger.info("Connecting to %d downstream server(s)...", len(config.servers))
     tools = await client_mgr.connect_all(config.servers)
     logger.info("Indexed %d tools total", len(tools))

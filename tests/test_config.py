@@ -107,6 +107,68 @@ class TestLoadConfig:
                 load_config(path)
 
 
+class TestTokensFileResolution:
+    def test_default_picks_up_tokens_next_to_config(self, monkeypatch):
+        monkeypatch.delenv("EXTENSIBLE_MCP_TOKENS_FILE", raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            (Path(tmp) / "tokens").write_text("foo=bar\n")
+            config = load_config(path)
+            assert config.tokens_file == Path(tmp) / "tokens"
+
+    def test_default_yields_none_when_no_tokens_file(self, monkeypatch):
+        monkeypatch.delenv("EXTENSIBLE_MCP_TOKENS_FILE", raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            config = load_config(path)
+            assert config.tokens_file is None
+
+    def test_env_var_overrides_default(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            (Path(tmp) / "tokens").write_text("ignored=value\n")
+            elsewhere = Path(tmp) / "elsewhere-tokens"
+            elsewhere.write_text("real=value\n")
+            monkeypatch.setenv("EXTENSIBLE_MCP_TOKENS_FILE", str(elsewhere))
+            config = load_config(path)
+            assert config.tokens_file == elsewhere
+
+    def test_env_var_relative_resolves_to_config_dir(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            (Path(tmp) / "my-tokens").write_text("a=b\n")
+            monkeypatch.setenv("EXTENSIBLE_MCP_TOKENS_FILE", "my-tokens")
+            config = load_config(path)
+            assert config.tokens_file == Path(tmp) / "my-tokens"
+
+    def test_env_var_expands_tilde(self, monkeypatch, tmp_path):
+        token_file = tmp_path / "expanded-tokens"
+        token_file.write_text("a=b\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("EXTENSIBLE_MCP_TOKENS_FILE", "~/expanded-tokens")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            config = load_config(path)
+            assert config.tokens_file == token_file
+
+    def test_env_var_pointing_at_missing_file_raises(self, monkeypatch):
+        monkeypatch.setenv("EXTENSIBLE_MCP_TOKENS_FILE", "/nonexistent/tokens")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            with pytest.raises(FileNotFoundError, match="EXTENSIBLE_MCP_TOKENS_FILE"):
+                load_config(path)
+
+    def test_dotenv_provides_path_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("EXTENSIBLE_MCP_TOKENS_FILE", raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(tmp, {"mcpServers": {"test": {"command": "echo"}}})
+            target = Path(tmp) / "from-dotenv-tokens"
+            target.write_text("a=b\n")
+            (Path(tmp) / ".env").write_text(f"EXTENSIBLE_MCP_TOKENS_FILE={target}\n")
+            config = load_config(path)
+            assert config.tokens_file == target
+
+
 class TestFindConfigPath:
     def test_cli_arg(self):
         with tempfile.NamedTemporaryFile(suffix=".json") as f:
