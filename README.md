@@ -66,6 +66,8 @@ Of course, we can only apply these protections within the context of the LLM its
 
 It's tempting to use required argument values as a way to extend policies, such as requiring ```confirmation: 'CONFIRM_DELETE'``` before a delete proceeds. We considered this and discarded it: an LLM that can be prompt-injected into deleting a file can also be prompt-injected into supplying the confirmation string. The user's acquiescence is unproven. The mechanism prevents accidents but not adversaries. We will address this pattern using signed claims, evidence whose validity depends on a channel the LLM cannot influence.
 
+This becomes especially acute as agents communicate with other agents. A2A, the basis for AP2, has the receiving agent process every message through an LLM, making every counterparty message a potential prompt injection vector. An LLM's judgment about what its negotiating partner has agreed to is structurally unsafe; the same signed-evidence architecture that addresses single-agent authorization is even more necessary in multi-agent settings.
+
 By adding support for signed claims as parameters, we can ensure that values come from valid sources, such as the user, and cannot have been forged by the LLM. Examples of this include Duo or CIBA push approvals, W3C Verifiable Credentials (which are used for Google's AP2 and its extension, the Universal Commerce Protocol), or DocuSign-grade envelopes.
 
 With the addition of signed claims, we can inject this level of security in three parts:
