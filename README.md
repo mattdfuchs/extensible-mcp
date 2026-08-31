@@ -1,3 +1,13 @@
+**Why this repo exists.**
+An AI agent can be talked into anything by the text it reads — a poisoned web page, a crafted email, a malicious tool description. extensible-mcp assumes exactly that. It loads MCP servers dynamically so your context doesn't carry tools you aren't using, selects tools by retrieval instead of prompt-stuffing, and runs every proposed action through a filter pipeline enforcing Rego policy — plain, deterministic code the model never reads and can never be talked past.
+The agent proposes; it never commits.
+
+The full architecture — signed human approvals bound to exact actions, provable policies, why "human in the loop" fails at agent speed — is in the white paper: **[Proof, Not Trust: Zero Trust for an Agentic World](https://sentelabs.ai/proof-not-trust)** —readable in full on the page.
+
+[<img src="assets/proof-not-trust-card.png" alt="Proof, Not Trust — Zero Trust for an Agentic World. A Sente Labs white paper." width="360">](https://sentelabs.ai/proof-not-trust)
+
+---
+
 # extensible-mcp
 
 extensible-mcp is a proxy that sits between an LLM and the universe of MCP servers, providing on-demand tool retrieval and a deterministic enforcement point for access control. Tool definitions don't need to live in the prompt, sensitive credentials don't need to live in the LLM's context, and security policies are evaluated by code rather than by the model.
@@ -52,25 +62,28 @@ Both directions extend the existing filter pipeline without architectural change
 LLMs cannot be trusted to manage their own security. They are open to prompt injection attacks from any material they ingest, they can be influenced by material in their training set in non-obvious ways, including treating data as instructions, they hallucinate, they can forget instructions, and any information passed to them must be considered compromised. Therefore any serious attempt to enforce rules must live outside the LLM in code not subject to all these weaknesses. That is our premise.
 
 The pipeline allows for control at all points of contact between the LLM and the external world:
-- At server loading time, we can filter and prohibit the agent from loading untrusted servers. Beyond just the tools, the server and tool descriptions can contain prompt injection attacks. 
+
+- At server loading time, we can filter and prohibit the agent from loading untrusted servers. Beyond just the tools, the server and tool descriptions can contain prompt injection attacks.
 - At search time, we can, again, hide dangerous or untrusted tools. In the current release, we include a sample filter to hide any tool containing "delete"; not only can't such a tool be called, it can't be found.
 - At call time, further policies can prevent illegitimate use of an allowed tool. In the sample code we prevent the closing of an issue, but allow other uses of the same tool to allow updating issues.
 - The LLM cannot call any tools it didn't find during search. This ensures the LLM calls only tools in the protected set and is not vulnerable to attempts to call outside the protected envelope.
 - We do not pass secrets (in particular, security tokens) to the LLM. Tokens to be used in HTTP Authorization headers are kept in a separate file. The LLM can prompt the user to update a token when it appears to have expired, but it never sees the tokens themselves.
 
 Of course, we can only apply these protections within the context of the LLM itself. We cannot protect against:
-- Security flaws in the user's configuration, 
-- The behavior of downstream servers (although limiting to trusted servers can mitigate that), 
-- Policies that trust unverified LLM claims (such as whether the user has agreed to some action) 
+
+- Security flaws in the user's configuration,
+- The behavior of downstream servers (although limiting to trusted servers can mitigate that),
+- Policies that trust unverified LLM claims (such as whether the user has agreed to some action)
 - Otherwise ineffective policies (for example, our simple Rego script prohibits one action, but allows all others).
 
-It's tempting to use required argument values as a way to extend policies, such as requiring ```confirmation: 'CONFIRM_DELETE'``` before a delete proceeds. We considered this and discarded it: an LLM that can be prompt-injected into deleting a file can also be prompt-injected into supplying the confirmation string. The user's acquiescence is unproven. The mechanism prevents accidents but not adversaries. We will address this pattern using signed claims, evidence whose validity depends on a channel the LLM cannot influence.
+It's tempting to use required argument values as a way to extend policies, such as requiring `confirmation: 'CONFIRM_DELETE'` before a delete proceeds. We considered this and discarded it: an LLM that can be prompt-injected into deleting a file can also be prompt-injected into supplying the confirmation string. The user's acquiescence is unproven. The mechanism prevents accidents but not adversaries. We will address this pattern using signed claims, evidence whose validity depends on a channel the LLM cannot influence.
 
 This becomes especially acute as agents communicate with other agents. A2A, which AP2 depends on, has the receiving agent process every message through an LLM, making every counterparty message a potential prompt injection vector. An LLM's judgment about what its negotiating partner has agreed to is structurally unsafe; the same signed-evidence architecture that addresses single-agent authorization is even more necessary in multi-agent settings.
 
 By adding support for signed claims as parameters, we can ensure that values come from valid sources, such as the user, and cannot have been forged by the LLM. Examples of this include Duo or CIBA push approvals, W3C Verifiable Credentials (which are used for Google's AP2 and its extension, the Universal Commerce Protocol), or DocuSign-grade envelopes.
 
 With the addition of signed claims, we can inject this level of security in three parts:
+
 - First, before handing a tool definition to the LLM the prefilter modifies the parameter schemas to specify which must be signed.
 - These requirements force the LLM to retrieve valid claims for these parameters, either from the user or from other parties. The signing requirement prevents the LLM from spoofing.
 - Finally, at tool call time, policies validate the signed parameters as part of approving the call.
@@ -167,17 +180,17 @@ Beyond the discovery gate, the filter logic is yours to define. The filters desc
 
 **Search filters** — applied to `search_tools` results before they're returned to the LLM.
 
-| Field | Description |
-|---|---|
-| `similarity_threshold` | Minimum cosine similarity score (default: `0.3`) |
-| `access_control.deny` | Exact qualified tool names to hide (e.g. `github__delete_repo`) |
-| `access_control.deny_patterns` | Glob patterns to hide (e.g. `*__delete_*`) |
-| `access_control.allow_servers` | If non-empty, only tools from these servers appear in results |
+| Field                          | Description                                                     |
+| ------------------------------ | --------------------------------------------------------------- |
+| `similarity_threshold`         | Minimum cosine similarity score (default: `0.3`)                |
+| `access_control.deny`          | Exact qualified tool names to hide (e.g. `github__delete_repo`) |
+| `access_control.deny_patterns` | Glob patterns to hide (e.g. `*__delete_*`)                      |
+| `access_control.allow_servers` | If non-empty, only tools from these servers appear in results   |
 
 **Call filters** — applied to `call_tool` invocations before they're proxied downstream.
 
-| Field | Description |
-|---|---|
+| Field              | Description                                                                        |
+| ------------------ | ---------------------------------------------------------------------------------- |
 | `access_control.*` | Same deny/allow rules as search — blocks calls even if the LLM knows the tool name |
 
 **Rego policies** — for fine-grained call-time policy evaluation, you can point to a `.rego` file:
@@ -206,11 +219,11 @@ Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which 
 
 **Server load filters** — applied to `load_mcp_server` requests before any connection is made.
 
-| Field | Description |
-|---|---|
-| `load_control.deny_names` | Exact server names to block |
-| `load_control.deny_name_patterns` | Glob patterns on server names (e.g. `evil_*`) |
-| `load_control.deny_url_patterns` | Glob patterns on URLs (e.g. `http://*` to require HTTPS) |
+| Field                             | Description                                                                   |
+| --------------------------------- | ----------------------------------------------------------------------------- |
+| `load_control.deny_names`         | Exact server names to block                                                   |
+| `load_control.deny_name_patterns` | Glob patterns on server names (e.g. `evil_*`)                                 |
+| `load_control.deny_url_patterns`  | Glob patterns on URLs (e.g. `http://*` to require HTTPS)                      |
 | `load_control.allow_url_patterns` | If non-empty, only URLs matching at least one pattern are allowed (whitelist) |
 
 Without `load_control`, an LLM could be prompt-injected into connecting to a malicious server. Use `allow_url_patterns` to whitelist trusted domains and `deny_url_patterns` to block insecure protocols.
