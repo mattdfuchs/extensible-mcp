@@ -306,7 +306,9 @@ def create_server(
             "Dynamic servers:\n"
             "- Use `load_mcp_server` to connect to a new remote MCP server by URL.\n"
             "- If the server requires authentication, ask the user to add a token "
-            "for that server name to the tokens file before loading.\n\n"
+            "for that server name to the tokens file AND add the server to "
+            "the config file, since a stored token is only ever sent to a URL "
+            "named in the config.\n\n"
             "Authentication errors:\n"
             "- If a call_tool fails with an authentication/token error, ask the user "
             "to update the token in the tokens file, then retry the same call.\n"
@@ -430,8 +432,10 @@ def create_server(
             "Indexes all of the server's tools and makes them available for "
             "search_tools and call_tool. The server_name is used as a namespace "
             "prefix for tool names (e.g. 'myserver__tool_name'). "
-            "If the server requires authentication, the user must add the token "
-            "to the tokens file before calling this."
+            "A server loaded this way is not sent any stored credential: a "
+            "token is presented only to a URL an operator named in the config "
+            "file. If the server needs authentication, ask the user to add it "
+            "to the config rather than loading it here."
         ),
     )
     async def load_mcp_server_handler(

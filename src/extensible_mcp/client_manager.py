@@ -54,8 +54,18 @@ class TokenExpiredError(Exception):
 class _Connection:
     """Manages a single downstream MCP server connection (stdio or URL)."""
 
-    def __init__(self, config: ServerConfig, tokens_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        config: ServerConfig,
+        tokens_file: Path | None = None,
+        *,
+        tokens_allowed: bool = False,
+    ) -> None:
         self.config = config
+        # Whether this connection may present a bearer token. False unless an
+        # operator configured this exact URL for this name -- see
+        # ClientManager.connect_url.
+        self._tokens_allowed = tokens_allowed
         self.session: ClientSession | None = None
         self._stack: AsyncExitStack | None = None
         self._tokens_file = tokens_file
@@ -91,7 +101,28 @@ class _Connection:
         return value
 
     def _make_http_client(self) -> httpx.AsyncClient | None:
-        """Build an httpx client with auth headers if a token is available."""
+        """Build an httpx client with auth headers if a token is available
+        *and* this connection is allowed to present one.
+
+        A token is keyed by server name, but the URL it gets sent to is
+        chosen by whoever opened the connection -- and for a runtime
+        ``load_mcp_server`` that is the LLM. Sending a stored bearer token to
+        an arbitrary model-supplied host would hand the credential to whoever
+        the model was talked into naming, so credentials go only to a URL an
+        operator configured.
+        """
+        if not self._tokens_allowed:
+            if self._tokens_file and _read_tokens_file(self._tokens_file).get(
+                self.config.name
+            ):
+                logger.warning(
+                    "Not sending the stored token for %r to %s: credentials are "
+                    "only presented to a URL configured for that name in the "
+                    "config file, and this URL was supplied at runtime.",
+                    self.config.name,
+                    self.config.url,
+                )
+            return None
         token = self._resolve_token()
         if not token:
             return None
@@ -190,13 +221,18 @@ class ClientManager:
         self._connections: dict[str, _Connection] = {}
         self._tool_to_server: dict[str, str] = {}  # qualified_name -> server_name
         self._tool_original_name: dict[str, str] = {}  # qualified_name -> original name
+        self._configured_urls: dict[str, str] = {}  # name -> URL from the config file
         self._tokens_file = tokens_file
 
     async def connect_all(self, configs: list[ServerConfig]) -> list[ToolRecord]:
         all_tools: list[ToolRecord] = []
         for config in configs:
             try:
-                conn = _Connection(config, tokens_file=self._tokens_file)
+                if config.url:
+                    self._configured_urls[config.name] = config.url
+                conn = _Connection(
+                    config, tokens_file=self._tokens_file, tokens_allowed=True
+                )
                 if conn.is_url:
                     tools_raw = await conn.list_tools_ephemeral()
                     self._connections[config.name] = conn
@@ -280,7 +316,14 @@ class ClientManager:
         if name in self._connections:
             raise ValueError(f"Server '{name}' is already connected")
         config = ServerConfig(name=name, url=url)
-        conn = _Connection(config, tokens_file=self._tokens_file)
+        # The name and URL both come from the caller -- the LLM, via
+        # load_mcp_server. Credentials are presented only when an operator
+        # already named this exact URL in the config file.
+        conn = _Connection(
+            config,
+            tokens_file=self._tokens_file,
+            tokens_allowed=self._configured_urls.get(name) == url,
+        )
         tools_raw = await conn.list_tools_ephemeral()
         self._connections[name] = conn
         tools = self._index_tools(name, tools_raw)

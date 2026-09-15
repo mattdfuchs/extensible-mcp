@@ -178,3 +178,44 @@ async def test_token_rotation_via_file_picks_up_new_value(tmp_path, mock_mcp_ser
         assert "ping" in result.content[0].text
     finally:
         await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_loaded_url_does_not_receive_a_stored_token(
+    tmp_path, mock_mcp_server
+):
+    """The exfiltration path: `load_mcp_server` lets the caller choose both
+    the server *name* and the *URL*, and a token is keyed only by name. A
+    prompt-injected model naming a server that has a token, pointed at a host
+    it controls, would otherwise be handed that bearer.
+
+    Proven end to end rather than by inspecting headers: the mock server
+    rejects anything without a valid bearer, so if no credential is sent the
+    connection fails."""
+    url, _store = mock_mcp_server
+    tokens_file = tmp_path / "tokens"
+    tokens_file.write_text("mockauth=correct-token\n")
+
+    mgr = ClientManager(tokens_file=tokens_file)
+    # No static config for this name, so the URL is caller-chosen.
+    with pytest.raises(Exception):
+        await mgr.connect_url("mockauth", url)
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconnect_to_a_configured_url_still_receives_the_token(
+    tmp_path, mock_mcp_server
+):
+    """The legitimate case must keep working: once an operator has named this
+    exact URL for this name in the config file, a runtime load of the same
+    pair is a reconnect to an approved endpoint, not a redirect."""
+    url, _store = mock_mcp_server
+    tokens_file = tmp_path / "tokens"
+    tokens_file.write_text("mockauth=correct-token\n")
+
+    mgr = ClientManager(tokens_file=tokens_file)
+    await mgr.connect_all([ServerConfig(name="mockauth", url=url)])
+    mgr._connections.pop("mockauth")  # drop it so connect_url will re-add
+
+    tools = await mgr.connect_url("mockauth", url)
+    assert any(t.name == "echo" for t in tools)
