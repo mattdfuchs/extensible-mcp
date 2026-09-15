@@ -387,3 +387,36 @@ async def test_local_tool_exempt_from_allow_servers():
             "call_tool", {"tool_name": "local_add_numbers", "arguments": {"a": 3, "b": 4}}
         )
         assert "7" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_load_mcp_server_rejects_separator_in_name():
+    """A server named with `__` would re-parse as a different server at call
+    time, escaping per-server policy routing and call-side access control."""
+    server = create_server(_make_config())
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "load_mcp_server",
+            {"server_name": "acme__pay", "url": "https://example.com/mcp"},
+        )
+        assert "must not contain" in result.content[0].text
+
+
+def test_server_config_rejects_separator_in_name():
+    with pytest.raises(ValueError, match="must not contain"):
+        ServerConfig(name="acme__pay", url="https://example.com/mcp")
+
+
+def test_local_tool_rejects_separator_in_name():
+    from extensible_mcp import LocalTool
+
+    async def handler(arguments: dict) -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="must not contain"):
+        LocalTool(
+            name="acme__pay",
+            description="x",
+            input_schema={"type": "object"},
+            handler=handler,
+        )

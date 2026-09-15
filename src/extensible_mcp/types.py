@@ -8,6 +8,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _reject_separator(name: str, what: str) -> None:
+    """``__`` splits a qualified tool name back into server and tool, so a
+    name containing it re-parses as a *different* server — which would let
+    the call escape per-server policy routing and call-side access control
+    while still being dispatched. Rejected at construction, everywhere."""
+    if "__" in name:
+        raise ValueError(
+            f"{what} name {name!r} must not contain '__' — that separator is "
+            "reserved for qualified tool names ({server}__{tool})."
+        )
+
+
 @dataclass
 class ServerConfig:
     """Configuration for a downstream MCP server.
@@ -26,6 +38,7 @@ class ServerConfig:
             raise ValueError(f"Server '{self.name}' must have either 'command' or 'url'")
         if self.command and self.url:
             raise ValueError(f"Server '{self.name}' must have 'command' or 'url', not both")
+        _reject_separator(self.name, "Server")
 
 
 @dataclass
@@ -73,6 +86,9 @@ class LocalTool:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], Awaitable[Any]]
+
+    def __post_init__(self) -> None:
+        _reject_separator(self.name, "Local tool")
 
 
 @dataclass

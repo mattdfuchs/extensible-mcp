@@ -443,6 +443,13 @@ def create_server(
         vs: VectorStore = ctx.lifespan_context["vector_store"]
         client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
 
+        if "__" in server_name:
+            return (
+                f"Error: Server name '{server_name}' must not contain '__'. That "
+                "separator is reserved for qualified tool names; a server named "
+                "with it would be routed as a different server."
+            )
+
         load_request = ServerLoadRequest(server_name=server_name, url=url)
         load_result = await server_load_pipeline.apply(load_request)
         if not load_result.allowed:
