@@ -5,6 +5,8 @@ semver's `0.x` range deliberately — the public API isn't frozen yet.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-15
+
 **README overhaul: security first**
 
 The root README's "Why" is now two sections, `Why: Security` and
