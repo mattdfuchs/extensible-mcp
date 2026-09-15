@@ -1,126 +1,122 @@
-# Family-network demo
+# Running the demo locally
 
-Two wallets (kid, parent), one DID admin, two mock backends, the proxy
-in the middle. The kid asks the LLM to do something on the household's
-account; the LLM has to collect signed credentials from both wallets
-before the proxy will let the call through.
+Two ways to see the enforcement path without Docker: a single self-contained
+command, and the full human-in-the-loop version with real wallets. Both are
+decided by the same policy bundle — the wallets supply *evidence*, never
+authority.
 
-Two scenarios ship out of the box:
+For the containerized version with a browser chat window and a passkey page,
+see [`../deploy/`](../deploy/) instead.
 
-- **`payments__spend`** — the original toy demo. The kid spends money
-  at a vendor; debits a running balance.
-- **`pizza__order_pizza`** — a more concrete scenario built on the same
-  gating: the kid orders a pizza from a known store; the order is
-  recorded to a log file you can `tail -f` in a separate terminal so a
-  demo audience can watch orders arrive in real time. See
-  [`n8n/README.md`](n8n/) for an end-to-end walkthrough with an LLM
-  driving the order via n8n's AI Agent.
+## The short version: one command, no wallets
 
-The mechanics below describe the spend demo because it's the simplest;
-pizza-ordering is the same shape with a different tool call.
+```bash
+uv run python examples/boot_demo.py
+```
 
-Scope note: this walkthrough is the **original two-VC wallet path**, run via
-`proxy_server.py` with `VCCallFilter` as the authority. It is not the current
-commerce demo — that one moves the decision into a policy bundle and adds
-passkey approvals, merchant-signed invoices, and settlement, gating three
-tools at once via `family_proxy_server.py`. See [`../deploy/`](../deploy/) for
-it, and [the package README](../README.md#read-this-first-two-enforcement-paths-three-rails)
-for how the two relate. Both still work; this is the simpler one to run by
-hand in three terminals.
+This mints an admin, a kid and a parent in-process, admits a `payments`
+downstream to the `family_spend_prod` bundle through a `BundleRouter`, and
+drives four calls through a real server lifespan. No network, no keys on
+disk, nothing to clean up.
 
-## What gets gated
+What it shows, in order:
 
-The proxy is configured with
-`gated_tools: ["payments__spend", "pizza__order_pizza"]`. Calling either
-of those tools requires both:
+1. **`search_tools`** surfaces the governed `spend` tool with the credential
+   requirements the augmenter derives from the bundle's own guidance — the
+   obligation arrives as part of the tool definition, not as a side channel.
+2. **A call with no credentials** is refused before it reaches the
+   downstream: `Policy input could not be assembled: tool call has no field 'requestVC'`.
+3. **$5 with the kid's request VC** is allowed — the solo tier — and the
+   downstream actually debits: `New balance: $95.00`.
+4. **$50 with only the kid's VC** is denied, and the denial explains itself:
 
-1. A signed **ActionRequest** VC from the kid's wallet (kid's `did:key`
-   issuer), with a current FamilyMembership VC issued by the family admin
-   (`did:web:family.example.com`).
-2. A signed **ActionAuthorization** VC from the parent's wallet (parent's
-   `did:key` issuer), bound to the request by `jti` and SHA-256 hash of the
-   request's compact JWS, plus the parent's own FamilyMembership VC.
+   ```
+   - Path 1: required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 1000.
+   - Path 2: provide `authorizationVC`, signed by the parent, which was not supplied.
+   ```
 
-`balance` is not gated and can be called without VCs.
+   Add the parent's authorization and the same call is allowed.
 
-## Setup
+That last message is the guidance layer rendering `failed_checks` against
+`guidance.json`: two alternative paths through the policy, each listing what
+it still needs. Nothing in it is hand-written prose about this scenario.
 
-From this package's root (`examples/agentic-commerce-demo`):
+## The full version: real wallets, real approvals
 
 ```bash
 uv run python examples/setup.py
 ```
 
-This creates a `workspace/` directory with:
-
-- `keys/` — admin, kid, parent JWK private keys (chmod 0600)
-- `public/.well-known/did.json` — admin DID document
-- `memberships/{kid,parent}.jwt` — admin-signed membership credentials
-- `vc-config.json` — proxy-side VC configuration (gated tools, trusted
-  admin DIDs, the admin's DID document embedded so the proxy doesn't need
-  real HTTPS resolution)
-- `config.json` — extensible-mcp config that launches both
-  `payments_server.py` and `pizza_server.py` as stdio downstream servers
-- `pizza-orders.log` — created on first pizza order; `tail -f` to watch
-
-## Run
-
-In three separate terminals (the exact commands are printed by setup.py):
+Creates `workspace/` with admin, kid and parent keys (`chmod 0600`), the
+admin's DID document, admin-signed membership credentials for both members,
+and `vc-config.json`. It prints the exact commands for the next steps; the
+shape is:
 
 ```bash
-# 1. Kid's wallet on :7401
+# 1. kid's wallet
 uv run --package household-identity wallet run \
     --keys-dir workspace/keys --label kid --port 7401 \
     --membership-path workspace/memberships/kid.jwt
 
-# 2. Parent's wallet on :7402
+# 2. parent's wallet
 uv run --package household-identity wallet run \
     --keys-dir workspace/keys --label parent --port 7402 \
     --membership-path workspace/memberships/parent.jwt
 
-# 3. The proxy (stdio MCP server)
-uv run python examples/proxy_server.py \
-    --config workspace/config.json --vc-config workspace/vc-config.json
+# 3. the proxy
+uv run python examples/family_proxy_server.py \
+    --vc-config workspace/vc-config.json --host 0.0.0.0 --port 7400
+
+# 4. watch orders arrive
+tail -f workspace/pizza-orders.log
 ```
 
-Point an MCP-aware client (Claude Desktop, an MCP test harness) at the
-stdio command in (3).
+Point an MCP-aware client at `http://127.0.0.1:7400/mcp` and ask it to
+order a pizza.
 
-## The walkthrough
+### What gets gated, and by what
 
-Kid sits at the kid wallet's terminal. The LLM (running in the MCP client)
-is told: "spend $15 at the pizza shop." It then:
+`family_proxy_server.py` gates three actions, each routed to its own bundle:
 
-1. `search_tools("spend money at a vendor")` — the proxy returns the
-   `payments__spend` tool with an augmented schema. The schema now lists
-   `vc_request` and `vc_authorization` as required parameters and the
-   description explains how to obtain them.
+| Action | Evidence | Bundle |
+|---|---|---|
+| `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
+| `spend` | a passkey assertion bound to the exact terms | `family_spend_webauthn` |
+| `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
 
-2. `request_action_vc(action="spend", details={"amount": 15.0, "vendor":
-   "pizza"})` — the proxy POSTs to the kid wallet at :7401. The kid
-   wallet prints the request and prompts on stdin. Kid types `y`. The
-   wallet signs and returns a bundle `{token, membership}`.
+The two terminals above cover `order_pizza`. The passkey rails additionally
+need the approval service, which serves the browser page the human taps:
 
-3. `request_authorization_vc(request=<kid's bundle>, scope={"max_amount":
-   20.0})` — the proxy POSTs to the parent wallet at :7402. The parent
-   wallet prints the request the kid signed and prompts on stdin. Parent
-   types `y`. The wallet signs an ActionAuthorization VC bound to the
-   kid's request and returns its own bundle.
+```bash
+APPROVAL_HOST=0.0.0.0 uv run python examples/approval_service.py
+```
 
-4. `call_tool("payments__spend", {amount: 15.0, vendor: "pizza",
-   vc_request: <kid bundle>, vc_authorization: <parent bundle>})` — the
-   proxy's VCCallFilter:
-   - verifies both VC signatures against the issuer `did:key`s
-   - checks the authorization is bound to this request (jti + hash)
-   - verifies both membership VCs against the admin's `did:web` key
-   - checks the temporal validity of all three credentials
+### The pizza walkthrough
 
-   On success, the VC arguments are stripped and `payments__spend(amount,
-   vendor)` is forwarded to the downstream server. The kid sees: "OK.
-   Spent $15.00 at pizza. New balance: $85.00."
+The kid tells the assistant to order a pizza. It then:
 
-If kid types `n` at step 2 (or parent at step 3), the meta-tool returns
-an error and the call never reaches the payments backend.
+1. `search_tools("order a pizza")` — `pizza__order_pizza` comes back with
+   `vc_request` and `vc_authorization` added to its schema, and a
+   description explaining how to obtain them.
+2. `request_action_vc(...)` — the proxy POSTs the kid's wallet on :7401,
+   which prints the request and waits. The kid approves; the wallet returns
+   a signed bundle. Keys never leave the wallet.
+3. For anything over $10, `request_authorization_vc(...)` does the same at
+   the parent's wallet on :7402, signing an authorization bound to the
+   kid's request by `jti` and a SHA-256 hash of its compact JWS.
+4. `call_tool("pizza__order_pizza", {...})` with both bundles attached. The
+   bundle's policy then checks, among other things, that what the kid
+   actually signed matches the call being made — the amount and the store,
+   field by field. Mismatched evidence is refused however valid its
+   signatures are.
+5. On success the credential arguments are stripped and the bare order is
+   forwarded downstream, which appends to `pizza-orders.log`.
+
+Decline at step 2 or 3 and the call never reaches the pizza shop.
+
+Both wallets also support a browser approval page instead of the terminal
+prompt — add `--approve web` and open `/ui` on the wallet's port. That is
+what the containerized demo uses.
 
 ## Cleanup
 

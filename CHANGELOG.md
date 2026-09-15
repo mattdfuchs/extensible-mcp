@@ -7,6 +7,27 @@ semver's `0.x` range deliberately — the public API isn't frozen yet.
 
 ## [0.3.0] - 2026-09-15
 
+**Removed: the pre-bundle enforcement path (`VCCallFilter`)**
+
+The demo package carried two implementations of the same job. `VCCallFilter`
+verified a credential chain in hand-written Python; the policy-bundle engine
+does it declaratively. Only the second one compared the signed evidence to
+the call it was authorizing — the hand-coded filter checked signatures,
+chain and freshness, then forwarded whatever arguments it was given, so a
+credential signed for $1 would pass a call for $500. The shadow harness had
+found this and a test asserted it as expected behaviour, which is what kept
+it invisible.
+
+None of it had ever shipped: `v0.1.0` is the only released tag and contains
+none of this package. So rather than patch a path the bundle engine already
+supersedes, it is gone — `vc_filter.py`, `shadow.py`, `extend.py`
+(`extend_server`), `schema_augmenter.py`, `examples/proxy_server.py`,
+`examples/price_tier_filter.py`, and their tests. Every gated call now goes
+through a bundle, and the threshold that used to live in a Python filter is
+a tier in the policy. `examples/README.md` is rewritten around the two
+surviving entry points: `boot_demo.py` for a one-command scripted run, and
+`family_proxy_server.py` for the real thing with wallets.
+
 **README overhaul: security first**
 
 The root README's "Why" is now two sections, `Why: Security` and

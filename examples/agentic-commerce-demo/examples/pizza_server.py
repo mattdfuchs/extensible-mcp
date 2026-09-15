@@ -42,8 +42,8 @@ LOG_FILE = Path(os.environ.get("PIZZA_ORDERS_LOG", "pizza-orders.log"))
 # Menus chosen so the three policy tiers are reachable from realistic
 # prompts: cheese slice or small cheese stays under $10 (no parent VC
 # needed); any large pizza lands in the $10–$200 band (parent VC
-# required); 20+ of anything blows past the $200 hard cap and is
-# rejected outright by the proxy's PriceTierCallFilter.
+# required); 20+ of anything blows past the $200 hard cap and satisfies
+# no tier of the governing policy, so it is refused outright.
 STORES: dict[str, dict[str, Any]] = {
     "Dominos": {
         "eta_minutes": 30,

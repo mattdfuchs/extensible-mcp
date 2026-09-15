@@ -14,7 +14,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Make examples/ importable like proxy_server.py does in production.
+# Make examples/ importable like family_proxy_server.py does in production.
 _EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 sys.path.insert(0, str(_EXAMPLES))
 from console_server import _tail  # noqa: E402

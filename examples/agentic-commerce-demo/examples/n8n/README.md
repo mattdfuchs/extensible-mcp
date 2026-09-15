@@ -21,10 +21,9 @@ the chain, and `pizza__order_pizza` runs.
 
 3. **Proxy running with HTTP transport.** A third terminal:
    ```bash
-   uv run python examples/proxy_server.py \
-       --config workspace/config.json \
+   uv run python examples/family_proxy_server.py \
        --vc-config workspace/vc-config.json \
-       --transport http --host 0.0.0.0 --port 7400
+       --host 0.0.0.0 --port 7400
    ```
    `0.0.0.0` matters — n8n is in a Docker container and reaches the
    proxy via `host.docker.internal:7400`, which only works if the
@@ -134,10 +133,10 @@ threshold check, and an order lands in the log.
 **Tier 3 (over $200, hard cap):**
 > Order 20 large pepperoni pizzas from Dominos.
 
-Total $300.00; the proxy denies at `PriceTierCallFilter` before
-either wallet is contacted (no VCs requested at all, because the LLM
-shouldn't bother). The LLM should report back that the household
-policy rejected the order.
+Total $300.00, which satisfies no tier of the governing policy — the
+solo tier caps at $10 and the full chain at $200 — so the call is denied
+however much evidence is attached. The LLM should report back that the
+household policy rejected the order.
 
 ## Workflow JSON
 

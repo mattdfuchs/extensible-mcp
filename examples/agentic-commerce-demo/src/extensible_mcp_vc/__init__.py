@@ -1,21 +1,22 @@
 # Copyright (c) 2026 Matthew Fuchs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verifiable Credentials CallFilter and meta-tools for extensible-mcp."""
+"""Signed-evidence meta-tools and wire adapters for extensible-mcp.
+
+Enforcement itself lives in ``extensible_mcp``'s policy-bundle engine: a
+bundle decides, and the pieces here supply the evidence it decides over --
+tools the LLM calls to obtain a wallet-signed credential or a passkey
+approval, the canonical invoice form a merchant signs, and the settlement
+and fulfillment legs. See ``examples/boot_demo.py`` for the smallest
+end-to-end run and ``examples/family_proxy_server.py`` for the full one.
+"""
 
 from .config import VCConfig
 from .did_resolver import DidResolutionError, DidWebResolver, did_web_url
-from .extend import extend_server
-from .schema_augmenter import VCSchemaAugmenter
-from .vc_filter import VCCallFilter, VCVerificationError
 
 __all__ = [
     "DidResolutionError",
     "DidWebResolver",
-    "VCCallFilter",
     "VCConfig",
-    "VCSchemaAugmenter",
-    "VCVerificationError",
     "did_web_url",
-    "extend_server",
 ]

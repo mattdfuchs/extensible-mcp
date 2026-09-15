@@ -47,16 +47,9 @@ class VCConfig:
     callback_base_url: str = ""
     callback_timeout_seconds: float = 150.0
     # Tools where vc_request is mandatory but vc_authorization is optional.
-    # For these, the proxy verifies any VCs present and leaves a marker in
-    # the call arguments (``_verified_vcs``) so a downstream policy filter
-    # can enforce conditional rules — e.g. "require parental auth only
-    # for orders over $10". Patterns use ``fnmatch`` like ``gated_tools``.
+    # Tools where the approver's credential is conditional rather than
+    # always required — e.g. "parental authorization only above $10". The
+    # condition itself is a policy decision, expressed as a tier in the
+    # bundle governing the tool. Patterns use ``fnmatch`` like
+    # ``gated_tools``.
     optional_authorization_tools: list[str] = field(default_factory=list)
-    # Shadow-mode migration. When set,
-    # a policy bundle at this directory is evaluated alongside
-    # VCCallFilter on every call — observed and recorded only; VCCallFilter
-    # remains the sole authority until cutover.
-    shadow_bundle_dir: str = ""
-    # Where the shadow harness appends its divergence log (one JSON record
-    # per call). Empty = in-memory records only (``server.shadow_harness``).
-    shadow_log_file: str = ""

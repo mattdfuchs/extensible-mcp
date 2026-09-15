@@ -3,8 +3,8 @@
 
 """HTTP proxy with a supplied policy bundle as the live authority AND the real wallets.
 
-Unlike ``proxy_server.py`` (hand-coded ``VCCallFilter`` as authority) and
-``boot_demo.py`` (bundle authority but keys minted in-process), this wires the
+Unlike ``boot_demo.py`` (same bundle authority, but keys minted in-process
+and calls scripted rather than driven by a human), this wires the
 **policy-bundle enforcement path** — ``BundleRouter`` + ``VCPolicyFilter`` over
 ``family_spend_prod`` — together with the **real wallet meta-tools**, so a run
 drives the actual kid/parent shells. It is the "run against the existing

@@ -3,8 +3,8 @@
 
 """Boot the proxy with a supplied policy bundle as the live enforcer.
 
-Unlike ``proxy_server.py`` (which runs the hand-coded ``VCCallFilter``), this
-wires the **core** ``extensible-mcp`` enforcement path around the artifacts
+This is the smallest complete run of the enforcement path: it wires the
+**core** ``extensible-mcp`` machinery around the artifacts
 the bundle governs: it admits a downstream ``payments`` server to the
 ``family_spend_prod`` bundle via a ``BundleRouter``, augments search results
 from the bundle's guidance, and enforces every call with ``VCPolicyFilter``

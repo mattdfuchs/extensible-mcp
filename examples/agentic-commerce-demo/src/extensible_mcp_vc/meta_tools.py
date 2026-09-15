@@ -15,8 +15,9 @@ be when they were registered directly on the server.
 
 The LLM never holds long-lived signing keys; it asks the proxy to ask the
 wallets. The wallets prompt their humans and return signed VC bundles. The
-LLM then passes those bundles as ``vc_request`` and ``vc_authorization``
-arguments to a gated tool, where the VCCallFilter verifies and strips them.
+LLM then passes those bundles as arguments to a gated tool, where the
+governing policy verifies them against the rest of the call and the filter
+strips them before the call is forwarded.
 
 The VC tools return an *object* (not a JSON string) so the bundle shape
 matches the augmented schema and the LLM can round-trip the value through

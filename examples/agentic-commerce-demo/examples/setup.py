@@ -79,8 +79,8 @@ def main() -> None:
         "gated_tools": ["payments__spend"],
         # pizza__order_pizza needs the kid's request VC always, but the
         # parent's authorization VC is only required for orders above the
-        # household-policy threshold (enforced in examples/price_tier_filter.py
-        # by PriceTierCallFilter, wired in by examples/proxy_server.py).
+        # household-policy threshold. That threshold is a tier in the
+        # family_spend_prod bundle, not a Python filter.
         "optional_authorization_tools": ["pizza__order_pizza"],
         "preresolved_did_documents": {admin_did: admin_doc},
         # Async wallet approval. The wallet returns 202 with an approval_id;
@@ -145,17 +145,32 @@ def main() -> None:
         f"--membership-path {ws}/memberships/parent.jwt"
     )
     print(
-        f"  3. uv run python {examples_dir}/proxy_server.py "
-        f"--config {ws}/config.json --vc-config {ws}/vc-config.json "
-        "--transport http --host 0.0.0.0 --port 7400"
+        f"  3. uv run python {examples_dir}/family_proxy_server.py "
+        f"--vc-config {ws}/vc-config.json --host 0.0.0.0 --port 7400"
     )
     print(f"  4. tail -f {ws.resolve()}/pizza-orders.log")
     print()
     print(
-        "Point any MCP-aware client at the proxy (Claude Desktop via stdio, "
-        "n8n / others via HTTP on http://127.0.0.1:7400/mcp) and try:"
+        "Every gated call is decided by a policy bundle, so the wallets above "
+        "supply evidence rather than authority. order_pizza runs on the two-VC "
+        "wallet rail and needs only those two terminals; the passkey rails "
+        "(spend, charge_invoice) additionally need the approval service:"
+    )
+    print(
+        f"  APPROVAL_HOST=0.0.0.0 uv run python {examples_dir}/approval_service.py"
+    )
+    print()
+    print(
+        "Point any MCP-aware client at the proxy (HTTP on "
+        "http://127.0.0.1:7400/mcp) and try:"
     )
     print("  \"order a large pepperoni from Dominos delivered to 123 Main St\"")
+    print()
+    print(
+        "For the whole thing containerized, with a browser chat window and a "
+        "passkey page, see deploy/README.md instead. For the smallest possible "
+        f"run with no wallets at all: uv run python {examples_dir}/boot_demo.py"
+    )
 
 
 if __name__ == "__main__":

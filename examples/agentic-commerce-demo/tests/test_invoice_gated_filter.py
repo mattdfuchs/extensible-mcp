@@ -33,7 +33,7 @@ from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.types import CallRequest
 from extensible_mcp.wasm_policy import default_builtins
 
-# Make examples/ importable like proxy_server.py does in production.
+# Make examples/ importable like family_proxy_server.py does in production.
 _EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 sys.path.insert(0, str(_EXAMPLES))
 from family_proxy_server import InvoiceGatedFilter  # noqa: E402
