@@ -1,6 +1,6 @@
 [project]
 name = "extensible-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP proxy that replaces tool definitions with semantic search"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -11,7 +11,6 @@ dependencies = [
     "mcp>=1.0.0",
     "fastembed>=0.6.0",
     "numpy>=1.24.0",
-    "regopy>=0.4.0",
 ]
 
 [project.scripts]
@@ -33,8 +32,39 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
 
+[project.optional-dependencies]
+# WASM policy engine: evaluate OPA-compiled policies in-process, with crypto
+# builtins (io.jwt.verify_*, crypto.sha256) supplied from Python. joserfc
+# matches the JOSE choices of the identity layer for credential interop.
+# jsonschema validates assembled inputs against a bundle's manifest.
+wasm = [
+    "wasmtime>=24.0",
+    "joserfc>=1.6.5",
+    "jsonschema>=4.18",
+]
+# RegoPolicyFilter's interpreter. Optional: regopy ships no wheels for some
+# platforms (e.g. linux/arm64) and its sdist build needs git + a C++
+# toolchain; the filter lazy-imports it and errors helpfully when absent.
+rego = [
+    "regopy>=0.4.0",
+]
+# CEL policy engine: a second PolicyEngine implementation (see bundle.py /
+# cel_policy.py), proving the bundle format is engine-plural rather than
+# tied to one supplier's toolchain. Pure Python, no compiled sandbox.
+cel = [
+    "cel-python>=0.5.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "wasmtime>=24.0",
+    "joserfc>=1.6.5",
+    "jsonschema>=4.18",
+    "regopy>=0.4.0",
+    "cel-python>=0.5.0",
 ]
+
+[tool.uv.workspace]
+members = ["examples/agentic-commerce-demo", "examples/identity"]

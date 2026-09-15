@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -57,6 +58,24 @@ class ToolRecord:
 
 
 @dataclass
+class LocalTool:
+    """An in-process tool the embedder registers alongside downstream
+    servers. Dispatched through the same call_tool/CallFilterPipeline path
+    as a downstream tool — discovered via search_tools, invoked via
+    call_tool, gated by every CallFilter exactly like a downstream one.
+
+    ``name`` must not contain "__" — that separator is reserved for the
+    {server}__{tool} downstream namespace — which is what gives a local
+    tool ``server_name=""`` wherever call/response records key on it.
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    handler: Callable[[dict[str, Any]], Awaitable[Any]]
+
+
+@dataclass
 class SearchResult:
     """A tool matched by vector search, with its similarity score."""
 
@@ -97,3 +116,35 @@ class ServerLoadResult:
 
     allowed: bool
     reason: str = ""
+
+
+@dataclass
+class CallResponse:
+    """Input to the response filter pipeline.
+
+    ``content`` is the list of MCP content blocks returned by the downstream
+    server (typically ``mcp.types.TextContent`` and friends). Filters may
+    inspect, modify, or replace these blocks.
+    """
+
+    tool_name: str
+    arguments: dict[str, Any]
+    server_name: str
+    content: list[Any] = field(default_factory=list)
+    is_error: bool = False
+
+
+@dataclass
+class ResponseFilterResult:
+    """Output from a response filter.
+
+    If ``allowed=False``, the pipeline short-circuits and the LLM sees an
+    error string built from ``reason`` instead of the content. Otherwise
+    ``content`` and ``is_error`` are passed to the next filter (or to the
+    final response formatting).
+    """
+
+    allowed: bool
+    reason: str = ""
+    content: list[Any] = field(default_factory=list)
+    is_error: bool = False

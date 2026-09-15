@@ -1,0 +1,143 @@
+{"type": "object",
+ "title": "WaSpendInput",
+ "required":
+ ["tool",
+  "arguments",
+  "requestVC",
+  "requesterMembership",
+  "webauthnOrigin",
+  "trustedAdminDids",
+  "now"],
+ "properties":
+ {"webauthnOrigin": {"type": "string"},
+  "trustedAdminDids": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+  "tool": {"type": "string"},
+  "requesterMembership": {"$ref": "#/definitions/Membership"},
+  "requestVC": {"$ref": "#/definitions/RequestVC"},
+  "now": {"$ref": "#/definitions/Timestamp"},
+  "arguments": {"$ref": "#/definitions/CallArgs"},
+  "approverEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
+  "approval": {"$ref": "#/definitions/WebAuthnApproval"}},
+ "description": "Input to the WebAuthn family-spend policy.",
+ "definitions":
+ {"WebAuthnApproval":
+  {"type": "object",
+   "required":
+   ["credentialId", "authenticatorData", "clientDataJSON", "signature"],
+   "properties":
+   {"signature": {"type": "string"},
+    "credentialId": {"type": "string"},
+    "clientDataJSON": {"type": "string"},
+    "authenticatorData": {"type": "string"}},
+   "additionalProperties": false},
+  "Timestamp": {"type": "integer", "minimum": 0},
+  "Role": {"type": "string", "enum": ["child", "parent"]},
+  "RequestVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties":
+   {"credentialSubject": {"$ref": "#/definitions/RequestSubject"}},
+   "additionalProperties": true},
+  "RequestVC":
+  {"type": "object",
+   "required": ["jws", "claims"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/RequestClaims"}},
+   "additionalProperties": false},
+  "RequestSubject":
+  {"type": "object",
+   "required": ["id", "requests"],
+   "properties":
+   {"requests": {"$ref": "#/definitions/RequestDetail"},
+    "id": {"type": "string"}},
+   "additionalProperties": true},
+  "RequestDetail":
+  {"type": "object",
+   "required": ["type", "amountCents", "merchant"],
+   "properties":
+   {"type": {"type": "string"},
+    "merchant": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": true},
+  "RequestClaims":
+  {"type": "object",
+   "required": ["iss", "nbf", "exp", "jti", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/RequestVcBody"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "jti": {"type": "string"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "PasskeyVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties":
+   {"credentialSubject": {"$ref": "#/definitions/PasskeySubject"}},
+   "additionalProperties": true},
+  "PasskeySubject":
+  {"type": "object",
+   "required": ["role", "publicKey"],
+   "properties":
+   {"role": {"$ref": "#/definitions/Role"}, "publicKey": {"type": "string"}},
+   "additionalProperties": true},
+  "PasskeyEnrollment":
+  {"type": "object",
+   "required": ["jws", "claims", "adminKey"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/PasskeyClaims"},
+    "adminKey": {"type": "string"}},
+   "additionalProperties": false},
+  "PasskeyClaims":
+  {"type": "object",
+   "required": ["iss", "sub", "nbf", "exp", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/PasskeyVcBody"},
+    "sub": {"type": "string"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "Membership":
+  {"type": "object",
+   "required": ["jws", "claims", "adminKey"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/MemClaims"},
+    "adminKey": {"type": "string"}},
+   "additionalProperties": false},
+  "MemVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties": {"credentialSubject": {"$ref": "#/definitions/MemSubject"}},
+   "additionalProperties": true},
+  "MemSubject":
+  {"type": "object",
+   "required": ["role"],
+   "properties": {"role": {"$ref": "#/definitions/Role"}},
+   "additionalProperties": true},
+  "MemClaims":
+  {"type": "object",
+   "required": ["iss", "sub", "nbf", "exp", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/MemVcBody"},
+    "sub": {"$ref": "#/definitions/DID"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "JWS":
+  {"type": "string",
+   "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"},
+  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"},
+  "CallArgs":
+  {"type": "object",
+   "required": ["amountCents", "merchant"],
+   "properties":
+   {"merchant": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": false}},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

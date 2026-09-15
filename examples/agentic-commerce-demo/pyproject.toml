@@ -1,0 +1,54 @@
+[project]
+name = "extensible-mcp-vc"
+version = "0.0.1"
+description = "Verifiable Credentials CallFilter for extensible-mcp"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Matthew Fuchs" }]
+dependencies = [
+    "anthropic>=0.40",
+    "cryptography>=42.0",
+    "extensible-mcp[wasm]",
+    "fastapi>=0.115",
+    "household-identity",
+    "httpx>=0.27",
+    "multiformats>=0.3",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+stripe = [
+    "stripe>=10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/extensible_mcp_vc"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/extensible_mcp_vc"]
+sources = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.uv.sources]
+extensible-mcp = { workspace = true }
+household-identity = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+# extensible-mcp and household-identity are both members of the workspace
+# rooted at the repo root (see ../../pyproject.toml [tool.uv.workspace]),
+# wired in as editable installs automatically. Once extensible-mcp is on
+# PyPI, this becomes a normal version pin in the [project] dependencies
+# above.

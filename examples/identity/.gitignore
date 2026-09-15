@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+.pytest_cache/
+*.egg
+.claude/
+
+# Private keys must never be committed
+keys/
+*.pem
+*.key
+*.jwk
+
+# Locally-hosted DID documents may be regenerated; user can decide what to commit
+did_documents/local/

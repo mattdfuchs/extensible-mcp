@@ -11,6 +11,8 @@ from typing import Any, Protocol
 from .types import (
     CallFilterResult,
     CallRequest,
+    CallResponse,
+    ResponseFilterResult,
     SearchResult,
     ServerLoadRequest,
     ServerLoadResult,
@@ -38,6 +40,10 @@ class AccessControlFilter:
         deny_patterns: list[str] | None = None,
         allow_servers: list[str] | None = None,
     ) -> None:
+        """``allow_servers`` scopes downstream MCP servers only — a local
+        tool (``server_name == ""``) is always exempt from it, since it was
+        never connected to any server in the first place. ``deny`` and
+        ``deny_patterns`` still apply to local tools by qualified name."""
         self.deny: set[str] = set(deny or [])
         self.deny_patterns: list[str] = list(deny_patterns or [])
         self.allow_servers: set[str] = set(allow_servers) if allow_servers else set()
@@ -48,7 +54,7 @@ class AccessControlFilter:
         for pattern in self.deny_patterns:
             if fnmatch.fnmatch(qualified_name, pattern):
                 return False
-        if self.allow_servers and server_name not in self.allow_servers:
+        if self.allow_servers and server_name and server_name not in self.allow_servers:
             return False
         return True
 
@@ -201,6 +207,41 @@ class RegoPolicyFilter:
             reason=reason,
             tool_name=request.tool_name,
             arguments=request.arguments,
+        )
+
+
+class ResponseFilter(Protocol):
+    async def check(self, response: CallResponse) -> ResponseFilterResult:
+        """Inspect or modify a tool response on its way back to the LLM."""
+        ...
+
+
+class ResponseFilterPipeline:
+    def __init__(self, filters: list[ResponseFilter] | None = None) -> None:
+        self.filters: list[ResponseFilter] = list(filters or [])
+
+    def add(self, f: ResponseFilter) -> None:
+        self.filters.append(f)
+
+    async def apply(self, response: CallResponse) -> ResponseFilterResult:
+        content = list(response.content)
+        is_error = response.is_error
+        for f in self.filters:
+            result = await f.check(
+                CallResponse(
+                    tool_name=response.tool_name,
+                    arguments=response.arguments,
+                    server_name=response.server_name,
+                    content=content,
+                    is_error=is_error,
+                )
+            )
+            if not result.allowed:
+                return result
+            content = result.content
+            is_error = result.is_error
+        return ResponseFilterResult(
+            allowed=True, content=content, is_error=is_error
         )
 
 

@@ -1,0 +1,131 @@
+{"type": "object",
+ "title": "ProdSpendInput",
+ "required":
+ ["tool",
+  "arguments",
+  "requestVC",
+  "requesterMembership",
+  "trustedAdminDids",
+  "now"],
+ "properties":
+ {"trustedAdminDids": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+  "tool": {"type": "string"},
+  "requesterMembership": {"$ref": "#/definitions/Membership"},
+  "requestVC": {"$ref": "#/definitions/RequestVC"},
+  "now": {"$ref": "#/definitions/Timestamp"},
+  "authorizationVC": {"$ref": "#/definitions/AuthorizationVC"},
+  "arguments": {"$ref": "#/definitions/CallArgs"},
+  "approverMembership": {"$ref": "#/definitions/Membership"}},
+ "description": "Input to the production family-spend policy.",
+ "definitions":
+ {"Timestamp": {"type": "integer", "minimum": 0},
+  "Role": {"type": "string", "enum": ["child", "parent"]},
+  "RequestVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties":
+   {"credentialSubject": {"$ref": "#/definitions/RequestSubject"}},
+   "additionalProperties": true},
+  "RequestVC":
+  {"type": "object",
+   "required": ["jws", "claims"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/RequestClaims"}},
+   "additionalProperties": false},
+  "RequestSubject":
+  {"type": "object",
+   "required": ["id", "requests"],
+   "properties":
+   {"requests": {"$ref": "#/definitions/RequestDetail"},
+    "id": {"type": "string"}},
+   "additionalProperties": true},
+  "RequestDetail":
+  {"type": "object",
+   "required": ["type", "amountCents", "merchant"],
+   "properties":
+   {"type": {"type": "string"},
+    "merchant": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": true},
+  "RequestClaims":
+  {"type": "object",
+   "required": ["iss", "nbf", "exp", "jti", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/RequestVcBody"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "jti": {"type": "string"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "Membership":
+  {"type": "object",
+   "required": ["jws", "claims", "adminKey"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/MemClaims"},
+    "adminKey": {"type": "string"}},
+   "additionalProperties": false},
+  "MemVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties": {"credentialSubject": {"$ref": "#/definitions/MemSubject"}},
+   "additionalProperties": true},
+  "MemSubject":
+  {"type": "object",
+   "required": ["role"],
+   "properties": {"role": {"$ref": "#/definitions/Role"}},
+   "additionalProperties": true},
+  "MemClaims":
+  {"type": "object",
+   "required": ["iss", "sub", "nbf", "exp", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/MemVcBody"},
+    "sub": {"$ref": "#/definitions/DID"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "JWS":
+  {"type": "string",
+   "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"},
+  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"},
+  "CallArgs":
+  {"type": "object",
+   "required": ["amountCents", "merchant"],
+   "properties":
+   {"merchant": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": false},
+  "AuthorizationVC":
+  {"type": "object",
+   "required": ["jws", "claims"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/AuthClaims"}},
+   "additionalProperties": false},
+  "AuthVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties": {"credentialSubject": {"$ref": "#/definitions/AuthSubject"}},
+   "additionalProperties": true},
+  "AuthSubject":
+  {"type": "object",
+   "required": ["id", "authorizes_request", "request_hash"],
+   "properties":
+   {"request_hash": {"type": "string"},
+    "id": {"type": "string"},
+    "authorizes_request": {"type": "string"}},
+   "additionalProperties": true},
+  "AuthClaims":
+  {"type": "object",
+   "required": ["iss", "nbf", "exp", "jti", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/AuthVcBody"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "jti": {"type": "string"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true}},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

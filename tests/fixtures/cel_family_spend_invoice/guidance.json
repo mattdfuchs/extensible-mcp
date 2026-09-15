@@ -1,0 +1,137 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   [{"sentence": "the invoice is not signed by a trusted merchant",
+     "remedy_class": "re-promptable",
+     "id": "t0.c0",
+     "condition":
+     "not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)"},
+    {"sentence": "the invoice has expired",
+     "remedy_class": "re-promptable",
+     "id": "t0.c1",
+     "condition": "not invoice_unexpired(input.invoice.canonical, input.now)"},
+    {"sentence": "the invoice total is not the amount this call would pay",
+     "remedy_class": "re-promptable",
+     "id": "t0.c2",
+     "condition":
+     "not invoice_total_is(input.invoice.canonical, input.arguments.amountCents)"},
+    {"sentence": "the invoice is not from the merchant this call names",
+     "remedy_class": "re-promptable",
+     "id": "t0.c3",
+     "condition":
+     "not invoice_merchant_is(input.invoice.canonical, input.arguments.merchantId)"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "t0.c4",
+     "condition":
+     "not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this invoice",
+     "remedy_class": "re-promptable",
+     "id": "t0.c5",
+     "condition":
+     "not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)"},
+    {"sentence": "the passkey is not enrolled by a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "t0.c6",
+     "condition":
+     "not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "t0.c7",
+     "condition":
+     "input.childEnrollment.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence": "required: input.arguments.amountCents <= 1000",
+     "remedy_class": "re-promptable",
+     "id": "t0.c8",
+     "condition": "input.arguments.amountCents > 1000"}]},
+  {"tier": 1,
+   "checks":
+   [{"sentence": "the invoice is not signed by a trusted merchant",
+     "remedy_class": "re-promptable",
+     "id": "t1.c0",
+     "condition":
+     "not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)"},
+    {"sentence": "the invoice has expired",
+     "remedy_class": "re-promptable",
+     "id": "t1.c1",
+     "condition": "not invoice_unexpired(input.invoice.canonical, input.now)"},
+    {"sentence": "the invoice total is not the amount this call would pay",
+     "remedy_class": "re-promptable",
+     "id": "t1.c2",
+     "condition":
+     "not invoice_total_is(input.invoice.canonical, input.arguments.amountCents)"},
+    {"sentence": "the invoice is not from the merchant this call names",
+     "remedy_class": "re-promptable",
+     "id": "t1.c3",
+     "condition":
+     "not invoice_merchant_is(input.invoice.canonical, input.arguments.merchantId)"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "t1.c4",
+     "condition":
+     "not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this invoice",
+     "remedy_class": "re-promptable",
+     "id": "t1.c5",
+     "condition":
+     "not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)"},
+    {"sentence": "the passkey is not enrolled by a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "t1.c6",
+     "condition":
+     "not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "t1.c7",
+     "condition":
+     "input.childEnrollment.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence": "required: 1000 < input.arguments.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "t1.c8",
+     "condition": "1000 >= input.arguments.amountCents"},
+    {"sentence": "required: input.arguments.amountCents <= 20000",
+     "remedy_class": "re-promptable",
+     "id": "t1.c9",
+     "condition": "input.arguments.amountCents > 20000"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "t1.c10",
+     "condition":
+     "not webauthn_verified(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this invoice",
+     "remedy_class": "re-promptable",
+     "id": "t1.c11",
+     "condition":
+     "not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)"},
+    {"sentence": "the passkey is not enrolled by a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "t1.c12",
+     "condition":
+     "not enrolled_as(input.parentEnrollment, input.parentApproval.credentialId, input.trustedAdminDids, input.now)"},
+    {"sentence":
+     "required: input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"",
+     "remedy_class": "re-promptable",
+     "id": "t1.c13",
+     "condition":
+     "input.parentEnrollment.claims.vc.credentialSubject.role != \"parent\""}]}],
+ "goal": "CanSpendInvoice",
+ "call_guards":
+ [{"required_in_tiers": [0, 1],
+   "field": "invoice",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "arguments",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "childApproval",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [1],
+   "field": "parentApproval",
+   "deciding_checks": ["t1.c8", "t1.c9"],
+   "always": false}],
+ "call_credentials": []}

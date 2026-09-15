@@ -1,0 +1,80 @@
+{
+  "tiers": [
+    {
+      "tier": 0,
+      "checks": [
+        "t0.c0",
+        "t0.c1",
+        "t0.c2",
+        "t0.c3",
+        "t0.c4",
+        "t0.c5",
+        "t0.c6",
+        "t0.c7",
+        "t0.c8"
+      ]
+    },
+    {
+      "tier": 1,
+      "checks": [
+        "t1.c0",
+        "t1.c1",
+        "t1.c2",
+        "t1.c3",
+        "t1.c4",
+        "t1.c5",
+        "t1.c6",
+        "t1.c7",
+        "t1.c8",
+        "t1.c9",
+        "t1.c10",
+        "t1.c11",
+        "t1.c12",
+        "t1.c13"
+      ]
+    }
+  ],
+  "package": "policybundle.examples.family_spend_invoice",
+  "guards": {
+    "t1.c13": [
+      "parentEnrollment"
+    ],
+    "t1.c12": [
+      "parentEnrollment",
+      "parentApproval"
+    ],
+    "t1.c11": [
+      "parentApproval"
+    ],
+    "t1.c10": [
+      "parentApproval",
+      "parentEnrollment"
+    ]
+  },
+  "engine": "cel-v1",
+  "checks": {
+    "t1.c9": "((input.arguments.amountCents <= 20000))",
+    "t1.c8": "((1000 < input.arguments.amountCents))",
+    "t1.c7": "((input.childEnrollment.claims.vc.credentialSubject.role == \"child\"))",
+    "t1.c6": "((((input.trustedAdminDids.exists(d, (((input.childEnrollment.claims.iss == d))))) && ((verify_eddsa(input.childEnrollment.jws, input.childEnrollment.adminKey))) && ((input.childEnrollment.claims.sub == input.childApproval.credentialId)) && (((((input.childEnrollment.claims.nbf <= input.now)) && ((input.now < input.childEnrollment.claims.exp))))))))",
+    "t1.c5": "((parse_json(base64url_decode(input.childApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical))))",
+    "t1.c4": "((verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.childApproval.clientDataJSON)).origin == input.webauthnOrigin))",
+    "t1.c3": "((parse_json(input.invoice.canonical).merchantId == input.arguments.merchantId))",
+    "t1.c2": "((parse_json(input.invoice.canonical).totalCents == input.arguments.amountCents))",
+    "t1.c13": "(has(input.parentEnrollment) && (input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"))",
+    "t1.c12": "(has(input.parentEnrollment) && has(input.parentApproval) && (((input.trustedAdminDids.exists(d, (((input.parentEnrollment.claims.iss == d))))) && ((verify_eddsa(input.parentEnrollment.jws, input.parentEnrollment.adminKey))) && ((input.parentEnrollment.claims.sub == input.parentApproval.credentialId)) && (((((input.parentEnrollment.claims.nbf <= input.now)) && ((input.now < input.parentEnrollment.claims.exp))))))))",
+    "t1.c11": "(has(input.parentApproval) && (parse_json(base64url_decode(input.parentApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical))))",
+    "t1.c10": "(has(input.parentApproval) && has(input.parentEnrollment) && (verify_webauthn(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.parentApproval.clientDataJSON)).origin == input.webauthnOrigin))",
+    "t1.c1": "((input.now < parse_json(input.invoice.canonical).exp))",
+    "t1.c0": "((((input.trustedMerchants.exists(m, (((parse_json(input.invoice.canonical).merchantId == m.merchantId)) && ((verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, m.key)))))))))",
+    "t0.c8": "((input.arguments.amountCents <= 1000))",
+    "t0.c7": "((input.childEnrollment.claims.vc.credentialSubject.role == \"child\"))",
+    "t0.c6": "((((input.trustedAdminDids.exists(d, (((input.childEnrollment.claims.iss == d))))) && ((verify_eddsa(input.childEnrollment.jws, input.childEnrollment.adminKey))) && ((input.childEnrollment.claims.sub == input.childApproval.credentialId)) && (((((input.childEnrollment.claims.nbf <= input.now)) && ((input.now < input.childEnrollment.claims.exp))))))))",
+    "t0.c5": "((parse_json(base64url_decode(input.childApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical))))",
+    "t0.c4": "((verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.childApproval.clientDataJSON)).origin == input.webauthnOrigin))",
+    "t0.c3": "((parse_json(input.invoice.canonical).merchantId == input.arguments.merchantId))",
+    "t0.c2": "((parse_json(input.invoice.canonical).totalCents == input.arguments.amountCents))",
+    "t0.c1": "((input.now < parse_json(input.invoice.canonical).exp))",
+    "t0.c0": "((((input.trustedMerchants.exists(m, (((parse_json(input.invoice.canonical).merchantId == m.merchantId)) && ((verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, m.key)))))))))"
+  }
+}

@@ -35,16 +35,16 @@ The proxy is a FastMCP server that connects to downstream MCP servers as a clien
 
 ### Filter pipelines
 
-Three independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ServerLoadFilterPipeline`) gate search, call, and server-load operations respectively. The only structurally enforced rule is `DiscoveredToolsFilter`: the LLM cannot call any tool it has not previously surfaced via `search_tools`. The other shipped filters (`AccessControlFilter`, `RegoPolicyFilter`, `ServerLoadAccessControlFilter`, `SimilarityThresholdFilter`) are reference implementations — third parties are expected to write their own and inject them via the `extra_search_filters`, `extra_call_filters`, `extra_load_filters` kwargs on `create_server`. Custom filters run after the built-ins.
+Four independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ResponseFilterPipeline`, `ServerLoadFilterPipeline`) gate search, call (request), response, and server-load operations respectively. The only structurally enforced rule is `DiscoveredToolsFilter`: the LLM cannot call any tool it has not previously surfaced via `search_tools`. The other shipped filters (`AccessControlFilter`, `RegoPolicyFilter`, `ServerLoadAccessControlFilter`, `SimilarityThresholdFilter`) are reference implementations — third parties are expected to write their own and inject them via the `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, `extra_load_filters` kwargs on `create_server`. Response filters can inspect or modify tool results on the way back to the LLM (no built-in response filters ship). Custom filters run after the built-ins.
 
 ### Key modules (`src/extensible_mcp/`)
 
 - **`server.py`** — FastMCP server setup, lifespan management, handler registration for the three meta-tools. `create_server(config, *, extra_*_filters=...)` is the public entry point for embedding the proxy in custom code; `main()` is the CLI entry.
 - **`client_manager.py`** — Manages stdio and Streamable HTTP connections to downstream MCP servers. Handles connect/reconnect, tool indexing, and proxying `call_tool` requests. Tools are namespaced as `{server_name}__{tool_name}`.
 - **`vector_store.py`** — In-memory vector index using FastEmbed (ONNX runtime) with `all-MiniLM-L6-v2`. Encodes tool definitions and does cosine similarity search via normalized dot product.
-- **`filters.py`** — Filter Protocols (`ToolFilter`, `CallFilter`, `ServerLoadFilter`), pipeline classes, and the built-in reference filters. The Protocols and request/result dataclasses are re-exported from `extensible_mcp/__init__.py` for third-party imports.
+- **`filters.py`** — Filter Protocols (`ToolFilter`, `CallFilter`, `ResponseFilter`, `ServerLoadFilter`), pipeline classes, and the built-in reference filters. The Protocols and request/result dataclasses are re-exported from `extensible_mcp/__init__.py` for third-party imports.
 - **`config.py`** — Loads JSON config (same `mcpServers` format as Claude Desktop). Config resolution order: `--config` flag → `EXTENSIBLE_MCP_CONFIG` env var → platform-specific default paths → `./config.json`.
-- **`types.py`** — Shared dataclasses: `ServerConfig`, `ToolRecord` (builds its own `embedding_text` from name + description + params), `SearchResult`, `CallRequest`, `CallFilterResult`, `ServerLoadRequest`, `ServerLoadResult`.
+- **`types.py`** — Shared dataclasses: `ServerConfig`, `ToolRecord` (builds its own `embedding_text` from name + description + params), `SearchResult`, `CallRequest`, `CallFilterResult`, `CallResponse`, `ResponseFilterResult`, `ServerLoadRequest`, `ServerLoadResult`.
 
 ### Testing
 

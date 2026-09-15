@@ -176,6 +176,101 @@ async def test_extra_call_filter_can_deny():
         assert "blocked by custom policy" in result.content[0].text
 
 
+@pytest.mark.asyncio
+async def test_extra_response_filter_modifies_output():
+    """A user-supplied ResponseFilter can rewrite the content the LLM sees."""
+    import mcp.types as mcp_types
+    from extensible_mcp import CallResponse, ResponseFilterResult
+
+    class Redactor:
+        async def check(self, response):
+            new_content = []
+            for block in response.content:
+                if isinstance(block, mcp_types.TextContent):
+                    new_content.append(
+                        mcp_types.TextContent(
+                            type="text",
+                            text=block.text.replace("30", "[REDACTED]"),
+                        )
+                    )
+                else:
+                    new_content.append(block)
+            return ResponseFilterResult(
+                allowed=True,
+                content=new_content,
+                is_error=response.is_error,
+            )
+
+    server = create_server(_make_config(), extra_response_filters=[Redactor()])
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        result = await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 10, "b": 20}},
+        )
+        text = result.content[0].text
+        assert "[REDACTED]" in text
+        assert "30" not in text
+
+
+@pytest.mark.asyncio
+async def test_extra_response_filter_can_deny():
+    """A ResponseFilter returning allowed=False replaces the result with an error."""
+    from extensible_mcp import ResponseFilterResult
+
+    class BlockingResponseFilter:
+        async def check(self, response):
+            return ResponseFilterResult(
+                allowed=False,
+                reason="response blocked: contained sensitive data",
+                content=response.content,
+                is_error=response.is_error,
+            )
+
+    server = create_server(
+        _make_config(), extra_response_filters=[BlockingResponseFilter()]
+    )
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        result = await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
+        )
+        text = result.content[0].text
+        assert "response blocked: contained sensitive data" in text
+
+
+@pytest.mark.asyncio
+async def test_extra_response_filter_runs_after_call_filter():
+    """Response filter only sees a successful call; rejected calls don't reach it."""
+    from extensible_mcp import ResponseFilterResult
+
+    invoked: list[str] = []
+
+    class TrackingResponseFilter:
+        async def check(self, response):
+            invoked.append(response.tool_name)
+            return ResponseFilterResult(
+                allowed=True,
+                content=response.content,
+                is_error=response.is_error,
+            )
+
+    # Call filter denies upfront via the access-control deny list.
+    server = create_server(
+        _make_config(deny=["mock__add_numbers"]),
+        extra_response_filters=[TrackingResponseFilter()],
+    )
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        await client.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
+        )
+        # The call was blocked at the call-filter stage; response filter never ran.
+        assert invoked == []
+
+
 try:
     import regopy  # noqa: F401
     HAS_REGOPY = True
@@ -200,3 +295,95 @@ async def test_rego_policy_blocks_call():
         )
         text = result.content[0].text
         assert "delete operations are not allowed" in text.lower()
+
+
+def _make_add_local_tool():
+    from extensible_mcp import LocalTool
+
+    async def handler(arguments: dict) -> dict:
+        return {"sum": arguments["a"] + arguments["b"]}
+
+    return LocalTool(
+        name="local_add_numbers",
+        description="Add two numbers (in-process, not a downstream tool).",
+        input_schema={
+            "type": "object",
+            "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+            "required": ["a", "b"],
+        },
+        handler=handler,
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_tool_absent_from_list_but_found_by_search():
+    """A local tool is dispatched like a downstream one, not listed like one:
+    it never appears in list_tools() (same as every downstream tool), but
+    search_tools finds it exactly like a downstream tool would."""
+    server = create_server(_make_config(), local_tools=[_make_add_local_tool()])
+    async with Client(server) as client:
+        tools = await client.list_tools()
+        assert {t.name for t in tools} == {"search_tools", "call_tool", "load_mcp_server"}
+
+        search_result = await client.call_tool("search_tools", {"query": "add two numbers", "top_k": 5})
+        assert "local_add_numbers" in search_result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_local_tool_rejected_without_prior_search():
+    """DiscoveredToolsFilter gates a local tool exactly like a downstream one."""
+    server = create_server(_make_config(), local_tools=[_make_add_local_tool()])
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "call_tool", {"tool_name": "local_add_numbers", "arguments": {"a": 1, "b": 2}}
+        )
+        assert "not been discovered" in result.content[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_local_tool_dispatches_after_search():
+    """After search_tools discovers it, call_tool dispatches to the local
+    handler directly — no downstream MCP round trip involved."""
+    server = create_server(_make_config(), local_tools=[_make_add_local_tool()])
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add two numbers", "top_k": 5})
+        result = await client.call_tool(
+            "call_tool", {"tool_name": "local_add_numbers", "arguments": {"a": 5, "b": 7}}
+        )
+        assert "12" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_local_tool_can_be_denied_by_name():
+    """AccessControlFilter's deny list applies to local tools by name too."""
+    server = create_server(
+        _make_config(deny=["local_add_numbers"]), local_tools=[_make_add_local_tool()]
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "call_tool", {"tool_name": "local_add_numbers", "arguments": {"a": 1, "b": 2}}
+        )
+        assert "blocked" in result.content[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_local_tool_exempt_from_allow_servers():
+    """allow_servers scopes downstream MCP servers only — a local tool
+    (server_name="") must not be silently blocked by it, even when the only
+    configured downstream server is itself in the allow-list."""
+    config = Config(
+        servers=[
+            ServerConfig(name="mock", command=sys.executable, args=[MOCK_SERVER_PATH]),
+        ],
+        filters=FiltersConfig(
+            similarity_threshold=0.0,
+            access_control=AccessControlConfig(allow_servers=["mock"]),
+        ),
+    )
+    server = create_server(config, local_tools=[_make_add_local_tool()])
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add two numbers", "top_k": 5})
+        result = await client.call_tool(
+            "call_tool", {"tool_name": "local_add_numbers", "arguments": {"a": 3, "b": 4}}
+        )
+        assert "7" in result.content[0].text

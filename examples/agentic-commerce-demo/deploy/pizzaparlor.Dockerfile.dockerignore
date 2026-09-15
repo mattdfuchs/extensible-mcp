@@ -1,0 +1,12 @@
+# Build context is the repo root (mcp-alternative) — keep the copy lean.
+**/.git
+**/.venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.pytest_cache
+**/.ruff_cache
+examples/agentic-commerce-demo/workspace
+# never bake secrets into image layers
+examples/agentic-commerce-demo/.env
+**/.env

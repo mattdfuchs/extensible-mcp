@@ -1,0 +1,91 @@
+{"type": "object",
+ "title": "InvoiceSpendInput",
+ "required":
+ ["arguments",
+  "invoice",
+  "trustedMerchants",
+  "childApproval",
+  "childEnrollment",
+  "webauthnOrigin",
+  "trustedAdminDids",
+  "now"],
+ "properties":
+ {"webauthnOrigin": {"type": "string"},
+  "trustedMerchants":
+  {"type": "array", "items": {"$ref": "#/definitions/TrustedMerchant"}},
+  "trustedAdminDids": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+  "parentEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
+  "parentApproval": {"$ref": "#/definitions/WebAuthnApproval"},
+  "now": {"$ref": "#/definitions/Timestamp"},
+  "invoice": {"$ref": "#/definitions/Invoice"},
+  "childEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
+  "childApproval": {"$ref": "#/definitions/WebAuthnApproval"},
+  "arguments": {"$ref": "#/definitions/InvoiceArgs"}},
+ "description": "Input to the invoice family-spend policy.",
+ "definitions":
+ {"WebAuthnApproval":
+  {"type": "object",
+   "required":
+   ["credentialId", "authenticatorData", "clientDataJSON", "signature"],
+   "properties":
+   {"signature": {"type": "string"},
+    "credentialId": {"type": "string"},
+    "clientDataJSON": {"type": "string"},
+    "authenticatorData": {"type": "string"}},
+   "additionalProperties": false},
+  "TrustedMerchant":
+  {"type": "object",
+   "required": ["merchantId", "key"],
+   "properties": {"merchantId": {"type": "string"}, "key": {"type": "string"}},
+   "additionalProperties": false},
+  "Timestamp": {"type": "integer", "minimum": 0},
+  "Role": {"type": "string", "enum": ["child", "parent"]},
+  "PasskeyVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties":
+   {"credentialSubject": {"$ref": "#/definitions/PasskeySubject"}},
+   "additionalProperties": true},
+  "PasskeySubject":
+  {"type": "object",
+   "required": ["role", "publicKey"],
+   "properties":
+   {"role": {"$ref": "#/definitions/Role"}, "publicKey": {"type": "string"}},
+   "additionalProperties": true},
+  "PasskeyEnrollment":
+  {"type": "object",
+   "required": ["jws", "claims", "adminKey"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/PasskeyClaims"},
+    "adminKey": {"type": "string"}},
+   "additionalProperties": false},
+  "PasskeyClaims":
+  {"type": "object",
+   "required": ["iss", "sub", "nbf", "exp", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/PasskeyVcBody"},
+    "sub": {"type": "string"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "JWS":
+  {"type": "string",
+   "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"},
+  "InvoiceArgs":
+  {"type": "object",
+   "required": ["amountCents", "merchantId"],
+   "properties":
+   {"merchantId": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": false},
+  "Invoice":
+  {"type": "object",
+   "required": ["canonical", "signature"],
+   "properties":
+   {"signature": {"type": "string"}, "canonical": {"type": "string"}},
+   "additionalProperties": false},
+  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"}},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

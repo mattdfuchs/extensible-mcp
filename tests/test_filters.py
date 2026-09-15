@@ -8,6 +8,8 @@ import pytest
 from extensible_mcp.types import (
     CallFilterResult,
     CallRequest,
+    CallResponse,
+    ResponseFilterResult,
     SearchResult,
     ServerLoadRequest,
     ToolRecord,
@@ -17,6 +19,7 @@ from extensible_mcp.filters import (
     CallFilterPipeline,
     DiscoveredToolsFilter,
     FilterPipeline,
+    ResponseFilterPipeline,
     ServerLoadAccessControlFilter,
     ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
@@ -219,6 +222,110 @@ class TestCallFilterPipeline:
         result = await pipeline.apply(make_call_request(arguments={"a": 1}))
         assert result.allowed is True
         assert result.arguments == {"a": 1, "injected": True}
+
+
+def make_call_response(
+    tool_name="test_server__test_tool",
+    arguments=None,
+    server_name="test_server",
+    content=None,
+    is_error=False,
+):
+    return CallResponse(
+        tool_name=tool_name,
+        arguments=arguments or {},
+        server_name=server_name,
+        content=content if content is not None else ["original"],
+        is_error=is_error,
+    )
+
+
+class TestResponseFilterPipeline:
+    @pytest.mark.asyncio
+    async def test_empty_pipeline_passes_through(self):
+        pipeline = ResponseFilterPipeline()
+        result = await pipeline.apply(make_call_response(content=["hello"]))
+        assert result.allowed is True
+        assert result.content == ["hello"]
+        assert result.is_error is False
+
+    @pytest.mark.asyncio
+    async def test_filter_modifies_content(self):
+        class Redactor:
+            async def check(self, response: CallResponse) -> ResponseFilterResult:
+                redacted = [c.replace("secret", "[REDACTED]") for c in response.content]
+                return ResponseFilterResult(
+                    allowed=True, content=redacted, is_error=response.is_error
+                )
+
+        pipeline = ResponseFilterPipeline([Redactor()])
+        result = await pipeline.apply(make_call_response(content=["here is the secret value"]))
+        assert result.allowed is True
+        assert result.content == ["here is the [REDACTED] value"]
+
+    @pytest.mark.asyncio
+    async def test_filters_chain_in_order(self):
+        """Second filter sees the first filter's modified content."""
+
+        class AppendA:
+            async def check(self, response: CallResponse) -> ResponseFilterResult:
+                return ResponseFilterResult(
+                    allowed=True,
+                    content=[c + "-A" for c in response.content],
+                    is_error=response.is_error,
+                )
+
+        class AppendB:
+            async def check(self, response: CallResponse) -> ResponseFilterResult:
+                return ResponseFilterResult(
+                    allowed=True,
+                    content=[c + "-B" for c in response.content],
+                    is_error=response.is_error,
+                )
+
+        pipeline = ResponseFilterPipeline([AppendA(), AppendB()])
+        result = await pipeline.apply(make_call_response(content=["x"]))
+        assert result.content == ["x-A-B"]
+
+    @pytest.mark.asyncio
+    async def test_short_circuits_on_first_denial(self):
+        """A denial stops the chain; later filters do not run."""
+
+        ran: list[str] = []
+
+        class Denier:
+            async def check(self, response: CallResponse) -> ResponseFilterResult:
+                ran.append("denier")
+                return ResponseFilterResult(
+                    allowed=False, reason="nope", content=response.content
+                )
+
+        class ShouldNotRun:
+            async def check(self, response: CallResponse) -> ResponseFilterResult:
+                ran.append("after-denier")
+                return ResponseFilterResult(
+                    allowed=True, content=response.content
+                )
+
+        pipeline = ResponseFilterPipeline([Denier(), ShouldNotRun()])
+        result = await pipeline.apply(make_call_response())
+        assert result.allowed is False
+        assert result.reason == "nope"
+        assert ran == ["denier"]
+
+    @pytest.mark.asyncio
+    async def test_filter_can_flip_is_error(self):
+        """A filter can change is_error to surface an issue to the LLM."""
+
+        class FlagAsError:
+            async def check(self, response: CallResponse) -> ResponseFilterResult:
+                return ResponseFilterResult(
+                    allowed=True, content=response.content, is_error=True
+                )
+
+        pipeline = ResponseFilterPipeline([FlagAsError()])
+        result = await pipeline.apply(make_call_response(is_error=False))
+        assert result.is_error is True
 
 
 class TestAccessControlCallFilter:

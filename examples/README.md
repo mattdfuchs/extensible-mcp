@@ -7,6 +7,14 @@ These examples show how to use extensible-mcp as a proxy in front of GitHub's of
 
 Together they demonstrate the two enforcement points in the filter pipeline. The deny pattern hides any matching tool from `search_tools` results so the LLM never sees it, and also rejects direct calls — so an attacker who learns a tool name like `github__delete_repository` from a prompt injection or prior conversation still can't invoke it. The Rego policy works at call time only, but enforces fine-grained, argument-aware rules that pure name-matching can't express.
 
+## Not covered here: the Order Pizza demo
+
+This file is only about the GitHub proxy example above — name- and argument-shape rules over an existing public MCP server, with no signed evidence involved.
+
+The larger end-to-end demo lives in [`agentic-commerce-demo/`](agentic-commerce-demo/) and has its own README. It's a different kind of example: a child ordering a pizza, a parent approving it above a threshold, and a merchant quoting a binding price — each party's intent carried by a signature rather than by the agent's say-so, evaluated by a policy bundle rather than by a single `.rego` file. Run it containerized from [`agentic-commerce-demo/deploy/`](agentic-commerce-demo/deploy/) with nothing but Docker and a browser. The wallet and DID pieces it builds on are in [`identity/`](identity/), also with its own README.
+
+Start here if you want to see the filter pipeline in a few minutes against a server you already use; start there if you want to see what it takes to make an agent's authority provable.
+
 ## Setup
 
 1. **Get a GitHub PAT.** Create one at https://github.com/settings/personal-access-tokens/new with `repo` scope.

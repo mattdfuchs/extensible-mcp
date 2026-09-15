@@ -1,0 +1,145 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   [{"sentence": "a credential signature is invalid",
+     "remedy_class": "re-promptable",
+     "id": "t0.c0",
+     "condition":
+     "not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "t0.c1",
+     "condition":
+     "not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.type == input.tool",
+     "remedy_class": "re-promptable",
+     "id": "t0.c2",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.type != input.tool"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "t0.c3",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant",
+     "remedy_class": "re-promptable",
+     "id": "t0.c4",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant"},
+    {"sentence": "a membership credential does not chain to a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "t0.c5",
+     "condition":
+     "not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "t0.c6",
+     "condition":
+     "input.requesterMembership.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 1000",
+     "remedy_class": "re-promptable",
+     "id": "t0.c7",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents > 1000"}]},
+  {"tier": 1,
+   "checks":
+   [{"sentence": "a credential signature is invalid",
+     "remedy_class": "re-promptable",
+     "id": "t1.c0",
+     "condition":
+     "not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "t1.c1",
+     "condition":
+     "not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.type == input.tool",
+     "remedy_class": "re-promptable",
+     "id": "t1.c2",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.type != input.tool"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "t1.c3",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant",
+     "remedy_class": "re-promptable",
+     "id": "t1.c4",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant"},
+    {"sentence": "a membership credential does not chain to a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "t1.c5",
+     "condition":
+     "not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "t1.c6",
+     "condition":
+     "input.requesterMembership.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence":
+     "required: 1000 < input.requestVC.claims.vc.credentialSubject.requests.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "t1.c7",
+     "condition":
+     "1000 >= input.requestVC.claims.vc.credentialSubject.requests.amountCents"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 20000",
+     "remedy_class": "re-promptable",
+     "id": "t1.c8",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents > 20000"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "t1.c9",
+     "condition":
+     "not webauthn_verified(input.approval.authenticatorData, input.approval.clientDataJSON, input.approval.signature, input.approverEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this exact call",
+     "remedy_class": "re-promptable",
+     "id": "t1.c10",
+     "condition":
+     "not spend_challenge_binds(input.approval.clientDataJSON, input.tool, input.arguments.amountCents, input.arguments.merchant)"},
+    {"sentence": "the passkey is not enrolled by a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "t1.c11",
+     "condition":
+     "not enrolled_as(input.approverEnrollment, input.approval.credentialId, input.trustedAdminDids, input.now)"},
+    {"sentence":
+     "required: input.approverEnrollment.claims.vc.credentialSubject.role == \"parent\"",
+     "remedy_class": "re-promptable",
+     "id": "t1.c12",
+     "condition":
+     "input.approverEnrollment.claims.vc.credentialSubject.role != \"parent\""}]}],
+ "goal": "CanSpendWa",
+ "call_guards":
+ [{"required_in_tiers": [0, 1],
+   "field": "requestVC",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "tool",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "arguments",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [1],
+   "field": "approval",
+   "deciding_checks": ["t1.c7", "t1.c8"],
+   "always": false}],
+ "call_credentials":
+ [{"role_checks": ["t0.c6", "t1.c6"],
+   "issuer_role": "child",
+   "field": "requestVC",
+   "depends_on": []}]}

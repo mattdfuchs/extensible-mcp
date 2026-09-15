@@ -1,0 +1,9 @@
+{"type": "object",
+ "title": "Descriptor",
+ "required": ["origin_server", "config_trust_tier"],
+ "properties":
+ {"origin_server": {"type": "string"}, "config_trust_tier": {"type": "string"}},
+ "description": "Zero-trust provenance descriptor → policy key.",
+ "definitions": {},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

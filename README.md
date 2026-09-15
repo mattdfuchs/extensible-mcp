@@ -2,15 +2,37 @@
 
 extensible-mcp is a proxy that sits between an LLM and the universe of MCP servers, providing on-demand tool retrieval and a deterministic enforcement point for access control. Tool definitions don't need to live in the prompt, sensitive credentials don't need to live in the LLM's context, and security policies are evaluated by code rather than by the model.
 
-## Why
+## Why: Security
+
+LLMs cannot be trusted to manage their own security. They hallucinate, they have no reliable line between "instruction" and "data," and they can be manipulated by anything they read — a tool result, a scraped web page, an email, a message from another agent. Any claim an LLM makes about what a user wants, or what a counterparty has agreed to, has to be treated as hearsay: unverifiable on its own, and worthless as authorization for a sensitive action. Enforcement has to live outside the model, in deterministic code the model cannot talk its way around, and secrets have to stay out of its context entirely — that premise is argued in full under [Threat Model](#threat-model) below.
+
+extensible-mcp is built as that enforcement point. Every operation between the LLM and the outside world — which servers it can load, which tools it can find, which calls actually go through, what comes back — passes through a filter pipeline evaluated by code, never by the model. And where a decision needs to rest on more than the model's say-so, the policy-bundle engine requires cryptographically signed evidence — a Verifiable Credential, a WebAuthn passkey assertion — in place of a claim the LLM typed.
+
+### The Order Pizza demo: Zero Trust, fully elaborated
+
+The project's changes come at two levels. There are code-level additions — CEL as a second policy-rule language alongside Rego, and a **Bundle API** for assembling the pieces (a manifest, a fetch plan, human-facing guidance) you attach to the filter pipeline — but the more significant addition is the **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)), a full working elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
+
+Our Zero Trust posture assumes any statement an agent makes about a user's intent — an agent that is subject to hallucination and prompt injection — is hearsay. User intent can only be asserted, in a non-repudiable way, by a signed statement the LLM could not have produced itself. We get that from the W3C's **Verifiable Credentials** framework: a statement wrapped in a signed envelope, where the signature is the signer vouching for it.
+
+The demo has three parties making statements of intent, each one a signed credential:
+
+1. **The child**, ordering a pizza — without this, the agent might just place the order because the child usually does around this time.
+2. **The parent**, approving the order, for the same reason.
+3. **The pizza shop**, giving a guaranteed, binding price.
+
+In the flow: the child asks to buy pizza, either a slice ($4) or a full pizza (over $10). The agent talks to the pizza shop's own agent to arrange the sale — and because that agent's price comes back as a signed claim bound by its shop's own policy floor, it cannot be talked into an unauthorized discount. (Compare the real 2023 incident where a car dealership's chatbot could be talked into "agreeing" to sell a truck for $1 — an agent's word was never a signature. This demo makes that failure mode structurally impossible, not just discouraged.) The agent then pings the child for a passkey signature on the request, and — for orders over $10 — the parent too.
+
+Only once every required signature is present does the call to order pizza satisfy the approval service's policy. On full approval, the order settles through a payment rail — an in-memory mock by default, or real Stripe test-mode charges if you configure your own key — and the pizza shop hands back its own signed commitment to fulfill.
+
+See [`examples/agentic-commerce-demo/deploy/`](examples/agentic-commerce-demo/deploy/) to run it yourself: it's fully containerized down to a browser chat window, a live log, and a 2-window passkey approval page.
+
+## Why: Extensibility
 
 Connecting an LLM client to a set of MCP servers is normally a startup-time decision: list servers in a config, launch the client, hope you guessed right. There's no clean way to add a server mid-conversation, or to have the LLM itself reach for a capability that wasn't pre-configured.
 
 Even once servers are connected, the LLM client is handed a flat list of every tool from every server, injected wholesale into the context window. As the number of servers grows, this causes token bloat, degraded model performance, and hard context-limit failures — even when most tools aren't relevant to the current turn.
 
 And there's no standard control plane. If you want to block dangerous operations, enforce argument-shape policies, or gate which servers an LLM is allowed to connect to in the first place, you have to build that into each client or each server individually.
-
-The temptation is to push these decisions onto the LLM itself — but anything an LLM sees is both transported across the network on every turn and vulnerable to prompt injection from any document, tool result, or web page it reads. Secrets have to stay out of the model's context, and security cannot be left to LLMs communicating with external systems of any type. Enforcement has to live somewhere deterministic, between the model and the outside world.
 
 extensible-mcp sits between the LLM and your MCP servers and addresses all three:
 
@@ -31,30 +53,30 @@ LLM  <-->  extensible-mcp  <-->  MCP Server(s)
 The proxy exposes three meta-tools to the LLM:
 
 - **`search_tools(query)`** — Describe what you want to do in natural language. The proxy embeds the query with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), runs cosine similarity against the tool index, and returns matching definitions.
-- **`call_tool(tool_name, arguments)`** — Invoke a tool by its qualified name (e.g. `github__create_issue`). The proxy routes the call to the correct downstream server.
+- **`call_tool(tool_name, arguments)`** — Invoke a tool by the name `search_tools` returned: qualified for a downstream tool (e.g. `github__create_issue`), bare for one of the proxy's own local tools. The proxy routes the call accordingly.
 - **`load_mcp_server(server_name, url)`** — Connect to a new remote MCP server at runtime. Its tools are indexed immediately and become available for search and invocation.
 
 Retrieval is model-driven: the LLM decides when to search and crafts its own queries, so there's no wasted retrieval on turns where no tools are needed.
 
 ## Status
 
-v1 of the proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and credential handling all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. 104 tests pass; the example configs work against the official GitHub MCP server.
+The base proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and downstream authentication (the `tokens` file, kept out of the LLM's context) all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. The example configs work against the official GitHub MCP server.
 
-The pipeline is policy-engine-agnostic: Rego is hooked into the call filter today as a reference, but the architecture doesn't privilege any single engine — drop in OPA, Cedar, custom Python, or whatever fits your stack. Active research directions:
+Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-- **Signed-claim verification** at call time — push approvals, signed documents, Verifiable Credentials. See the threat-model section for the argument.
-- **Native Policy-as-Type integration** — linking to the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types. Properties of the policy can be mathematically proven rather than just tested.
-
-Both directions extend the existing filter pipeline without architectural change.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 285 tests; the two example packages add 172 and 51.
 
 ## Threat Model
 
-LLMs cannot be trusted to manage their own security. They are open to prompt injection attacks from any material they ingest, they can be influenced by material in their training set in non-obvious ways, including treating data as instructions, they hallucinate, they can forget instructions, and any information passed to them must be considered compromised. Therefore any serious attempt to enforce rules must live outside the LLM in code not subject to all these weaknesses. That is our premise.
+The [Why: Security](#why-security) section above states the premise: LLMs cannot be trusted to manage their own security, so enforcement has to live outside the model. This section argues it in full. LLMs are open to prompt injection attacks from any material they ingest, they can be influenced by material in their training set in non-obvious ways, including treating data as instructions, they hallucinate, they can forget instructions, and any information passed to them must be considered compromised. Any serious attempt to enforce rules must live outside the LLM in code not subject to all these weaknesses.
+
+This premise is not new; it is **zero trust** applied to the LLM. Zero trust — the principle that no actor is trusted by virtue of where it sits, and that every action is authenticated and authorized on its own merits — is the default posture of modern service-based architecture (Saltzer and Schroeder's *least privilege* and *complete mediation*, 1975; the de-perimeterization movement; Kindervag's coining of the term at Forrester, 2010; Google's BeyondCorp; NIST's Zero Trust Architecture, SP 800-207, 2020). Its standard shape — a policy decision point kept separate from a policy enforcement point, deciding per request — is the shape of this proxy. The one addition is to place the LLM agent itself on the untrusted side of the boundary: not because its identity is in doubt, but because its judgment can be manipulated by what it reads, so authenticating it is not enough. Enforcement lives in deterministic code, and — in the policy-bundle engine described under Status — trusts only evidence the LLM cannot forge.
 
 The pipeline allows for control at all points of contact between the LLM and the external world:
 - At server loading time, we can filter and prohibit the agent from loading untrusted servers. Beyond just the tools, the server and tool descriptions can contain prompt injection attacks. 
 - At search time, we can, again, hide dangerous or untrusted tools. In the current release, we include a sample filter to hide any tool containing "delete"; not only can't such a tool be called, it can't be found.
 - At call time, further policies can prevent illegitimate use of an allowed tool. In the sample code we prevent the closing of an issue, but allow other uses of the same tool to allow updating issues.
+- At response time, filters can inspect or rewrite tool results on their way back to the LLM — useful for redacting secrets that leak back from a buggy server, flagging or scrubbing prompt-injection content in scraped pages or email bodies, truncating large responses, or audit logging. Tool results are an injection surface every bit as real as tool descriptions; the response pipeline is where you handle it.
 - The LLM cannot call any tools it didn't find during search. This ensures the LLM calls only tools in the protected set and is not vulnerable to attempts to call outside the protected envelope.
 - We do not pass secrets (in particular, security tokens) to the LLM. Tokens to be used in HTTP Authorization headers are kept in a separate file. The LLM can prompt the user to update a token when it appears to have expired, but it never sees the tokens themselves.
 
@@ -64,20 +86,34 @@ Of course, we can only apply these protections within the context of the LLM its
 - Policies that trust unverified LLM claims (such as whether the user has agreed to some action) 
 - Otherwise ineffective policies (for example, our simple Rego script prohibits one action, but allows all others).
 
-It's tempting to use required argument values as a way to extend policies, such as requiring ```confirmation: 'CONFIRM_DELETE'``` before a delete proceeds. We considered this and discarded it: an LLM that can be prompt-injected into deleting a file can also be prompt-injected into supplying the confirmation string. The user's acquiescence is unproven. The mechanism prevents accidents but not adversaries. We will address this pattern using signed claims, evidence whose validity depends on a channel the LLM cannot influence.
+It's tempting to use required argument values as a way to extend policies, such as requiring ```confirmation: 'CONFIRM_DELETE'``` before a delete proceeds. We considered this and discarded it: an LLM that can be prompt-injected into deleting a file can also be prompt-injected into supplying the confirmation string. The user's acquiescence is unproven. The mechanism prevents accidents but not adversaries. The policy-bundle engine (see Status) addresses this pattern with signed claims — evidence whose validity depends on a channel the LLM cannot influence, verified field-by-field against the actual call rather than taken on the LLM's word.
 
-This becomes especially acute as agents communicate with other agents. A2A, which AP2 depends on, has the receiving agent process every message through an LLM, making every counterparty message a potential prompt injection vector. An LLM's judgment about what its negotiating partner has agreed to is structurally unsafe; the same signed-evidence architecture that addresses single-agent authorization is even more necessary in multi-agent settings.
+This becomes especially acute as agents communicate with other agents. A2A, for example, has the receiving agent process every message through an LLM, making every counterparty message a potential prompt injection vector. An LLM's judgment about what its negotiating partner has agreed to is structurally unsafe; the same signed-evidence architecture that addresses single-agent authorization is even more necessary in multi-agent settings.
 
-By adding support for signed claims as parameters, we can ensure that values come from valid sources, such as the user, and cannot have been forged by the LLM. Examples of this include Duo or CIBA push approvals, W3C Verifiable Credentials (which are used for Google's AP2 and its extension, the Universal Commerce Protocol), or DocuSign-grade envelopes.
+Signed claims as parameters — values that provably come from a valid source, such as the user or another party, and cannot have been forged by the LLM — are how the policy-bundle engine (see Status) closes this gap. Examples of the underlying evidence include Duo or CIBA push approvals, W3C Verifiable Credentials, SD-JWT, WebAuthn/passkey assertions, or DocuSign-grade envelopes.
 
-With the addition of signed claims, we can inject this level of security in three parts:
-- First, before handing a tool definition to the LLM the prefilter modifies the parameter schemas to specify which must be signed.
-- These requirements force the LLM to retrieve valid claims for these parameters, either from the user or from other parties. The signing requirement prevents the LLM from spoofing.
-- Finally, at tool call time, policies validate the signed parameters as part of approving the call.
+Concretely, this works in three parts:
+- Before handing a governed tool's definition to the LLM, the search-side augmenter marks which parameters must be signed, and by whom.
+- That requirement forces the LLM to retrieve valid claims for those parameters, from the user or from other parties. The signing requirement prevents the LLM from spoofing.
+- At tool call time, the policy validates the signed parameters — field-by-field against the actual call — as part of the allow decision.
 
-This addresses the unverified claims issue and can also be used to strengthen the guarantee that an MCP Server is permitted. Verified claims are now key to agentic commerce, as shown by Google's Universal Commerce Protocol, but the requirement will hold for many non-commercial operations, such as deleting files.
+This addresses the unverified claims issue and can also be used to strengthen the guarantee that an MCP Server is permitted. Verified claims are now key to agentic commerce, but the requirement will hold for many non-commercial operations, such as deleting files.
 
-We currently ship Rego hooked into the call filter as a reference policy engine, but the pipeline isn't tied to it — any policy engine can plug in via a custom `CallFilter`. Rego's strength is broad ABAC expressiveness; its weakness is minimal support for type-checking policy correctness (input shapes can be checked with JSON Schema, but the policy logic itself isn't verified). We plan to link to the framework from [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446), which treats policies as dependent types and lets properties of a policy be mathematically proven rather than just tested.
+The `rego_policy` config option (see **Rego policies** below) is the simple case: one `.rego` file, no signed evidence, no bundle. It's a separate, lighter-weight mechanism from the policy-bundle engine described under Status — reach for `rego_policy` for a quick argument-shape rule, and the bundle engine when the decision needs to rest on verified, signed evidence rather than the raw arguments alone. Neither is privileged by the pipeline; a custom `CallFilter` can replace either.
+
+### Where this sits relative to the agent protocols
+
+A growing set of protocols governs agent-mediated commerce — AP2, ACP, UCP, Visa's TAP, Mastercard's Verifiable Intent. They standardize the boundary *between* organizations: how a signed instruction travels from an agent to a merchant to a payment network, and what evidence survives into a dispute.
+
+They carry a delegation. They do not decide one. That distinction is invisible in consumer commerce, where the principal is a person spending their own money and authority follows from identity: it's Alice's card, Alice signed, done. Inside an organization it is the whole problem. Knowing *which* employee's key signed tells you nothing about whether that employee could commit the company to a $40,000 purchase. Signing authority is a policy — delegated limits, role thresholds, separation of duties, dual control above a bar — and it lives inside the organization, unverifiable from the far side of any boundary. What a counterparty can check is that a key belonging to your organization was used. Whether the party that invoked it was entitled to is a question only you can answer, and it has to be answered before the signature exists.
+
+It is also not a commerce question. *Did this employee ask to share this document with this partner? Did this clinician request this patient's X-rays? Did the homeowner schedule this service call, before the smart home opens the door?* Same shape, no payment anywhere in it — and no cart, mandate, or payment credential can express any of them.
+
+Here we can separate "*may*" from "*did*". A general-purpose policy model such as Zanzibar can answer if an actor *may* perform an act. That is a different question from the one here, and the two compose rather than compete. Consider the sharing case: a prompt-injected agent asks to share a document with an outside company, and the employee genuinely does hold share rights. A relationship check returns allow, and it is *right* — the permission was real. What was forged was the request. Relationship-based access control decides whether a principal **may** act; it assumes the caller is not lying about what the principal asked for.
+
+The door case adds one more wrinkle worth naming: what has to be proven there was authorized earlier, not approved just now. Some acts rest on a standing authorization — a service call booked last Tuesday — rather than a tap on a phone at the moment of action. Both are evidence; they differ in when the human was in the loop, and a policy has to be able to ask for either.
+
+The relationship model's assumption that the request is genuine, and the commerce protocols' assumption that the sender had authority, are the same gap seen from two sides, and neither survives a prompt-injectable intermediary. This project closes it inside the organization, before the act, in deterministic code the agent cannot talk its way around, resting on evidence the agent cannot itself produce, as required by the evaluating policy. What happens after — carrying the result across a boundary as an AP2 mandate, checking a relationship store for permission — composes on top. This is what stands behind the signature, not a replacement for the protocols that transport it.
 
 ## Setup
 
@@ -161,7 +197,7 @@ extensible-mcp does **not** run an OAuth flow itself. If a server uses OAuth, mi
 
 ### Filter pipelines
 
-Three independent pipelines — search, call, and server-load — each pass requests through an ordered chain of filters before the operation runs. The proxy enforces one structural guarantee: **the LLM can only call tools it has previously surfaced via `search_tools`.** That gate is built into the call pipeline and cannot be bypassed.
+Four independent pipelines — search, call (request), response, and server-load — each pass through an ordered chain of filters before (or in the response case, after) the operation runs. The proxy enforces one structural guarantee: **the LLM can only call tools it has previously surfaced via `search_tools`.** That gate is built into the call pipeline and cannot be bypassed.
 
 Beyond the discovery gate, the filter logic is yours to define. The filters described below ship as reference implementations and are configured via the JSON config; for anything beyond them, write your own — see [Writing a custom filter](#writing-a-custom-filter).
 
@@ -204,6 +240,8 @@ The policy must define `allow` (boolean). Optionally define `deny_reason` (strin
 
 Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which is installed by default with `uv sync` — no extra step needed.
 
+**Response filters** — applied to tool results on their way back from the downstream server, before the LLM sees them. No reference filters ship by default; the pipeline is empty unless you wire in your own. Useful for redacting secrets that leak back from a buggy server, scrubbing or flagging prompt-injection patterns in scraped content, truncating large responses, or audit logging. See [Writing a custom filter](#writing-a-custom-filter) for the Protocol shape.
+
 **Server load filters** — applied to `load_mcp_server` requests before any connection is made.
 
 | Field | Description |
@@ -215,12 +253,58 @@ Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which 
 
 Without `load_control`, an LLM could be prompt-injected into connecting to a malicious server. Use `allow_url_patterns` to whitelist trusted domains and `deny_url_patterns` to block insecure protocols.
 
+### Policy bundles
+
+`rego_policy` above decides on the raw arguments alone. When the decision has to rest on signed evidence instead — a Verifiable Credential, a passkey assertion — use a **policy bundle**: a directory of four files, three of which are engine-independent.
+
+| File | What it is |
+|---|---|
+| `manifest.json` | JSON Schema for the policy's whole input object. Names the input contract, declares which fields are required, and closes it with `additionalProperties: false`. |
+| `fetchplan.json` | Where each input field comes from. One entry per field, with `source.kind` of `call` (from the tool call), `config` (from deployment config), `clock` (current time), or `wallet` (fetched by a lookup you supply, parameterized by other input fields). |
+| `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. |
+| `policy.wasm` *or* `checks.cel.json` | The rules themselves, in whichever engine you prefer. |
+
+The two engines are interchangeable over the same other three files. A Rego policy is compiled to WASM:
+
+```bash
+opa build -t wasm -e mypolicy/allow -e mypolicy/failed_checks \
+  -e mypolicy/deny_reason policy.rego
+# add --capabilities capabilities.json when the policy calls a host builtin
+# beyond OPA's defaults (e.g. signature verification)
+```
+
+A CEL policy skips the compile step: `checks.cel.json` carries the expressions directly.
+
+Either artifact can be hand-authored — several bundles under [`tests/fixtures/`](tests/fixtures/) are. The certified ones are instead **generated from a common core**, so the Rego and CEL twins agree by construction rather than by someone keeping two files in sync. Running both against the same inputs then tests what generation can't guarantee on its own: that two quite different runtimes — a WASM module under wasmtime, and CEL expressions evaluated in-process — reach the same decision through the same host builtins.
+
+One consequence worth knowing when reading a bundle: the internal identifiers threading a denial back to the specific condition that produced it are an artifact of that generation. They're positional, and meaningful only within a single emitted bundle. Render denials through `guidance.json`; don't build against the identifiers themselves.
+
+Attach a loaded bundle as a call filter:
+
+```python
+from extensible_mcp import PolicyBundle, WasmPolicyFilter
+from extensible_mcp.server import create_server
+
+bundle = PolicyBundle.load("policies/spend-bundle", name="spend")
+policy_filter = WasmPolicyFilter(
+    bundle,
+    config={"trustRootDID": "did:web:example.com", "trustRootJwk": jwk},
+    wallet_lookup=my_lookup,   # serves the fetch plan's `wallet` sources
+)
+server = create_server(config, extra_call_filters=[policy_filter])
+```
+
+The filter assembles the policy's input from the fetch plan, evaluates it, and on a denial returns the rendered guidance rather than the raw check ids. Note what it does with the call's arguments: any field the fetch plan sources from `call` other than `tool` and `arguments` is a **credential field** — it's pulled out of the arguments, fed to the policy, and *not* forwarded downstream. The downstream tool sees only its own native arguments, never the evidence that authorized them. To govern bundles per downstream server rather than pipeline-wide, pass `bundle_router` to `create_server` instead.
+
+Seven worked bundles live under [`tests/fixtures/`](tests/fixtures/) — both engines, from a two-credential spend policy up to an invoice-settlement one — each with a `PROVENANCE.md` recording where it came from and what it is. [`project-overview.md`](project-overview.md) covers the modules involved.
+
 ### Writing a custom filter
 
-The reference filters described above are starting points, not the limit of what the pipeline can do. Filters are plain Python objects implementing one of three Protocols:
+The reference filters described above are starting points, not the limit of what the pipeline can do. Filters are plain Python objects implementing one of four Protocols:
 
 - **`ToolFilter`** — `filter(results: list[SearchResult], query: str) -> list[SearchResult]`. Applied to `search_tools` results.
-- **`CallFilter`** — `async check(request: CallRequest) -> CallFilterResult`. Applied to `call_tool` invocations.
+- **`CallFilter`** — `async check(request: CallRequest) -> CallFilterResult`. Applied to `call_tool` invocations before they're proxied downstream.
+- **`ResponseFilter`** — `async check(response: CallResponse) -> ResponseFilterResult`. Applied to tool results on their way back to the LLM. Filters can inspect, modify, or replace the content; subsequent filters see the modified content.
 - **`ServerLoadFilter`** — `async check(request: ServerLoadRequest) -> ServerLoadResult`. Applied to `load_mcp_server` requests.
 
 A custom call filter that audits every invocation:
@@ -238,7 +322,7 @@ class AuditLogFilter:
         )
 ```
 
-Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, and `extra_load_filters`:
+Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, and `extra_load_filters`, plus `bundle_router` (per-server policy bundles, see Status) and `local_tools` (below):
 
 ```python
 from extensible_mcp.config import find_config_path, load_config
@@ -251,6 +335,34 @@ server.run()
 ```
 
 Custom filters run after the built-in reference filters in each pipeline. To deny a call, return `CallFilterResult(allowed=False, reason="...", tool_name=..., arguments=...)`. The discovered-tools guarantee runs before any custom call filter and is always enforced regardless of your filter set.
+
+### Adding your own tools
+
+Some capabilities belong to the proxy itself rather than to any downstream server — requesting a signed credential, filing evidence, anything that needs the proxy's own state or network position. Pass them to `create_server` as `local_tools`:
+
+```python
+from extensible_mcp import LocalTool
+
+async def handler(arguments: dict) -> dict:
+    return {"ok": True, "echoed": arguments["message"]}
+
+echo = LocalTool(
+    name="echo_message",
+    description="Echo a message back. Reached like any other tool.",
+    input_schema={
+        "type": "object",
+        "properties": {"message": {"type": "string"}},
+        "required": ["message"],
+    },
+    handler=handler,
+)
+
+server = create_server(config, local_tools=[echo])
+```
+
+A local tool is indexed into the same vector store, discovered by the same `search_tools`, and invoked through the same `call_tool` as a downstream tool — so the same call pipeline gates it, discovery guarantee included. The name carries no `__`, since that separator is reserved for the `{server}__{tool}` downstream namespace; `access_control.allow_servers` therefore doesn't apply to local tools, while `deny` and `deny_patterns` still match them by name.
+
+Note what this deliberately does *not* offer: a way to register a tool that sidesteps the pipeline. Registering a tool directly on the returned `FastMCP` object would do exactly that — it would be reachable by name over plain MCP, with no filter, no policy, and no discovery gate — which is why the proxy's own capabilities go through `local_tools` instead. Whether a tool's code happens to run in-process is not a reason to trust it more.
 
 ### Config resolution order
 
@@ -281,6 +393,15 @@ The [`examples/`](examples/) directory has ready-to-use configs for proxying Git
 
 See [`examples/README.md`](examples/README.md) for setup instructions and suggested prompts to try.
 
+The larger, end-to-end Order Pizza commerce demo described under
+[Why: Security](#why-security) lives in
+[`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/),
+backed by the identity/wallet package in
+[`examples/identity/`](examples/identity/) — both are workspace members of
+this repo; see their own READMEs for setup, or
+[`deploy/`](examples/agentic-commerce-demo/deploy/) to run it
+containerized, needing nothing beyond Docker and a browser.
+
 ## Development
 
 ```bash
@@ -293,6 +414,12 @@ uv run pytest
 # Run a single test file
 uv run pytest tests/test_filters.py -v
 ```
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workspace layout, dev
+setup, and test commands. See [`CHANGELOG.md`](CHANGELOG.md) for what's
+changed release by release.
 
 ## License
 

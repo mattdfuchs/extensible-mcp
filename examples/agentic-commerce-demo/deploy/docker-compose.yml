@@ -1,0 +1,69 @@
+# Two containers on the trust boundary: the family (wallets, approvals,
+# proxy, chat console) and the pizza parlor (the merchant's tools). Only
+# three things are exposed to the host: a chat window, the 2-window passkey
+# approval page, and a live log — everything else (the proxy, the wallet
+# services, the parlor's MCP server) stays internal to the compose network.
+#
+#   cd mcp-alternative
+#   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --build
+#
+# Human surfaces: chat + log http://localhost:7300 · passkey approvals
+# http://localhost:7500 (2 windows: child, parent). ANTHROPIC_API_KEY is
+# required in .env (see deploy/RUNBOOK.md) — it now drives the chat window's
+# own agent loop, not just the merchant's optional LLM clerk.
+#
+# The invoice settlement rail defaults to an in-memory mock — this default
+# build does not install the Stripe SDK at all, so there is no path to a
+# real Stripe account no matter what env vars are set. To build the
+# Stripe-enabled variant instead (needs your own STRIPE_API_KEY in .env):
+#   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+#     -f examples/agentic-commerce-demo/deploy/docker-compose.stripe.yml up --build
+
+services:
+  family:
+    build:
+      context: ../../..
+      dockerfile: examples/agentic-commerce-demo/deploy/family.Dockerfile
+      args:
+        ENABLE_STRIPE: "false"
+    ports:
+      - "127.0.0.1:7300:7300"   # chat + live log (console_server.py)
+      - "127.0.0.1:7500:7500"   # passkey approval page (WebAuthn: use http://localhost:7500)
+    # Secrets and rail selection come from this package's own .env (gitignored,
+    # excluded from image builds): ANTHROPIC_API_KEY (required — drives the
+    # chat console), SETTLEMENT, STRIPE_API_KEY — plus optionally DOWNSTREAM /
+    # MERCHANT_MODEL. Absent file or vars beyond the key, code defaults apply
+    # (mock rail, demo downstream).
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PIZZA_URL: http://pizzaparlor:7600/mcp/
+    volumes:
+      - family-workspace:/repo/examples/agentic-commerce-demo/workspace
+    depends_on:
+      - pizzaparlor
+
+  pizzaparlor:
+    build:
+      context: ../../..
+      dockerfile: examples/agentic-commerce-demo/deploy/pizzaparlor.Dockerfile
+    # No published ports: the family container reaches it over the compose
+    # network only. Use `docker compose exec pizzaparlor ...` for debugging.
+    # ANTHROPIC_API_KEY (the merchant's LLM clerk) and MERCHANT_MODEL come
+    # from this package's own .env; without a key the deterministic list-price
+    # clerk runs.
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      MERCHANT_KEY_PATH: /data/merchant.key
+      # Where this merchant fetches the settlement authority's card — the
+      # rail whose signed receipts it will ship against.
+      SETTLEMENT_URL: http://family:7500
+    volumes:
+      - parlor-data:/data       # pizza-orders.log + the merchant's persistent key
+
+volumes:
+  family-workspace:
+  parlor-data:

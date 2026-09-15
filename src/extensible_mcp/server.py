@@ -24,13 +24,16 @@ from .filters import (
     DiscoveredToolsFilter,
     FilterPipeline,
     RegoPolicyFilter,
+    ResponseFilter,
+    ResponseFilterPipeline,
     ServerLoadAccessControlFilter,
     ServerLoadFilter,
     ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
     ToolFilter,
 )
-from .types import CallRequest, ServerLoadRequest
+from .routing import BundleRouter
+from .types import CallRequest, CallResponse, LocalTool, ServerLoadRequest, ToolRecord
 from .vector_store import VectorStore
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -48,8 +51,16 @@ def _build_pipelines(
     *,
     extra_search_filters: Sequence[ToolFilter] = (),
     extra_call_filters: Sequence[CallFilter] = (),
+    extra_response_filters: Sequence[ResponseFilter] = (),
     extra_load_filters: Sequence[ServerLoadFilter] = (),
-) -> tuple[FilterPipeline, CallFilterPipeline, ServerLoadFilterPipeline, DiscoveredToolsFilter]:
+    bundle_router: BundleRouter | None = None,
+) -> tuple[
+    FilterPipeline,
+    CallFilterPipeline,
+    ResponseFilterPipeline,
+    ServerLoadFilterPipeline,
+    DiscoveredToolsFilter,
+]:
     ac = AccessControlFilter(
         deny=config.filters.access_control.deny,
         deny_patterns=config.filters.access_control.deny_patterns,
@@ -72,6 +83,17 @@ def _build_pipelines(
     for f in extra_call_filters:
         call_pipeline.add(f)
 
+    # The per-server bundle router runs last: after access control, the
+    # discovered-tools guarantee, and any custom filters. It dispatches each
+    # call to the policy bundle selected for that call's server (pass-through
+    # for ungoverned servers).
+    if bundle_router is not None:
+        call_pipeline.add(bundle_router)
+
+    response_pipeline = ResponseFilterPipeline()
+    for f in extra_response_filters:
+        response_pipeline.add(f)
+
     lc = config.filters.load_control
     server_load_pipeline = ServerLoadFilterPipeline()
     if lc.deny_names or lc.deny_name_patterns or lc.deny_url_patterns or lc.allow_url_patterns:
@@ -85,7 +107,13 @@ def _build_pipelines(
     for f in extra_load_filters:
         server_load_pipeline.add(f)
 
-    return search_pipeline, call_pipeline, server_load_pipeline, discovered_filter
+    return (
+        search_pipeline,
+        call_pipeline,
+        response_pipeline,
+        server_load_pipeline,
+        discovered_filter,
+    )
 
 
 def _format_search_results(results: list[Any]) -> str:
@@ -107,19 +135,39 @@ def _format_search_results(results: list[Any]) -> str:
     return header + "\n".join(lines)
 
 
+def _build_local_registry(local_tools: Sequence[LocalTool]) -> dict[str, LocalTool]:
+    registry: dict[str, LocalTool] = {}
+    for lt in local_tools:
+        if lt.name in registry:
+            raise ValueError(f"Duplicate local tool name: {lt.name!r}")
+        registry[lt.name] = lt
+    return registry
+
+
 async def _setup(
     config: Config,
     *,
     extra_search_filters: Sequence[ToolFilter] = (),
     extra_call_filters: Sequence[CallFilter] = (),
+    extra_response_filters: Sequence[ResponseFilter] = (),
     extra_load_filters: Sequence[ServerLoadFilter] = (),
+    bundle_router: BundleRouter | None = None,
+    local_tools: Sequence[LocalTool] = (),
 ) -> dict[str, Any]:
     """Connect to downstream servers, build vector index, return lifespan context."""
-    search_pipeline, call_pipeline, server_load_pipeline, discovered_filter = _build_pipelines(
+    (
+        search_pipeline,
+        call_pipeline,
+        response_pipeline,
+        server_load_pipeline,
+        discovered_filter,
+    ) = _build_pipelines(
         config,
         extra_search_filters=extra_search_filters,
         extra_call_filters=extra_call_filters,
+        extra_response_filters=extra_response_filters,
         extra_load_filters=extra_load_filters,
+        bundle_router=bundle_router,
     )
 
     client_mgr = ClientManager(tokens_file=config.tokens_file)
@@ -127,23 +175,74 @@ async def _setup(
         "Tokens file: %s",
         config.tokens_file if config.tokens_file else "(none configured)",
     )
-    logger.info("Connecting to %d downstream server(s)...", len(config.servers))
-    tools = await client_mgr.connect_all(config.servers)
+
+    servers = config.servers
+    if bundle_router is not None:
+        servers = _admit_servers(bundle_router, config.servers)
+
+    logger.info("Connecting to %d downstream server(s)...", len(servers))
+    tools = await client_mgr.connect_all(servers)
     logger.info("Indexed %d tools total", len(tools))
+
+    local_registry = _build_local_registry(local_tools)
+    local_records = [
+        ToolRecord(
+            name=lt.name,
+            qualified_name=lt.name,
+            description=lt.description,
+            input_schema=lt.input_schema,
+            server_name="",
+        )
+        for lt in local_tools
+    ]
+    if local_records:
+        logger.info("Indexed %d local tool(s)", len(local_records))
 
     vector_store = VectorStore()
     logger.info("Building vector index...")
-    vector_store.index(tools)
+    vector_store.index(tools + local_records)
     logger.info("Vector index ready")
 
     return {
         "vector_store": vector_store,
         "filter_pipeline": search_pipeline,
         "call_filter_pipeline": call_pipeline,
+        "response_filter_pipeline": response_pipeline,
         "server_load_filter_pipeline": server_load_pipeline,
         "client_manager": client_mgr,
         "discovered_filter": discovered_filter,
+        "bundle_router": bundle_router,
+        "local_tools": local_registry,
     }
+
+
+def _admit_servers(router: BundleRouter, servers):
+    """Run stage-one selection over the static servers, returning those the
+    router admits. A refused server is logged and not connected."""
+    admitted = []
+    for s in servers:
+        decision = router.admit(
+            server_name=s.name,
+            url=s.url,
+            how_loaded="static",
+            transport="http" if s.url else "stdio",
+        )
+        if decision.allowed:
+            logger.info(
+                "Server %r admitted to bundle %r (via %s)",
+                s.name,
+                decision.bundle,
+                decision.source,
+            )
+            admitted.append(s)
+        else:
+            logger.warning(
+                "Server %r refused at load: %s (via %s)",
+                s.name,
+                decision.reason,
+                decision.source,
+            )
+    return admitted
 
 
 def create_server(
@@ -151,15 +250,32 @@ def create_server(
     *,
     extra_search_filters: Sequence[ToolFilter] = (),
     extra_call_filters: Sequence[CallFilter] = (),
+    extra_response_filters: Sequence[ResponseFilter] = (),
     extra_load_filters: Sequence[ServerLoadFilter] = (),
+    bundle_router: BundleRouter | None = None,
+    local_tools: Sequence[LocalTool] = (),
 ) -> FastMCP:
     """Create a configured FastMCP proxy server for the given config.
 
     The ``extra_*_filters`` arguments accept user-defined filters (anything
-    matching the ``ToolFilter``, ``CallFilter``, or ``ServerLoadFilter``
-    Protocol). They are appended to the corresponding pipeline after the
-    built-in reference filters; the discovered-tools guarantee is always
-    enforced regardless.
+    matching the ``ToolFilter``, ``CallFilter``, ``ResponseFilter``, or
+    ``ServerLoadFilter`` Protocol). They are appended to the corresponding
+    pipeline after the built-in reference filters; the discovered-tools
+    guarantee is always enforced regardless.
+
+    ``bundle_router`` opts into per-server policy bundles: when present, each
+    server is run through stage-one selection at load (refused servers do not
+    connect), and each call is routed to the policy bundle selected for its
+    server. When absent, behaviour is unchanged.
+
+    ``local_tools`` registers in-process tools (embedder-supplied Python
+    callables, not a downstream MCP server) that are discovered via
+    ``search_tools`` and invoked via ``call_tool`` exactly like a downstream
+    tool — the same ``CallFilterPipeline`` (access control, discovered-tools
+    guarantee, policy filters) runs on them too. There is no separate,
+    unfiltered way to register a tool directly on the returned server that
+    bypasses this — that asymmetry between "local" and "downstream" tools is
+    exactly what ``local_tools`` exists to remove.
     """
 
     @lifespan
@@ -168,7 +284,10 @@ def create_server(
             config,
             extra_search_filters=extra_search_filters,
             extra_call_filters=extra_call_filters,
+            extra_response_filters=extra_response_filters,
             extra_load_filters=extra_load_filters,
+            bundle_router=bundle_router,
+            local_tools=local_tools,
         )
         yield ctx
         logger.info("Shutting down, closing connections...")
@@ -217,8 +336,10 @@ def create_server(
     @server.tool(
         name="call_tool",
         description=(
-            "Call a tool on a downstream MCP server. "
-            "Use the qualified tool name (e.g. 'github__create_issue') from search_tools results. "
+            "Call a tool — either on a downstream MCP server or one of the "
+            "proxy's own local tools. Use the tool name from search_tools "
+            "results verbatim: a downstream tool's name is qualified "
+            "(e.g. 'github__create_issue'), a local tool's is not. "
             "Pass the arguments as a JSON object matching the tool's parameter schema."
         ),
     )
@@ -226,7 +347,11 @@ def create_server(
         tool_name: str, arguments: dict[str, Any], ctx: Context
     ) -> str:
         call_pipeline: CallFilterPipeline = ctx.lifespan_context["call_filter_pipeline"]
+        response_pipeline: ResponseFilterPipeline = ctx.lifespan_context[
+            "response_filter_pipeline"
+        ]
         client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
+        local_tools: dict[str, LocalTool] = ctx.lifespan_context["local_tools"]
 
         parts = tool_name.split("__", 1)
         server_name = parts[0] if len(parts) == 2 else ""
@@ -241,33 +366,57 @@ def create_server(
         tool_name = filter_result.tool_name
         arguments = filter_result.arguments
 
-        if tool_name not in client_mgr.get_qualified_names():
+        if tool_name in local_tools:
+            try:
+                raw_result = await local_tools[tool_name].handler(arguments)
+            except Exception as e:
+                return f"Error calling tool '{tool_name}': {e}"
+            text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
+            content: list[Any] = [mcp_types.TextContent(type="text", text=text)]
+            is_error = False
+        elif tool_name in client_mgr.get_qualified_names():
+            try:
+                result: mcp_types.CallToolResult = await client_mgr.call_tool(
+                    tool_name, arguments
+                )
+            except TokenExpiredError as e:
+                return (
+                    f"Error: Authentication failed for server '{e.server_name}' "
+                    f"(token unchanged for {e.token_age_minutes} minutes). "
+                    f"The token may have expired. Ask the user to update the token "
+                    f"for '{e.server_name}' in the tokens file, then retry the call."
+                )
+            except Exception as e:
+                return f"Error calling tool '{tool_name}': {e}"
+            content = list(result.content)
+            is_error = result.isError
+        else:
             return f"Error: Unknown tool '{tool_name}'. Use search_tools to find available tools."
 
-        try:
-            result: mcp_types.CallToolResult = await client_mgr.call_tool(
-                tool_name, arguments
-            )
-        except TokenExpiredError as e:
-            return (
-                f"Error: Authentication failed for server '{e.server_name}' "
-                f"(token unchanged for {e.token_age_minutes} minutes). "
-                f"The token may have expired. Ask the user to update the token "
-                f"for '{e.server_name}' in the tokens file, then retry the call."
-            )
-        except Exception as e:
-            return f"Error calling tool '{tool_name}': {e}"
+        response_request = CallResponse(
+            tool_name=tool_name,
+            arguments=arguments,
+            server_name=server_name,
+            content=content,
+            is_error=is_error,
+        )
+        response_result = await response_pipeline.apply(response_request)
+        if not response_result.allowed:
+            return f"Error: {response_result.reason}"
 
-        if result.isError:
+        content = response_result.content
+        is_error = response_result.is_error
+
+        if is_error:
             texts = [
                 block.text
-                for block in result.content
+                for block in content
                 if isinstance(block, mcp_types.TextContent)
             ]
             return f"Tool error: {' '.join(texts)}"
 
         output_parts: list[str] = []
-        for block in result.content:
+        for block in content:
             if isinstance(block, mcp_types.TextContent):
                 output_parts.append(block.text)
             else:
@@ -301,6 +450,20 @@ def create_server(
 
         if server_name in client_mgr._connections:
             return f"Error: Server '{server_name}' is already connected."
+
+        router: BundleRouter | None = ctx.lifespan_context.get("bundle_router")
+        if router is not None:
+            decision = router.admit(
+                server_name=server_name,
+                url=url,
+                how_loaded="runtime",
+                transport="http",
+            )
+            if not decision.allowed:
+                return (
+                    f"Error: Server '{server_name}' refused by policy: "
+                    f"{decision.reason}"
+                )
 
         try:
             tools = await client_mgr.connect_url(server_name, url)

@@ -1,0 +1,19 @@
+# Override enabling the Stripe-backed settlement rail. Layer this on top of
+# docker-compose.yml rather than editing it, so the default build stays
+# Stripe-free:
+#
+#   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+#     -f examples/agentic-commerce-demo/deploy/docker-compose.stripe.yml up --build
+#
+# This only builds the `stripe` SDK into the image — it does not supply a
+# key. Put your own test-mode key in examples/agentic-commerce-demo/.env:
+#   SETTLEMENT=stripe
+#   STRIPE_API_KEY=sk_test_...
+# Without SETTLEMENT=stripe set too, this image still runs the mock rail —
+# ENABLE_STRIPE only controls what's *installed*, not what's *used*.
+
+services:
+  family:
+    build:
+      args:
+        ENABLE_STRIPE: "true"
