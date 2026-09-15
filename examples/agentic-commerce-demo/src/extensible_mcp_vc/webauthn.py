@@ -54,21 +54,6 @@ def b64url_encode(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 
-def spend_challenge(tool: str, amount_cents: int, merchant: str) -> bytes:
-    """The WebAuthn challenge bytes for a spend action.
-
-    ``canonical = "legov1|spend|" + tool + "|" + decimal(amountCents) + "|" +
-    merchant``; the challenge is the UTF-8 bytes of the *lowercase hex* SHA-256
-    of that string. Hex-ASCII rather than the raw digest so the in-policy
-    binding check is Rego-native — Rego's ``crypto.sha256`` yields hex and
-    ``base64url.encode`` of a string is a default builtin. ``tool`` must be
-    pipe-free and ``merchant`` is the terminal field, so a ``|`` in ``merchant``
-    cannot shift boundaries.
-    """
-    canonical = f"legov1|spend|{tool}|{amount_cents}|{merchant}".encode()
-    return hashlib.sha256(canonical).hexdigest().encode()
-
-
 def extract_challenge(client_data_json: bytes) -> bytes:
     """The challenge bytes the authenticator signed, decoded from clientDataJSON."""
     return b64url_decode(json.loads(client_data_json).get("challenge", ""))
@@ -274,7 +259,7 @@ def verify_webauthn_assertion(
 ) -> None:
     """Signature verification (:func:`verify_webauthn_signature`) *plus* the
     challenge→action binding: the signed challenge must equal
-    ``expected_challenge`` (e.g. :func:`spend_challenge`).
+    ``expected_challenge``, supplied by the caller.
 
     Convenience for the standalone approval service, which owns both checks. In
     the policy-bundle-integrated path the builtin does the signature half and

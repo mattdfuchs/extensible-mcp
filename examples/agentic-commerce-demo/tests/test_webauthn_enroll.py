@@ -17,7 +17,6 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from extensible_mcp_vc.webauthn import (
     WebAuthnError,
-    spend_challenge,
     b64url_encode,
     cose_ec2_to_public_key,
     parse_registration,
@@ -26,6 +25,9 @@ from extensible_mcp_vc.webauthn import (
 
 RP_ID = "approve.example"
 ORIGIN = "https://approve.example"
+# This file is about recovering a usable key from an attestationObject, not
+# about what the challenge means, so a literal server-set challenge will do.
+CHALLENGE = b"a-server-set-challenge"
 
 
 # -- a tiny CBOR encoder, only for building test fixtures -------------------- #
@@ -90,11 +92,10 @@ def test_parse_registration_recovers_a_usable_key():
     assert cred_id_out == cred_id
 
     # the recovered key verifies an assertion the private key signs
-    action = {"tool": "spend", "amountCents": 1500, "merchant": "acme"}
     client_data = json.dumps(
         {
             "type": "webauthn.get",
-            "challenge": b64url_encode(spend_challenge(action["tool"], action["amountCents"], action["merchant"])),
+            "challenge": b64url_encode(CHALLENGE),
             "origin": ORIGIN,
         }
     ).encode()
@@ -107,7 +108,7 @@ def test_parse_registration_recovers_a_usable_key():
         authenticator_data=auth,
         client_data_json=client_data,
         signature=sig,
-        expected_challenge=spend_challenge(action["tool"], action["amountCents"], action["merchant"]),
+        expected_challenge=CHALLENGE,
         expected_origin=ORIGIN,
         expected_rp_id=RP_ID,
     )

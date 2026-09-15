@@ -60,13 +60,11 @@ from extensible_mcp_vc.invoice import canonical_invoice
 from extensible_mcp_vc.meta_tools import (
     build_invoice_tools,
     build_vc_tools,
-    build_webauthn_tool,
     register_vc_callback_route,
 )
 
 _FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures"
 BUNDLE_DIR = _FIXTURES / "family_spend_prod"
-WA_BUNDLE_DIR = _FIXTURES / "family_spend_webauthn"
 # The Rego bundle, certified by the external
 # policy-authoring toolchain. A CEL twin exists
 # (tests/fixtures/cel_family_spend_invoice) and is proven equivalent by
@@ -184,35 +182,6 @@ class PizzaWireAdapter(WalletBundleAdapter):
                         )
                     )
         return vc
-
-
-class WebAuthnWireAdapter(WalletBundleAdapter):
-    """The spend rail's wire adapter: the request rides as a wallet bundle,
-    the passkey assertion rides as ``approval`` and is lifted to the policy
-    input's top level. Naming ``approval`` the authorization field makes the
-    filter strip it from the downstream call."""
-
-    def __init__(self) -> None:
-        super().__init__(authorization_field="approval")
-
-    def adapt(self, request: CallRequest):
-        args = dict(request.arguments)
-        approval = args.pop("approval", None)
-        adapted = super().adapt(
-            CallRequest(
-                tool_name=request.tool_name,
-                arguments=args,
-                server_name=request.server_name,
-            )
-        )
-        if isinstance(approval, str):  # some client paths stringify objects
-            try:
-                approval = json.loads(approval)
-            except ValueError:
-                approval = None
-        if isinstance(approval, dict):
-            adapted.envelope["approval"] = approval
-        return adapted
 
 
 class InvoiceGatedFilter:
@@ -365,13 +334,8 @@ def main() -> None:
     bundle = PolicyBundle.load(BUNDLE_DIR, name="family_spend_prod")
     resolver = DidWebResolver(trusted, preresolved=preresolved)
 
-    # -- the WebAuthn rail: bundle, origin/rpId, enrollment lookup ---------- #
+    # -- the invoice rail: bundle, origin/rpId, enrollment lookup ----------- #
     approval_origin = urlparse(APPROVAL_URL)
-    wa_bundle = PolicyBundle.load(
-        WA_BUNDLE_DIR,
-        name="family_spend_webauthn",
-        builtins=default_builtins(webauthn_rp_id=approval_origin.hostname),
-    )
     invoice_bundle = PolicyBundle.load(
         INVOICE_BUNDLE_DIR,
         name="family_spend_invoice",
@@ -392,26 +356,9 @@ def main() -> None:
 
     def filter_factory(name: str):
         # Four routes, three bundles: pizza and payments-VC share the prod
-        # policy with different wire adapters; payments runs the WebAuthn
-        # bundle (parent approves by passkey, not wallet); settlement runs
-        # the certified invoice bundle (no wallet VC at all — see
+        # policy with different wire adapters; settlement runs the
+        # certified invoice bundle (no wallet VC at all — see
         # InvoiceGatedFilter).
-        if name == "family_spend_webauthn":
-            return ToolScopedFilter(
-                VCPolicyFilter(
-                    wa_bundle,
-                    adapter=WebAuthnWireAdapter(),
-                    resolver=resolver,
-                    trusted_admin_dids=trusted,
-                    # validate_input defaults on — re-pinned 2026-09-09 to the
-                    # manifest (wallet-supplied claim bodies open).
-                    extra_config={
-                        "webauthnOrigin":
-                            f"{approval_origin.scheme}://{approval_origin.netloc}",
-                    },
-                    wallet_fallback=enrollment_lookup,
-                )
-            )
         if name == "family_spend_invoice":
             return ToolScopedFilter(
                 InvoiceGatedFilter(
@@ -430,6 +377,10 @@ def main() -> None:
             )
         adapters = {
             "family_spend_pizza": PizzaWireAdapter(),
+            # payments__spend speaks the policy's own vocabulary already, so
+            # the base adapter (dollars -> amountCents, membership harvest)
+            # is all it needs.
+            "family_spend_prod": WalletBundleAdapter(),
         }
         adapter = adapters.get(name)
         if adapter is None:
@@ -447,7 +398,7 @@ def main() -> None:
 
     selector = LayeredBundleSelector(
         literal_map={
-            "payments": "family_spend_webauthn",
+            "payments": "family_spend_prod",
             "pizza": "family_spend_pizza",
             "settlement": "family_spend_invoice",
         },
@@ -521,8 +472,8 @@ def main() -> None:
             for k in ("credentialId", "authenticatorData", "clientDataJSON", "signature")
         },
         "description": (
-            "The passkey assertion object returned by request_webauthn_approval "
-            "— pass it verbatim."
+            "A passkey assertion object, exactly as the approval service "
+            "returned it — pass it verbatim."
         ),
     }
     wire_invoice = {
@@ -545,7 +496,6 @@ def main() -> None:
         wire_schemas={
             "requestVC": wire_vc,
             "authorizationVC": wire_vc,
-            "approval": wire_approval,
             "invoice": wire_invoice,
             "childApproval": wire_approval,
             "parentApproval": wire_approval,
@@ -567,7 +517,6 @@ def main() -> None:
     pending: dict = {}
     local_tools = [
         *build_vc_tools(originator_client=originator, approver_client=approver, pending=pending),
-        *build_webauthn_tool(approval_client=approval_http),
         *build_invoice_tools(approval_client=approval_http),
     ]
 
@@ -583,7 +532,7 @@ def main() -> None:
           f"(downstreams: {DOWNSTREAM.name} + {PIZZA_SERVER.name} + "
           f"{SETTLEMENT_SERVER.name}; "
           f"gated: {sorted(GATED_ACTIONS)}; "
-          f"rails: spend=webauthn ({APPROVAL_URL}) , order_pizza=VC wallets "
+          f"rails: spend + order_pizza=VC wallets "
           f"({vc['originator_wallet_url']} , {vc['approver_wallet_url']}) , "
           f"charge_invoice=certified policy ({INVOICE_BUNDLE_DIR.name})")
     server.run(transport="http", host=args.host, port=args.port)

@@ -123,28 +123,39 @@ verifiable signed evidence.
 ## How the two paths relate
 
 Both realize the same decomposition — several cheap, non-repudiable approvals
-gate one expensive execution act — but at different seams, and they are not yet
-unified:
+gate one expensive execution act — and both are now decided at the same seam:
 
-- The **VC path** proves *who authorized* via wallet-issued VCs checked by the
-  supplied policy bundle inside the MCP call gate.
-- The **WebAuthn path** proves *a human physically approved this exact object*
-  and binds the merchant's committed terms.
+- The **VC path** proves *who authorized* via wallet-issued VCs, checked by the
+  `family_spend_prod` bundle inside the MCP call gate.
+- The **WebAuthn path** proves *a human physically approved this exact object*,
+  checked by the `family_spend_invoice` bundle at that same gate.
 
 <details><summary>Diagram source (Mermaid)</summary>
 
 ```mermaid
 flowchart LR
     webauthn["WebAuthn approvals<br/>(bound to invoice hash)"]
-    bundle["policy bundle<br/>family_spend_webauthn"]
-    gate["MCP call gate<br/>VCPolicyFilter"]
-    webauthn -.->|"evidence — deferred, awaits bundle"| bundle -.-> gate
+    invoice["merchant-signed invoice<br/>(Ed25519 over canonical bytes)"]
+    bundle["policy bundle<br/>family_spend_invoice"]
+    gate["MCP call gate<br/>InvoiceGatedFilter"]
+    webauthn --> bundle
+    invoice --> bundle
+    bundle --> gate
 ```
 
 </details>
 
-Convergence — having the `family_spend_webauthn` policy bundle consume
-WebAuthn evidence so a single policy governs both the VC chain and the human
-biometric at the MCP call gate — is designed but deferred.
-It is now the only deferred seam: the commerce path runs end to end through
-settlement and fulfilment (stage 3).
+The convergence is done: `family_spend_invoice` consumes the merchant's
+signature and both passkey legs in one policy, so a single decision governs
+the human biometric and the merchant's committed terms together. Nothing is
+enforced in hand-written Python on either path.
+
+One thing deliberately *not* wired: `family_spend_webauthn`, which was the
+other route to the same convergence — passkey evidence governing a bare
+`spend` action rather than an invoice. Its challenge is a pure function of the
+terms (`tool`, `amountCents`, `merchant`) with nothing per-transaction in it,
+so one assertion authorizes unlimited identical calls. The invoice rail avoids
+this because the invoice carries a `nonce` and the challenge is taken over the
+whole signed invoice. That bundle remains in `tests/fixtures/` with its tests,
+and reinstating the rail means giving the challenge a per-approval nonce
+first.

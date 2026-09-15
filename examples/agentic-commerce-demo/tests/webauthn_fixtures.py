@@ -5,7 +5,9 @@
 artifacts a browser authenticator would produce — a registration
 ``attestationObject`` (an ES256/P-256 COSE key) and a ``navigator.credentials.get``
 assertion signing over a server-set challenge. Shared by the approval-service,
-purchase, and negotiation tests so the assertion-forging logic lives in one place.
+purchase, and negotiation tests so the assertion-forging logic lives in one place,
+alongside the invoice-approval scaffolding (trusted merchant, signed invoice,
+enrollment, approval) those tests drive the service through.
 
 Not a test module (no ``test_`` prefix), so pytest imports but does not collect it.
 """
@@ -13,11 +15,15 @@ Not a test module (no ``test_`` prefix), so pytest imports but does not collect 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from extensible_mcp_vc.invoice import sign_invoice
 from extensible_mcp_vc.webauthn import b64url_encode
 
 # The FastAPI TestClient serves from http://testserver, so the rpId/origin the
@@ -69,3 +75,78 @@ def assertion_for(key, challenge: bytes, *, flags: int = 0x05) -> dict[str, str]
         "clientDataJSON": b64url_encode(client),
         "signature": b64url_encode(sig),
     }
+
+
+# --------------------------------------------------------------------------- #
+# The invoice-approval flow: the scaffolding an approval-service test needs to
+# get from a bare app to a pending approval the humans can sign. The retired
+# spend rail could be driven with a single POST; the invoice rail needs a
+# merchant key in the trusted set and a merchant-signed invoice, so that setup
+# lives here rather than being copied into every caller.
+# --------------------------------------------------------------------------- #
+
+FUTURE_EXP = 4_000_000_000  # year 2096 — the endpoint checks expiry against real time
+
+
+def load_approval_app():
+    """The approval service's FastAPI app, loaded from the examples script. A
+    fresh module per call, so each test starts with empty registries."""
+    path = Path(__file__).resolve().parents[1] / "examples" / "approval_service.py"
+    spec = importlib.util.spec_from_file_location("approval_service", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.app
+
+
+def enroll(client, role: str):
+    """Register a fresh passkey for ``role``; returns ``(private_key, credentialId)``."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    r = client.post("/register", json={
+        "attestationObject": b64url_encode(attestation_object(key.public_key(), f"cred-{role}".encode())),
+        "role": role})
+    assert r.status_code == 200
+    return key, r.json()["credentialId"]
+
+
+def trust_merchant(client, merchant_id: str = "pizza-1") -> Ed25519PrivateKey:
+    """Mint a merchant Ed25519 key and register it into the buyer's closed
+    trusted-merchant set; returns the private key the merchant signs with."""
+    key = Ed25519PrivateKey.generate()
+    raw = b64url_encode(key.public_key().public_bytes_raw())
+    r = client.post("/trust-merchant", json={"merchantId": merchant_id, "publicKey": raw})
+    assert r.status_code == 200 and merchant_id in r.json()["trusted"]
+    return key
+
+
+def sample_invoice(**over) -> dict:
+    """A merchant-signed-invoice body. The default ``totalCents`` (1800) is over
+    the $10 solo limit, so it needs child + parent; the ``nonce`` is what makes
+    an approval of it authorize exactly one transaction."""
+    inv = {
+        "merchantId": "pizza-1",
+        "merchant": "Tony's Pizza",
+        "items": [{"name": "Large Pepperoni", "qty": 1}],
+        "totalCents": 1800,
+        "currency": "usd",
+        "exp": FUTURE_EXP,
+        "nonce": "urn:uuid:inv-1",
+    }
+    inv.update(over)
+    return inv
+
+
+def issue_invoice(client, merchant_key: Ed25519PrivateKey, invoice: dict):
+    """The merchant signs ``invoice``; the buyer posts it for approval."""
+    return client.post(
+        "/request-invoice",
+        json={"invoice": invoice, "signature": sign_invoice(invoice, merchant_key)},
+    )
+
+
+def approve_invoice(client, approval_id, key, cred_id, challenge: bytes, *, flags: int = 0x05):
+    """Approve ``approval_id`` with a passkey assertion over ``challenge`` —
+    normally ``invoice_challenge(invoice)``, the server-authoritative value."""
+    return client.post(
+        f"/approve/{approval_id}",
+        json={"credentialId": cred_id, **assertion_for(key, challenge, flags=flags)},
+    )

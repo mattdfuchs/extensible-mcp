@@ -10,19 +10,18 @@ This package supplies that channel by requiring W3C Verifiable Credentials at ca
 
 The sibling package [`household-identity`](../identity) provides the wallet service that holds keys and prompts the human for approval, and the DID server that publishes the admin's DID document and issues membership credentials. The two packages together implement the demo's wallet rail; healthcare and other deployments reuse the same primitives with a different trust anchor.
 
-## One enforcement path, three rails
+## One enforcement path, two rails
 
 Every gated call is decided by a **policy bundle** — a manifest, a fetch plan, guidance, and rules in Rego-compiled-to-WASM or CEL — evaluated by `extensible-mcp`'s engine. This package doesn't decide anything itself. It supplies the evidence a bundle decides over, plus a thin *wire adapter* per rail that maps the on-the-wire argument names onto the policy's input contract.
 
-`family_proxy_server.py` runs three rails at once, one per gated action, all over the same machinery:
+`family_proxy_server.py` runs two rails at once, all over the same machinery:
 
 | Action | Evidence | Bundle |
 |---|---|---|
-| `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
-| `spend` | a passkey assertion bound to the exact terms | `family_spend_webauthn` |
+| `spend`, `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
 | `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
 
-That they coexist is the point: one pipeline, one decision mechanism, three quite different kinds of evidence.
+That they coexist is the point: one pipeline, one decision mechanism, two quite different kinds of evidence — a credential a human signed in a wallet, and a merchant's own signature over terms it is bound to honour.
 
 Two entry points under [`examples/`](examples/): `boot_demo.py` mints its keys in-process and drives a scripted run in one command, and `family_proxy_server.py` is the real thing with wallets and browser approval. Both are covered in [`examples/README.md`](examples/README.md); for the containerized version see [`deploy/`](deploy/), and for the bundle format itself the [root README's Policy bundles section](../../README.md#policy-bundles).
 
@@ -65,7 +64,7 @@ router = BundleRouter(selector, filter_factory)
 server = create_server(config, bundle_router=router, local_tools=evidence_tools)
 ```
 
-[`examples/boot_demo.py`](examples/boot_demo.py) is the smallest complete version of that — under 200 lines, no wallets, runnable in one command. [`examples/family_proxy_server.py`](examples/family_proxy_server.py) is the full one, with three rails and real wallets.
+[`examples/boot_demo.py`](examples/boot_demo.py) is the smallest complete version of that — under 200 lines, no wallets, runnable in one command. [`examples/family_proxy_server.py`](examples/family_proxy_server.py) is the full one, with both rails and real wallets.
 
 For air-gapped tests or fixed deployments, `VCConfig` exposes `preresolved_did_documents` to skip the HTTPS lookup for known DIDs.
 
@@ -77,7 +76,7 @@ The larger negotiate → invoice → passkey → settle → fulfill commerce dem
 
 ## Status
 
-`0.0.1` — feature complete. 172 tests pass (1 skipped without a workspace admin key). Not yet on PyPI; resolved as an editable workspace member of the parent repo (see [`../../pyproject.toml`](../../pyproject.toml)).
+`0.0.1` — feature complete. 109 tests pass (1 skipped without a workspace admin key). Not yet on PyPI; resolved as an editable workspace member of the parent repo (see [`../../pyproject.toml`](../../pyproject.toml)).
 
 Deferred to later versions: StatusList revocation (currently relying on credential expiry), JSON-LD VCs (JWT-VC only for now). A web approval UI now ships (`wallet run --approve web`, and the WebAuthn passkey page for the commerce demo) alongside the original stdin prompt.
 

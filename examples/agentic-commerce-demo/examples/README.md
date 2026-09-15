@@ -76,16 +76,15 @@ order a pizza.
 
 ### What gets gated, and by what
 
-`family_proxy_server.py` gates three actions, each routed to its own bundle:
+`family_proxy_server.py` gates three actions across two bundles:
 
 | Action | Evidence | Bundle |
 |---|---|---|
-| `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
-| `spend` | a passkey assertion bound to the exact terms | `family_spend_webauthn` |
+| `spend`, `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
 | `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
 
-The two terminals above cover `order_pizza`. The passkey rails additionally
-need the approval service, which serves the browser page the human taps:
+The two wallets above cover `spend` and `order_pizza`. `charge_invoice` also
+needs the approval service, which serves the passkey page the human taps:
 
 ```bash
 APPROVAL_HOST=0.0.0.0 uv run python examples/approval_service.py

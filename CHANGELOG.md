@@ -7,6 +7,32 @@ semver's `0.x` range deliberately — the public API isn't frozen yet.
 
 ## [0.3.0] - 2026-09-15
 
+**Removed: the self-asserted spend rail**
+
+The approval page had a "Send a test request ($15 to acme)" button that
+conjured a $15 spend approval from nothing, and `POST /request` behind it. The
+WebAuthn challenge on that rail was a pure function of the terms —
+`legov1|spend|{tool}|{amountCents}|{merchant}` — with nothing per-transaction
+in it, so one passkey assertion authorized unlimited identical calls. With the
+Stripe downstream enabled that meant one approval, many charges, since it
+minted a fresh `uuid4()` idempotency key per call.
+
+The invoice rail does not have this shape: its challenge is taken over a whole
+merchant-signed invoice, the invoice carries a `nonce`, and settlement and
+fulfilment both key on it. So rather than bolt a replay cache onto the weaker
+design, the rail is gone: the button, `POST /request`,
+`request_webauthn_approval`, `spend_challenge()`, and the WebAuthn wire
+adapter. `payments__spend` survives, rerouted onto `family_spend_prod` — the
+wallet-VC rail that binds signed intent to the call field by field — so the
+`boot_demo.py` walkthrough is unaffected.
+
+An approval request can now only be created by a merchant-signed invoice,
+never from the page. The `family_spend_webauthn` bundle stays in
+`tests/fixtures/` with its tests, unwired, as the artifact to fix: reinstating
+the rail means giving its challenge a per-approval nonce, which changes the
+canonical string and so needs the Rego and the compiled wasm re-issued
+together. This also removes `legov1` from all shipped Python.
+
 **Removed: the pre-bundle enforcement path (`VCCallFilter`)**
 
 The demo package carried two implementations of the same job. `VCCallFilter`

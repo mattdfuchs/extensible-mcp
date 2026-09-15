@@ -96,7 +96,6 @@ from extensible_mcp_vc.webauthn import (
     WebAuthnError,
     b64url_encode,
     parse_registration,
-    spend_challenge,
     verify_webauthn_assertion,
 )
 
@@ -296,23 +295,6 @@ async def enrollment(credential_id: str) -> JSONResponse:
     if e is None:
         raise HTTPException(404, "no enrollment VC for this credential")
     return JSONResponse(e)
-
-
-@app.post("/request")
-async def request_approval(request: Request) -> JSONResponse:
-    """Request approval of a raw, self-asserted spend action (the simple path)."""
-    body = await request.json()
-    action = body["action"]
-    amount = int(action["amountCents"])
-    challenge = spend_challenge(action["tool"], amount, action["merchant"])
-    approval_id = _new_pending("action", action, challenge, amount)
-    _log_event(_pending[approval_id],
-               f"action requested: {action.get('tool')} ${amount/100:.2f} at {action.get('merchant')}")
-    if isinstance(body.get("roles"), list) and body["roles"]:
-        # The wallet rail asks for specific approvers (the requester's consent
-        # is the wallet-signed request VC; only the approver signs here).
-        _pending[approval_id]["required_roles"] = [str(r) for r in body["roles"]]
-    return JSONResponse(_summary(approval_id, _pending[approval_id]))
 
 
 @app.get("/settlement-card")
@@ -634,12 +616,12 @@ h2{margin-top:1.4em}#status{background:#eef;padding:1em;border-radius:6px}</styl
 <h2>1. Enroll this window</h2>
 role <select id=role><option>child</option><option>parent</option></select>
 <button onclick=enroll()>Enroll with biometric</button>
-<h2>2. Request an approval</h2>
+<h2>2. What is pending</h2>
 $<input id=amt size=6 readonly> to <input id=merch readonly>
-<button onclick=request_()>Send a test request ($15 to acme)</button>
 <span style=color:#666>(&le;$10 needs child only; over $10 needs child + parent)</span>
-<div style=color:#666;font-size:.9em>The fields above mirror whatever request is currently
-pending — they're not editable; use the button to send a fixed test request.</div>
+<div style=color:#666;font-size:.9em>These mirror the invoice currently awaiting
+approval — blank when there is none. Nothing here is editable: an approval
+request can only be created by a merchant-signed invoice, never from this page.</div>
 <h2>3. Approve the current request</h2>
 <button onclick=approve()>Approve with biometric</button>
 <div id=status>no request yet</div>
@@ -661,11 +643,6 @@ async function enroll(){
   const r=await fetch('/register',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject),role:myRole})});
   const j=await r.json(); credentialId=j.credentialId; log('enrolled as',j.role,'('+credentialId.slice(0,10)+'\\u2026)');
-}
-async function request_(){
-  const action={tool:'spend',amountCents:1500,merchant:'acme'};
-  const r=await fetch('/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});
-  const j=await r.json(); log('requested:',JSON.stringify(j.action),'needs',j.required_roles.join(' + '));
 }
 async function approve(){
   if(!credentialId){log('enroll this window first');return}

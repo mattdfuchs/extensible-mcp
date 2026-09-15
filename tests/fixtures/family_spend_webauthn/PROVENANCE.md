@@ -1,5 +1,16 @@
 # Fixture provenance — family_spend_webauthn (WebAuthn approval leg)
 
+> **Not wired into any live path.** Tested here, but no runnable proxy loads
+> it. `spend_challenge_binds` ties the assertion to `(tool, amountCents,
+> merchant)` and nothing else, so the challenge is a pure function of the
+> terms: one assertion authorizes unlimited identical calls, with no
+> per-transaction component to make it single-use. `family_spend_invoice`
+> avoids this by taking the challenge over a whole merchant-signed invoice,
+> which carries a `nonce`. Reinstating this rail means giving the challenge a
+> per-approval nonce — a change to the canonical string, so the Rego and the
+> compiled `policy.wasm` move together, and the bundle wants re-issuing rather
+> than a local rebuild. Kept as the artifact to fix.
+
 The approval-leg counterpart to `family_spend_prod`: request side is
 identical (did:key request VC + did:web admin membership chain);
 authorization side is a passkey assertion, verified by the host builtin

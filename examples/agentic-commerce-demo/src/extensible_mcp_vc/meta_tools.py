@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Extra local tools for the proxy: request_action_vc, request_authorization_vc,
-request_webauthn_approval, request_invoice_approval, record_fulfillment.
+request_invoice_approval, record_fulfillment.
 
 Each ``build_*`` function here returns a ``list[extensible_mcp.LocalTool]`` —
 plain in-process tools, not a downstream MCP server — for the embedder to
@@ -204,98 +204,6 @@ def build_vc_tools(
                 "required": ["request"],
             },
             handler=request_authorization_vc_handler,
-        ),
-    ]
-
-
-def build_webauthn_tool(
-    *,
-    approval_client: httpx.AsyncClient,
-    approver_role: str = "parent",
-    poll_interval_seconds: float = 2.0,
-    timeout_seconds: float = 300.0,
-) -> list[LocalTool]:
-    """Build ``request_webauthn_approval``: the passkey counterpart of
-    ``request_authorization_vc``. The human approves in the browser (the
-    approval service's page, Face ID / Touch ID); the tool returns the raw
-    WebAuthn assertion for the LLM to pass as the gated tool's ``approval``
-    argument. The proxy's policy — not this service — is the authority: it
-    re-verifies the signature and that the signed challenge binds this exact
-    (tool, amountCents, merchant)."""
-
-    async def request_webauthn_approval_handler(arguments: dict[str, Any]) -> dict[str, Any]:
-        tool = arguments["tool"]
-        amount_cents = arguments["amount_cents"]
-        merchant = arguments["merchant"]
-        # The policy binds the challenge over the *unqualified* action
-        # (input.tool); derive it rather than trusting the LLM to know the
-        # convention — a qualified name here signs the wrong canonical and
-        # the binding check refuses an otherwise-valid human approval.
-        action_id = tool.split("__", 1)[1] if "__" in tool else tool
-        action = {"tool": action_id, "amountCents": amount_cents, "merchant": merchant}
-        logger.info("[WA] request_webauthn_approval: %s", json.dumps(action))
-        try:
-            r = await approval_client.post(
-                "/request", json={"action": action, "roles": [approver_role]}
-            )
-        except httpx.RequestError as e:
-            logger.warning("[WA] ✗ could not reach approval service: %s", e)
-            return {"error": f"could not reach the approval service: {e}"}
-        if r.status_code != 200:
-            return {"error": f"approval service returned HTTP {r.status_code}: {r.text}"}
-        approval_id = r.json()["id"]
-        logger.info(
-            "[WA] → pending approval %s; waiting for the %s's passkey "
-            "(browser page), timeout %ss",
-            approval_id, approver_role, timeout_seconds,
-        )
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
-        while asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(poll_interval_seconds)
-            try:
-                p = await approval_client.get(f"/pending/{approval_id}")
-            except httpx.RequestError:
-                continue
-            if p.status_code == 200 and p.json().get("status") == "approved":
-                a = await approval_client.get(
-                    f"/assertion/{approval_id}/{approver_role}"
-                )
-                if a.status_code != 200:
-                    return {"error": f"assertion fetch failed: HTTP {a.status_code}"}
-                logger.info("[WA] ✓ approval %s signed by the %s", approval_id, approver_role)
-                return a.json()
-        logger.warning("[WA] ✗ approval %s timed out", approval_id)
-        return {
-            "error": (
-                f"no passkey approval within {timeout_seconds:.0f}s; the "
-                f"{approver_role} may not have the approval page open."
-            )
-        }
-
-    return [
-        LocalTool(
-            name="request_webauthn_approval",
-            description=(
-                "Request a passkey (WebAuthn) approval for a spend-class action. "
-                "The approver confirms with a biometric in the approval page; "
-                "this returns the assertion object to pass verbatim as the "
-                "`approval` argument of the gated tool. The signature is bound "
-                "to the exact action: `tool` is the unqualified action identifier "
-                "(e.g. `spend`, not `payments__spend` — a qualified name is "
-                "normalized), and amountCents/merchant must equal the actual "
-                "call's values or the policy will deny. "
-                "Returns `{\"error\": ...}` on decline or timeout."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string"},
-                    "amount_cents": {"type": "integer"},
-                    "merchant": {"type": "string"},
-                },
-                "required": ["tool", "amount_cents", "merchant"],
-            },
-            handler=request_webauthn_approval_handler,
         ),
     ]
 
