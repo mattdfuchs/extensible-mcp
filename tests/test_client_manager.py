@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import gc
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -224,3 +225,102 @@ class TestCheckAuthError:
         conn = _make_conn()
         eg = ExceptionGroup("task group failed", [ValueError("unrelated")])
         assert conn._check_auth_error(eg) is None
+
+
+class TestCrossTaskLifecycle:
+    """A reconnect happens in whichever request task made the failing call,
+    not in the lifespan task that first connected. anyio cancel scopes must
+    be exited by the task that entered them, so the transport is owned by a
+    task of its own rather than by whoever called connect()."""
+
+    @staticmethod
+    def _stdio_config() -> ServerConfig:
+        return ServerConfig(
+            name="mock", command=sys.executable, args=[MOCK_SERVER_PATH]
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_from_a_different_task_than_connect(self):
+        mgr = ClientManager()
+        connected = asyncio.Event()
+
+        async def lifespan() -> None:
+            await mgr.connect_all([self._stdio_config()])
+            connected.set()
+
+        task = asyncio.create_task(lifespan())
+        await connected.wait()
+        await task
+        # close_all() runs here, in the *test's* task.
+        await asyncio.wait_for(mgr.close_all(), timeout=10)
+        assert mgr._connections == {}
+
+    @pytest.mark.asyncio
+    async def test_reconnect_in_a_request_task_leaves_a_closeable_connection(self):
+        """The regression: the retry used to re-enter the transport in the
+        request task, after which close_all() from the lifespan task hung
+        forever and the child process was never reaped."""
+        mgr = ClientManager()
+        connected = asyncio.Event()
+        shutdown = asyncio.Event()
+        closed = asyncio.Event()
+
+        async def lifespan() -> None:
+            await mgr.connect_all([self._stdio_config()])
+            connected.set()
+            await shutdown.wait()
+            await mgr.close_all()
+            closed.set()
+
+        task = asyncio.create_task(lifespan())
+        await connected.wait()
+
+        conn = mgr._connections["mock"]
+        first_session = conn.session
+        real_call = conn.session.call_tool
+        attempts = {"n": 0}
+
+        async def fail_once(name, arguments):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("transport went away")
+            return await real_call(name, arguments)
+
+        conn.session.call_tool = fail_once
+
+        result = await mgr.call_tool("mock__add_numbers", {"a": 1, "b": 2})
+        assert result.content[0].text == "3"
+        # One failing call on the patched session; the retry ran against the
+        # fresh session the reconnect installed.
+        assert attempts["n"] == 1
+        assert conn.session is not first_session  # reconnect swapped it
+
+        shutdown.set()
+        await asyncio.wait_for(closed.wait(), timeout=10)
+        await task
+
+
+@pytest.mark.asyncio
+async def test_shutdown_terminates_the_child_process():
+    """close() must leave nothing running. A teardown that gets cancelled
+    half-way closes the proxy's end of the pipes but never signals the
+    child, which then outlives the proxy holding its stdout open -- visible
+    as a subprocess transport still open after everything has shut down."""
+    from asyncio.base_subprocess import BaseSubprocessTransport
+
+    def open_transports() -> list[BaseSubprocessTransport]:
+        gc.collect()
+        return [
+            o
+            for o in gc.get_objects()
+            if isinstance(o, BaseSubprocessTransport) and not o.is_closing()
+        ]
+
+    before = len(open_transports())
+    mgr = ClientManager()
+    await mgr.connect_all(
+        [ServerConfig(name="mock", command=sys.executable, args=[MOCK_SERVER_PATH])]
+    )
+    assert len(open_transports()) == before + 1
+    await mgr.close_all()
+    assert len(open_transports()) == before

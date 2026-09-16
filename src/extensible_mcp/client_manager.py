@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import AsyncExitStack
@@ -18,6 +19,10 @@ import mcp.types as mcp_types
 from .types import ServerConfig, ToolRecord
 
 logger = logging.getLogger(__name__)
+
+# How long close() waits for a connection's owner task to unwind its
+# transport before giving up on an orderly shutdown and cancelling it.
+CLOSE_TIMEOUT_SECONDS = 10.0
 
 
 def _read_tokens_file(path: Path) -> dict[str, str]:
@@ -67,7 +72,9 @@ class _Connection:
         # ClientManager.connect_url.
         self._tokens_allowed = tokens_allowed
         self.session: ClientSession | None = None
-        self._stack: AsyncExitStack | None = None
+        # The task that owns the transport's context managers; see connect().
+        self._owner: asyncio.Task[None] | None = None
+        self._closing: asyncio.Event | None = None
         self._tokens_file = tokens_file
         self._last_token_value: str | None = None
         self._token_set_at: float | None = None
@@ -143,31 +150,88 @@ class _Connection:
                 self._check_auth_error(sub)
 
     async def connect(self) -> None:
-        """Open a persistent connection. Used for stdio servers."""
-        stack = AsyncExitStack()
-        await stack.__aenter__()
+        """Open a persistent connection. Used for stdio servers.
+
+        The transport's context managers open anyio cancel scopes, and anyio
+        requires the task that entered a scope to be the one that exits it.
+        The first connect happens in the lifespan task, but a reconnect after
+        a failed call happens in whichever request task made that call -- so
+        the stack cannot simply live in the frame of whoever called connect.
+
+        Instead each connection gets its own task, which enters the stack,
+        parks until close() asks it to stop, and then unwinds in the same
+        task that entered. connect() and close() are therefore safe to call
+        from anywhere; both just hand instructions to that task and wait.
+        The session itself is transport-agnostic (memory object streams), so
+        calls still run directly in the request task.
+        """
+        if self._owner is not None:
+            raise RuntimeError(f"Server '{self.config.name}' is already connected")
+        loop = asyncio.get_running_loop()
+        started: asyncio.Future[None] = loop.create_future()
+        self._closing = asyncio.Event()
+        self._owner = loop.create_task(self._own_transport(started))
         try:
-            if self.config.url:
-                http_client = self._make_http_client()
-                if http_client:
-                    await stack.enter_async_context(http_client)
-                read, write, _ = await stack.enter_async_context(
-                    streamable_http_client(self.config.url, http_client=http_client)
-                )
-            else:
-                params = StdioServerParameters(
-                    command=self.config.command,
-                    args=self.config.args,
-                    env=self.config.env,
-                )
-                read, write = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-        except Exception:
-            await stack.aclose()
+            await started
+        except BaseException:
+            self._owner = None
+            self._closing = None
             raise
-        self._stack = stack
-        self.session = session
+
+    async def _own_transport(self, started: asyncio.Future[None]) -> None:
+        """Hold the transport open for the life of the connection.
+
+        Runs as its own task so that every enter/exit of the transport's
+        cancel scopes happens here, whatever task called connect() or
+        close().
+        """
+        closing = self._closing
+        assert closing is not None
+        try:
+            async with AsyncExitStack() as stack:
+                if self.config.url:
+                    http_client = self._make_http_client()
+                    if http_client:
+                        await stack.enter_async_context(http_client)
+                    read, write, _ = await stack.enter_async_context(
+                        streamable_http_client(
+                            self.config.url, http_client=http_client
+                        )
+                    )
+                else:
+                    params = StdioServerParameters(
+                        command=self.config.command,
+                        args=self.config.args,
+                        env=self.config.env,
+                    )
+                    read, write = await stack.enter_async_context(stdio_client(params))
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                self.session = session
+                started.set_result(None)
+                await closing.wait()
+        except asyncio.CancelledError:
+            # Cancelled part-way through the transport's teardown, which for
+            # stdio means the child was never signalled. Nothing to be done
+            # about it here, but it must not look like a clean exit.
+            if not started.done():
+                started.cancel()
+            logger.warning(
+                "Transport for '%s' was cancelled before it finished closing",
+                self.config.name,
+            )
+            raise
+        except BaseException as exc:
+            if not started.done():
+                started.set_exception(exc)
+            else:
+                logger.warning(
+                    "Transport for '%s' failed while closing",
+                    self.config.name,
+                    exc_info=True,
+                )
+        finally:
+            self.session = None
 
     async def list_tools_ephemeral(self) -> list[mcp_types.Tool]:
         """Connect, list tools, and disconnect. Used for URL servers to avoid
@@ -207,13 +271,30 @@ class _Connection:
             raise
 
     async def close(self) -> None:
-        if self._stack:
-            try:
-                await self._stack.aclose()
-            except Exception:
-                pass
-            self._stack = None
-        self.session = None
+        """Ask the owner task to unwind the transport, and wait for it."""
+        owner, self._owner = self._owner, None
+        closing, self._closing = self._closing, None
+        if owner is None:
+            self.session = None
+            return
+        if closing is not None:
+            closing.set()
+        try:
+            # Shielded: a stdio teardown cancelled half-way leaves the child
+            # process running, so the owner is allowed to finish unwinding
+            # even when whoever called close() is itself being cancelled.
+            await asyncio.wait_for(asyncio.shield(owner), CLOSE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # A downstream that will not exit must not hold up the rest of
+            # shutdown; past the deadline, stop waiting and cut it loose.
+            logger.warning("Timed out closing connection to '%s'", self.config.name)
+            owner.cancel()
+        except Exception:
+            logger.warning(
+                "Error closing connection to '%s'", self.config.name, exc_info=True
+            )
+        finally:
+            self.session = None
 
 
 class ClientManager:
