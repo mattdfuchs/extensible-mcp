@@ -33,8 +33,9 @@ class VCConfig:
     block on stdin (backwards-compatible with the v0.1 demo).
 
     ``callback_timeout_seconds`` is how long the proxy will await the
-    callback before giving up and returning an error to the LLM. Default
-    150s sits comfortably under n8n's per-tool 180s HTTP timeout.
+    callback before giving up and returning an error to the LLM. The 150s
+    default was chosen to sit under the 180s per-tool HTTP timeout typical of
+    external agent runtimes driving the proxy over MCP.
     """
 
     originator_wallet_url: str
