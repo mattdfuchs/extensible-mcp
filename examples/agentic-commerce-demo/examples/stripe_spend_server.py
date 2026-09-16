@@ -75,9 +75,15 @@ async def spend(amount: float, merchant: str, currency: str = "usd") -> str:
             confirm=True,
             description=f"agent-initiated charge at {merchant}",
             metadata={"merchant": merchant},
-            # NOTE: for production the idempotency key must come from the signed
-            # request (so a retry can't double-charge and the LLM can't fabricate
-            # a fresh one); a per-call uuid is a placeholder for the demo.
+            # A per-call uuid, deliberately. Deriving the key from the signed
+            # request is impossible here and would be the wrong layer anyway:
+            # the proxy strips the credentials before forwarding, so this
+            # server never sees the evidence that authorized it. Replay is
+            # refused upstream instead, by SingleUseEvidenceFilter keying on
+            # the request VC's jti -- which is inside what the human signed,
+            # so the LLM cannot vary it. A fresh key here only means a genuine
+            # network retry of one authorized charge is not deduplicated by
+            # Stripe; the authorization itself is already single-use.
             idempotency_key=str(uuid.uuid4()),
         )
     except Exception as e:  # noqa: BLE001 - surface the rail's error to the caller

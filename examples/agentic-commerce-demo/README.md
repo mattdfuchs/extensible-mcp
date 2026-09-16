@@ -21,6 +21,8 @@ Every gated call is decided by a **policy bundle** — a manifest, a fetch plan,
 | `spend`, `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
 | `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
 
+Evidence on both rails is single-use: the proxy wraps each policy filter in `SingleUseEvidenceFilter`, which spends the request VC's `jti` on a call the policy allowed and refuses a second call carrying the same one. Without it the wallet rail would be replayable for the credential's whole validity window — one approval, as many spends as the LLM sent. The invoice rail keys settlement and fulfilment on the invoice nonce as well.
+
 That they coexist is the point: one pipeline, one decision mechanism, two quite different kinds of evidence — a credential a human signed in a wallet, and a merchant's own signature over terms it is bound to honour.
 
 Two entry points under [`examples/`](examples/): `boot_demo.py` mints its keys in-process and drives a scripted run in one command, and `family_proxy_server.py` is the real thing with wallets and browser approval. Both are covered in [`examples/README.md`](examples/README.md); for the containerized version see [`deploy/`](deploy/), and for the bundle format itself the [root README's Policy bundles section](../../README.md#policy-bundles).
@@ -76,7 +78,7 @@ The larger negotiate → invoice → passkey → settle → fulfill commerce dem
 
 ## Status
 
-`0.0.1` — feature complete. 114 tests pass (1 skipped without a workspace admin key). Not yet on PyPI; resolved as an editable workspace member of the parent repo (see [`../../pyproject.toml`](../../pyproject.toml)).
+`0.0.1` — feature complete. 122 tests pass (1 skipped without a workspace admin key). Not yet on PyPI; resolved as an editable workspace member of the parent repo (see [`../../pyproject.toml`](../../pyproject.toml)).
 
 Deferred to later versions: StatusList revocation (currently relying on credential expiry), JSON-LD VCs (JWT-VC only for now). A web approval UI now ships (`wallet run --approve web`, and the WebAuthn passkey page for the commerce demo) alongside the original stdin prompt.
 

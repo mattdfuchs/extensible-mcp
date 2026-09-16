@@ -34,6 +34,38 @@ tool, so a server named with one re-parsed as a *different* server —
 escaping per-server bundle routing and `allow_servers` while still being
 dispatched. `load_mcp_server` rejects it too.
 
+**Added: single-use evidence (`SingleUseEvidenceFilter`)**
+
+A policy over signed evidence is a pure function of that evidence and the
+call, so the same credentials re-sent with the same arguments decide the same
+way: every signature verifies, every binding holds, and the action happens
+again. Spending the evidence is state a stateless policy does not have.
+
+This was live on the surviving wallet rail. Reproduced against the real
+`family_spend_prod` bundle: one $15 request VC plus its parental
+authorization, submitted three times, authorized $45 -- and the demo
+downstream debits a balance per call, while the Stripe one mints a fresh
+idempotency key per call, so under `DOWNSTREAM=stripe` a single approval
+could charge repeatedly. It is the same shape as the flaw that retired the
+passkey spend rail in this release; retiring that rail did not remove it from
+the other.
+
+`SingleUseEvidenceFilter` wraps a policy filter and spends the credential's
+`jti` on a call the policy allowed, refusing any later call that carries the
+same one. The `jti` is inside the signed payload, so a caller cannot vary it
+without invalidating the signature -- which is what makes it usable as a
+replay key, and what a challenge derived purely from the terms lacks. It
+wraps rather than follows the policy filter because the policy filter strips
+credential fields from the arguments it passes on, and because evidence must
+be spent only when the call was actually authorized: a guard recording on
+arrival would let a refused call burn the human's approval. The store is in
+memory and per process, stated as such.
+
+The commerce demo wires it around both wallet-rail bundles.
+`stripe_spend_server.py`'s note about deriving an idempotency key from the
+signed request is corrected: the proxy strips the evidence before forwarding,
+so that server never sees it, and replay is refused upstream instead.
+
 **Security fixes from a pre-release review**
 
 An independent read of the tree before release turned up five issues that are

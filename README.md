@@ -64,7 +64,7 @@ The base proxy is working: dynamic server loading, RAG-based tool retrieval, an 
 
 Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 320 tests; the two example packages add 114 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 340 tests; the two example packages add 122 and 51.
 
 ## Threat Model
 
@@ -311,6 +311,16 @@ server = create_server(config, extra_call_filters=[policy_filter])
 ```
 
 The filter assembles the policy's input from the fetch plan, evaluates it, and on a denial returns the rendered guidance rather than the raw check ids. Note what it does with the call's arguments: any field the fetch plan sources from `call` other than `tool` and `arguments` is a **credential field** — it's pulled out of the arguments, fed to the policy, and *not* forwarded downstream. The downstream tool sees only its own native arguments, never the evidence that authorized them. To govern bundles per downstream server rather than pipeline-wide, pass `bundle_router` to `create_server` instead.
+
+**Evidence is single-use, and the policy cannot make it so.** A policy over signed evidence is a pure function of that evidence and the call, so the same credentials re-sent with the same arguments decide the same way: every signature still verifies, every binding still holds, and the action happens again. One human approval, unlimited identical calls. Spending the evidence is state the policy does not have, so it lives in a filter — wrap the policy filter in `SingleUseEvidenceFilter`, which keys on the credential's own `jti`:
+
+```python
+from extensible_mcp import SingleUseEvidenceFilter
+
+guarded = SingleUseEvidenceFilter(policy_filter, credential_fields=("requestVC",))
+```
+
+The `jti` sits inside the signed payload, so a caller cannot vary it without invalidating the signature — which is what makes it usable as a replay key, and what a challenge derived purely from the terms lacks. It wraps rather than follows the policy filter for two reasons: the policy filter strips credential fields from the arguments it passes on, so a later filter never sees them; and evidence must be spent only when the call was actually authorized, or a call the policy refuses would burn the human's approval. The store is in memory and per process — a deployment needing replay protection across restarts or several proxies should supply its own.
 
 Seven worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: six call-gate policies across both engines, from a two-credential spend policy up to an invoice-settlement one, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. [`project-overview.md`](project-overview.md) covers the modules involved.
 

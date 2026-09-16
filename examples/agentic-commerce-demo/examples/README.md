@@ -83,6 +83,8 @@ order a pizza.
 | `spend`, `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
 | `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
 
+Evidence on both rails is single-use: the proxy wraps each policy filter in `SingleUseEvidenceFilter`, which spends the request VC's `jti` on a call the policy allowed and refuses a second call carrying the same one. Without it the wallet rail would be replayable for the credential's whole validity window — one approval, as many spends as the LLM sent. The invoice rail keys settlement and fulfilment on the invoice nonce as well.
+
 The two wallets above cover `spend` and `order_pizza`. `charge_invoice` also
 needs the approval service, which serves the passkey page the human taps:
 

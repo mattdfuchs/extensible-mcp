@@ -30,6 +30,11 @@ class TokenStore:
 
     def __init__(self, initial: set[str]) -> None:
         self.valid: set[str] = set(initial)
+        # Every Authorization header the server actually received, so a test
+        # can assert on what left the proxy rather than only on whether the
+        # connection failed -- a failure has many causes, a leaked credential
+        # has one.
+        self.seen_authorization: list[str] = []
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -41,6 +46,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         auth = request.headers.get("Authorization", "")
+        self.store.seen_authorization.append(auth)
         if not auth.startswith("Bearer "):
             return Response("Missing bearer", status_code=401)
         if auth[7:] not in self.store.valid:
@@ -189,17 +195,56 @@ async def test_runtime_loaded_url_does_not_receive_a_stored_token(
     prompt-injected model naming a server that has a token, pointed at a host
     it controls, would otherwise be handed that bearer.
 
-    Proven end to end rather than by inspecting headers: the mock server
-    rejects anything without a valid bearer, so if no credential is sent the
-    connection fails."""
-    url, _store = mock_mcp_server
+    Asserted on what the server received, not merely on the connection
+    failing: a bare `pytest.raises(Exception)` would also pass with the mock
+    server down, the port wrong, or connect_url broken for some unrelated
+    reason. The property under test is that the stored bearer never left the
+    proxy."""
+    url, store = mock_mcp_server
     tokens_file = tmp_path / "tokens"
     tokens_file.write_text("mockauth=correct-token\n")
 
     mgr = ClientManager(tokens_file=tokens_file)
     # No static config for this name, so the URL is caller-chosen.
-    with pytest.raises(Exception):
+    with pytest.raises(BaseException) as info:
         await mgr.connect_url("mockauth", url)
+
+    # The server was reached -- so the failure is the refusal, not a dead port.
+    assert store.seen_authorization, "the mock server was never contacted"
+    # And it was reached with no credential at all.
+    assert all(a == "" for a in store.seen_authorization), store.seen_authorization
+    assert "correct-token" not in "".join(store.seen_authorization)
+
+    # The refusal is the server's 401, unwrapped from anyio's task group.
+    def leaves(exc: BaseException):
+        if isinstance(exc, BaseExceptionGroup):
+            for sub in exc.exceptions:
+                yield from leaves(sub)
+        else:
+            yield exc
+
+    assert any(
+        "401" in str(leaf) or "Unauthorized" in str(leaf)
+        for leaf in leaves(info.value)
+    ), [str(leaf) for leaf in leaves(info.value)]
+
+
+@pytest.mark.asyncio
+async def test_a_configured_url_does_present_the_token(tmp_path, mock_mcp_server):
+    """The companion assertion: the header machinery works, so the test above
+    is proving a policy decision and not a broken code path."""
+    url, store = mock_mcp_server
+    tokens_file = tmp_path / "tokens"
+    tokens_file.write_text("mockauth=correct-token\n")
+
+    mgr = ClientManager(tokens_file=tokens_file)
+    try:
+        await mgr.connect_all([ServerConfig(name="mockauth", url=url)])
+        assert any(
+            a == "Bearer correct-token" for a in store.seen_authorization
+        ), store.seen_authorization
+    finally:
+        await mgr.close_all()
 
 
 @pytest.mark.asyncio

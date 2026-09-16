@@ -45,6 +45,7 @@ from extensible_mcp import (
     DidWebResolver,
     LayeredBundleSelector,
     PolicyBundle,
+    SingleUseEvidenceFilter,
     VCPolicyFilter,
     WalletBundleAdapter,
     ed25519_jwk_from_document,
@@ -337,26 +338,20 @@ class ToolScopedAugmenter:
         return out
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser(prog="family_proxy_server")
-    parser.add_argument(
-        "--vc-config", type=Path,
-        default=PROJECT / "workspace" / "vc-config.json",
-    )
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=7400)
-    args = parser.parse_args()
+def build_bundle_router(
+    *,
+    trusted: list[str],
+    preresolved: dict[str, Any],
+    approval_client: httpx.AsyncClient,
+) -> tuple[BundleRouter, DidWebResolver]:
+    """Assemble the server -> bundle -> filter wiring this demo runs on.
 
-    vc = json.loads(args.vc_config.read_text())
-    trusted = vc["trusted_admin_dids"]
-
-    preresolved = {}
-    for did, doc in vc.get("preresolved_did_documents", {}).items():
-        jwk = ed25519_jwk_from_document(doc)
-        if jwk is not None:
-            preresolved[did] = jwk
-
+    A module-level function rather than inline in ``main()`` so a test can
+    build the real thing -- the same literal map, the same adapters, the same
+    replay guard -- instead of a copy that passes while the live wiring
+    drifts. Returns the resolver too, since callers need it to mint evidence
+    the same admin key vouches for.
+    """
     bundle = PolicyBundle.load(BUNDLE_DIR, name="family_spend_prod")
     resolver = DidWebResolver(trusted, preresolved=preresolved)
 
@@ -367,7 +362,7 @@ def main() -> None:
         name="family_spend_invoice",
         builtins=default_builtins(webauthn_rp_id=approval_origin.hostname),
     )
-    approval_http = httpx.AsyncClient(base_url=APPROVAL_URL, timeout=310.0)
+    approval_http = approval_client
 
     async def enrollment_lookup(subject: str):
         """approverEnrollment by credentialId: the admin-signed enrollment VC
@@ -412,13 +407,24 @@ def main() -> None:
         if adapter is None:
             return None
         return ToolScopedFilter(
-            VCPolicyFilter(
-                bundle,
-                adapter=adapter,  # LLM passes requestVC / authorizationVC
-                resolver=resolver,
-                trusted_admin_dids=trusted,
-                # validate_input defaults on — re-pinned 2026-09-09 to the
-                # manifest (wallet-supplied claim bodies open).
+            # Single-use, because the policy cannot be: it is a pure function
+            # of the evidence and the call, so the same VC pair re-sent with
+            # the same arguments decides the same way and the spend happens
+            # again. Keyed on the request VC's jti, which is inside what the
+            # kid signed. Wrapping rather than appending is deliberate --
+            # VCPolicyFilter strips the credentials from the arguments it
+            # passes on, and a guard must spend the evidence only when the
+            # policy actually allowed the call.
+            SingleUseEvidenceFilter(
+                VCPolicyFilter(
+                    bundle,
+                    adapter=adapter,  # LLM passes requestVC / authorizationVC
+                    resolver=resolver,
+                    trusted_admin_dids=trusted,
+                    # validate_input defaults on — re-pinned 2026-09-09 to the
+                    # manifest (wallet-supplied claim bodies open).
+                ),
+                credential_fields=(adapter.request_field,),
             )
         )
 
@@ -431,6 +437,36 @@ def main() -> None:
         map_key="origin_server",
     )
     router = BundleRouter(selector, filter_factory)
+
+    return router, resolver
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(prog="family_proxy_server")
+    parser.add_argument(
+        "--vc-config", type=Path,
+        default=PROJECT / "workspace" / "vc-config.json",
+    )
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=7400)
+    args = parser.parse_args()
+
+    vc = json.loads(args.vc_config.read_text())
+    trusted = vc["trusted_admin_dids"]
+
+    preresolved = {}
+    for did, doc in vc.get("preresolved_did_documents", {}).items():
+        jwk = ed25519_jwk_from_document(doc)
+        if jwk is not None:
+            preresolved[did] = jwk
+
+    approval_http = httpx.AsyncClient(base_url=APPROVAL_URL, timeout=310.0)
+    router, resolver = build_bundle_router(
+        trusted=trusted,
+        preresolved=preresolved,
+        approval_client=approval_http,
+    )
 
     # The MCP stdio transport sanitizes the child's environment to a small
     # whitelist (PATH, HOME, …), which drops STRIPE_API_KEY. Pass the Stripe
