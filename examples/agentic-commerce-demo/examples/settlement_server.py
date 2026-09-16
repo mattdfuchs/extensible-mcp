@@ -14,6 +14,13 @@ invoice binds this exact call, and that every required passkey approval
 is valid and bound to this exact invoice — this tool never re-decides
 authorization, it only executes and reports back to the approval service
 (which still owns the audit trail).
+
+The invoice's ``nonce`` travels with the call so the approval service can
+name the exact record to charge. It is not a claim the policy binds --
+the policy already binds the whole canonical invoice, nonce included, via
+the approval challenge -- so the proxy's invoice adapter checks the nonce
+against that same canonical invoice and keeps it out of the policy's view
+of ``arguments``.
 """
 
 from __future__ import annotations
@@ -37,16 +44,22 @@ APPROVAL_URL = os.environ.get("APPROVAL_URL", "http://localhost:7500")
         "reachable once the proxy's policy has verified the merchant's "
         "signature, that the invoice binds this call, and every required "
         "passkey approval — this tool never re-decides authorization, it "
-        "only executes. `amountCents`/`merchantId` are the same claims the "
-        "policy already bound to the signed invoice; pass them exactly as "
-        "given to `request_invoice_approval`."
+        "only executes. `amountCents`/`merchantId`/`nonce` all come from the "
+        "invoice you had approved; pass them exactly as given to "
+        "`request_invoice_approval`. The `nonce` names which invoice to "
+        "settle, so it must be that invoice's own nonce."
     ),
 )
-async def charge_invoice(amountCents: int, merchantId: str) -> dict[str, Any]:
+async def charge_invoice(amountCents: int, merchantId: str, nonce: str) -> dict[str, Any]:
     async with httpx.AsyncClient(base_url=APPROVAL_URL, timeout=30.0) as client:
         try:
             r = await client.post(
-                "/settle", json={"merchantId": merchantId, "amountCents": amountCents}
+                "/settle",
+                json={
+                    "merchantId": merchantId,
+                    "amountCents": amountCents,
+                    "nonce": nonce,
+                },
             )
         except httpx.RequestError as e:
             return {"error": f"could not reach the approval/settlement service: {e}"}

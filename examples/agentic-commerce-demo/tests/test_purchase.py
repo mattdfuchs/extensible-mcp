@@ -120,7 +120,14 @@ def test_signed_invoice_approved_by_both_roles(client):
     assert out["status"] == "approved" and set(out["approved_roles"]) == {"child", "parent"}
     assert "receipt" not in out
 
-    settled = client.post("/settle", json={"merchantId": inv["merchantId"], "amountCents": inv["totalCents"]}).json()
+    settled = client.post(
+        "/settle",
+        json={
+            "merchantId": inv["merchantId"],
+            "amountCents": inv["totalCents"],
+            "nonce": inv["nonce"],
+        },
+    ).json()
     assert settled["status"] == "settled"
     assert settled["receipt"]["nonce"] == inv["nonce"]
 
@@ -133,7 +140,14 @@ def test_solo_invoice_needs_only_child(client):
     assert req["required_roles"] == ["child"]
     r = _approve(client, req["id"], ck, cid, invoice_challenge(inv))
     assert r.json()["status"] == "approved"  # child alone approves; /settle still separate
-    assert client.post("/settle", json={"merchantId": inv["merchantId"], "amountCents": inv["totalCents"]}).json()["status"] == "settled"
+    assert client.post(
+        "/settle",
+        json={
+            "merchantId": inv["merchantId"],
+            "amountCents": inv["totalCents"],
+            "nonce": inv["nonce"],
+        },
+    ).json()["status"] == "settled"
 
 
 # -- the refusals ------------------------------------------------------------ #
@@ -195,7 +209,14 @@ def _settled_purchase(client):
     _approve(client, req["id"], ck, cid, ch)
     out = _approve(client, req["id"], pk, pid, ch).json()
     assert out["status"] == "approved"
-    settled = client.post("/settle", json={"merchantId": inv["merchantId"], "amountCents": inv["totalCents"]}).json()
+    settled = client.post(
+        "/settle",
+        json={
+            "merchantId": inv["merchantId"],
+            "amountCents": inv["totalCents"],
+            "nonce": inv["nonce"],
+        },
+    ).json()
     assert settled["status"] == "settled"
     return mkey, inv, req["id"], settled["receipt"]
 
@@ -240,5 +261,70 @@ def test_commitment_for_unknown_nonce_404s(client):
     r = client.post(
         "/commitment",
         json={"commitment": commitment, "signature": sign_invoice(commitment, mkey)},
+    )
+    assert r.status_code == 404
+
+
+# -- settlement names one invoice, not "a matching one" ---------------------- #
+def test_settle_charges_the_invoice_the_nonce_names(client):
+    """Two approved invoices from one merchant for the same total. Resolving
+    on (merchantId, amountCents) picked whichever was created most recently,
+    so the policy could verify one invoice and settlement charge the other;
+    the nonce names which."""
+    mkey = _merchant(client)
+    ck, cid = _enroll(client, "child")
+
+    first = _invoice(totalCents=500, nonce="urn:uuid:first")
+    second = _invoice(totalCents=500, nonce="urn:uuid:second")
+    for inv in (first, second):
+        req = _issue(client, mkey, inv).json()
+        assert _approve(client, req["id"], ck, cid, invoice_challenge(inv)).json()[
+            "status"
+        ] == "approved"
+
+    settled = client.post(
+        "/settle",
+        json={
+            "merchantId": first["merchantId"],
+            "amountCents": first["totalCents"],
+            "nonce": first["nonce"],
+        },
+    ).json()
+    assert settled["status"] == "settled"
+    assert settled["receipt"]["nonce"] == "urn:uuid:first"
+
+
+def test_settle_requires_a_nonce(client):
+    mkey = _merchant(client)
+    ck, cid = _enroll(client, "child")
+    inv = _invoice(totalCents=500, nonce="urn:uuid:needs-nonce")
+    req = _issue(client, mkey, inv).json()
+    _approve(client, req["id"], ck, cid, invoice_challenge(inv))
+
+    r = client.post(
+        "/settle",
+        json={"merchantId": inv["merchantId"], "amountCents": inv["totalCents"]},
+    )
+    assert r.status_code == 400
+    assert "nonce" in r.text
+
+
+def test_settle_rejects_a_nonce_whose_terms_do_not_match(client):
+    """The nonce selects; merchant and amount are still checked against the
+    record it selected."""
+    mkey = _merchant(client)
+    ck, cid = _enroll(client, "child")
+    inv = _invoice(totalCents=500, nonce="urn:uuid:mismatch")
+    req = _issue(client, mkey, inv).json()
+    _approve(client, req["id"], ck, cid, invoice_challenge(inv))
+
+    r = client.post(
+        "/settle",
+        json={"merchantId": inv["merchantId"], "amountCents": 50_000, "nonce": inv["nonce"]},
+    )
+    assert r.status_code == 400
+    r = client.post(
+        "/settle",
+        json={"merchantId": inv["merchantId"], "amountCents": inv["totalCents"], "nonce": "urn:uuid:nope"},
     )
     assert r.status_code == 404

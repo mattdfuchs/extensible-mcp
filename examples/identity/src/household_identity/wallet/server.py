@@ -209,6 +209,10 @@ async def _sync_sign(
     return sign_and_pack()
 
 
+# Strong references to in-flight approval tasks; see _enqueue_async_approval.
+_pending_approvals: set[asyncio.Task[None]] = set()
+
+
 async def _enqueue_async_approval(
     *,
     approve_fn: ApproveFn,
@@ -219,7 +223,11 @@ async def _enqueue_async_approval(
     callback_transport: httpx.AsyncBaseTransport | None,
 ) -> JSONResponse:
     approval_id = str(uuid.uuid4())
-    asyncio.create_task(
+    # Held in a module-level set, not left to the local: asyncio keeps only a
+    # weak reference to a running task, so a task nobody holds can be
+    # collected mid-await -- here, while it is waiting on a human at the
+    # approval page, with the proxy still waiting on the callback.
+    task = asyncio.create_task(
         _run_async_approval(
             approval_id=approval_id,
             approve_fn=approve_fn,
@@ -230,6 +238,8 @@ async def _enqueue_async_approval(
             callback_transport=callback_transport,
         )
     )
+    _pending_approvals.add(task)
+    task.add_done_callback(_pending_approvals.discard)
     return JSONResponse(
         status_code=202,
         content={"approval_id": approval_id, "status": "pending"},

@@ -64,6 +64,7 @@ are far easier than raw AWS/Azure) is only needed when you want it always-on.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -353,43 +354,55 @@ async def request_invoice(request: Request) -> JSONResponse:
 
 @app.post("/settle")
 async def settle_invoice(request: Request) -> JSONResponse:
-    """Execute settlement for an already-approved invoice, identified by
-    ``(merchantId, amountCents)`` — the same two claims the certified
-    ``family_spend_invoice`` policy binds against the merchant's signed
-    invoice, and the only fields the ``charge_invoice`` downstream tool's
-    own schema declares (see ``settlement_server.py``). Called only after
-    that policy has independently verified the merchant's signature, the
-    invoice-to-call binding, and every required passkey approval — this
-    endpoint does not re-decide authorization, it only executes (and stays
-    fail-closed on its own narrower "is this actually approved" check as
-    defense-in-depth, in case it is ever reachable some other way).
+    """Execute settlement for an already-approved invoice, identified by its
+    ``nonce`` — the invoice's own per-invoice identifier, the same key
+    ``/commitment`` matches fulfillment on. Called only after the certified
+    ``family_spend_invoice`` policy has independently verified the
+    merchant's signature, the invoice-to-call binding, and every required
+    passkey approval — this endpoint does not re-decide authorization, it
+    only executes (and stays fail-closed on its own narrower "is this
+    actually approved" check as defense-in-depth, in case it is ever
+    reachable some other way).
 
-    Picks the most recently created matching pending record if more than
-    one exists — a known, accepted demo simplification: two still-pending
-    invoices for the exact same amount from the exact same merchant would
-    be ambiguous here. Real deployments have a per-invoice identifier
-    (this demo's own ``nonce``) available at this layer too; this endpoint
-    just doesn't need one for the traffic this demo actually produces."""
+    ``merchantId``/``amountCents`` are still supplied and still checked,
+    but as a cross-check on the record the nonce selected rather than as
+    the selector. Selecting on those two alone was ambiguous: two approved
+    invoices from one merchant for the same total resolved to whichever was
+    created most recently, so the policy could verify invoice A and this
+    endpoint charge and receipt invoice B."""
     body = await request.json()
     merchant_id, amount_cents = body.get("merchantId"), body.get("amountCents")
+    nonce = body.get("nonce")
+    if not nonce:
+        raise HTTPException(400, "settlement requires the invoice's nonce")
     match = next(
         (
-            (aid, v) for aid, v in
-            sorted(_pending.items(), key=lambda kv: kv[1].get("created", 0), reverse=True)
-            if v["kind"] == "invoice"
-            and v["subject"].get("merchantId") == merchant_id
-            and v["subject"].get("totalCents") == amount_cents
+            (aid, v) for aid, v in _pending.items()
+            if v["kind"] == "invoice" and v["subject"].get("nonce") == nonce
         ),
         None,
     )
     if match is None:
-        raise HTTPException(
-            404, f"no invoice here for merchant {merchant_id!r} at ${(amount_cents or 0) / 100:.2f}"
-        )
+        raise HTTPException(404, f"no invoice here with nonce {nonce!r}")
     approval_id, p = match
+    subject = p["subject"]
+    if (
+        subject.get("merchantId") != merchant_id
+        or subject.get("totalCents") != amount_cents
+    ):
+        raise HTTPException(
+            400,
+            f"invoice {nonce!r} is for merchant {subject.get('merchantId')!r} at "
+            f"${(subject.get('totalCents') or 0) / 100:.2f}, not "
+            f"{merchant_id!r} at ${(amount_cents or 0) / 100:.2f}",
+        )
     if p["status"] not in ("approved", "settled"):
         raise HTTPException(400, f"invoice is not yet approved (status: {p['status']!r})")
-    _settle_if_ready(p)
+    # settle() drives a synchronous payment rail (Stripe's SDK, over the
+    # network). Run inline it blocked the whole service for the duration of
+    # the charge -- including the /pending polls the approval page lives on,
+    # so the browser appeared to hang while a payment went through.
+    await asyncio.to_thread(_settle_if_ready, p)
     if "receipt" not in p:
         raise HTTPException(400, p.get("settlement_error", "settlement failed"))
     return JSONResponse(_summary(approval_id, p))

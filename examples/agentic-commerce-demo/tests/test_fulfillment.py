@@ -79,7 +79,14 @@ def _approve_and_settle(approvals, req_id, invoice):
     """Full approval, then the now-separate, explicit settlement step."""
     approved = _approve_fully(approvals, req_id, invoice).json()
     assert approved["status"] == "approved"
-    return approvals.post("/settle", json={"merchantId": invoice["merchantId"], "amountCents": invoice["totalCents"]})
+    return approvals.post(
+        "/settle",
+        json={
+            "merchantId": invoice["merchantId"],
+            "amountCents": invoice["totalCents"],
+            "nonce": invoice["nonce"],
+        },
+    )
 
 
 # -- the whole loop ---------------------------------------------------------- #

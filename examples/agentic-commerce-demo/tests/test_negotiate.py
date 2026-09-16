@@ -125,7 +125,14 @@ def test_end_to_end_negotiate_then_approve(merchant, approvals):
                          json={"credentialId": pid, **assertion_for(pk, ch)}).json()
     # Fully approved; settlement is now a separate, explicit step (see /settle).
     assert out["status"] == "approved" and set(out["approved_roles"]) == {"child", "parent"}
-    settled = approvals.post("/settle", json={"merchantId": invoice["merchantId"], "amountCents": invoice["totalCents"]}).json()
+    settled = approvals.post(
+        "/settle",
+        json={
+            "merchantId": invoice["merchantId"],
+            "amountCents": invoice["totalCents"],
+            "nonce": invoice["nonce"],
+        },
+    ).json()
     assert settled["status"] == "settled"
 
 

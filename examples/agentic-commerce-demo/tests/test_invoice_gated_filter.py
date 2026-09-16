@@ -258,3 +258,64 @@ async def test_denies_missing_invoice_signature():
     result = await f.check(request)
     assert result.allowed is False
     assert "signature" in result.reason
+
+
+async def test_nonce_passes_through_to_the_downstream_but_not_the_policy(
+    admin_key, merchant_key, child_passkey
+):
+    """`nonce` names which approved invoice settlement should charge. The
+    certified bundle's InvoiceArgs contract is closed and doesn't carry it,
+    so the adapter keeps it out of the policy's view and puts it back on the
+    forwarded call."""
+    invoice_fields = _invoice_fields(total_cents=400, nonce="urn:uuid:settle-me")
+    signature = _sign(invoice_fields, merchant_key)
+    child_approval = _child_approval(
+        child_passkey, cred_id="child-cred", invoice_fields=invoice_fields
+    )
+    trusted = [{"merchantId": MERCHANT_ID, "key": _b64u(merchant_key.public_key().public_bytes_raw())}]
+    f = _filter(trusted_entries=trusted, admin_key=admin_key, child_passkey=child_passkey)
+
+    request = CallRequest(
+        tool_name="settlement__charge_invoice",
+        arguments={
+            "amountCents": 400, "merchantId": MERCHANT_ID,
+            "nonce": "urn:uuid:settle-me",
+            "invoice": {**invoice_fields, "signature": signature},
+            "childApproval": child_approval,
+        },
+        server_name="settlement",
+    )
+    result = await f.check(request)
+    assert result.allowed is True, result.reason
+    assert result.arguments == {
+        "amountCents": 400, "merchantId": MERCHANT_ID, "nonce": "urn:uuid:settle-me",
+    }
+
+
+async def test_denies_nonce_naming_a_different_invoice(
+    admin_key, merchant_key, child_passkey
+):
+    """Every signature here is valid for the invoice supplied -- but the
+    nonce names a different one, so settlement would charge an invoice the
+    policy never saw."""
+    invoice_fields = _invoice_fields(total_cents=400, nonce="urn:uuid:this-one")
+    signature = _sign(invoice_fields, merchant_key)
+    child_approval = _child_approval(
+        child_passkey, cred_id="child-cred", invoice_fields=invoice_fields
+    )
+    trusted = [{"merchantId": MERCHANT_ID, "key": _b64u(merchant_key.public_key().public_bytes_raw())}]
+    f = _filter(trusted_entries=trusted, admin_key=admin_key, child_passkey=child_passkey)
+
+    request = CallRequest(
+        tool_name="settlement__charge_invoice",
+        arguments={
+            "amountCents": 400, "merchantId": MERCHANT_ID,
+            "nonce": "urn:uuid:some-other-invoice",
+            "invoice": {**invoice_fields, "signature": signature},
+            "childApproval": child_approval,
+        },
+        server_name="settlement",
+    )
+    result = await f.check(request)
+    assert result.allowed is False
+    assert "nonce" in result.reason

@@ -260,6 +260,28 @@ class InvoiceGatedFilter:
             )
         signature = invoice_wire["signature"]
         invoice_fields = {k: v for k, v in invoice_wire.items() if k != "signature"}
+        # `nonce` names which approved invoice the settlement service should
+        # charge. The certified bundle's InvoiceArgs contract is closed and
+        # does not include it, and it is not a claim the policy needs: the
+        # approval challenge already binds the whole canonical invoice, nonce
+        # included. So bind it here instead -- it must be *this* invoice's
+        # nonce -- then keep it out of the policy's view of `arguments` and
+        # put it back on the downstream call.
+        nonce = request.arguments.get("nonce")
+        if nonce is not None and nonce != invoice_fields.get("nonce"):
+            return CallFilterResult(
+                allowed=False,
+                reason=(
+                    "nonce does not match the invoice's own nonce — pass the "
+                    "nonce of the invoice you had approved, so settlement "
+                    "charges that invoice and no other"
+                ),
+                tool_name=request.tool_name,
+                arguments={
+                    k: v for k, v in request.arguments.items()
+                    if k not in ("invoice", "childApproval", "parentApproval")
+                },
+            )
         # canonical_invoice(), not a re-typed copy of its serialization
         # parameters — the exact same function the merchant's own signature
         # (invoice.py: sign_invoice) and the approval service's own
@@ -267,6 +289,7 @@ class InvoiceGatedFilter:
         # byte-for-byte identical to what was actually signed.
         canonical = canonical_invoice(invoice_fields).decode()
         adapted_args = dict(request.arguments)
+        adapted_args.pop("nonce", None)
         adapted_args["invoice"] = {"canonical": canonical, "signature": signature}
         adapted = CallRequest(
             tool_name=request.tool_name,
@@ -291,7 +314,10 @@ class InvoiceGatedFilter:
             # here costs nothing this bundle was actually relying on.
             validate_input=False,
         )
-        return await inner.check(adapted)
+        result = await inner.check(adapted)
+        if nonce is not None:
+            result.arguments = {**result.arguments, "nonce": nonce}
+        return result
 
 
 class ToolScopedAugmenter:

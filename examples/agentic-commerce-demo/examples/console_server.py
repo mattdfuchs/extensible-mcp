@@ -73,15 +73,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     ClientSession(read, write)
                 )
                 await session.initialize()
-            except BaseException as e:
-                # BaseException, not Exception: the mcp client's own task
-                # group wraps a plain connection failure together with its
-                # sibling tasks' cancellation, which surfaces as a
-                # BaseExceptionGroup — not an Exception subclass, so
-                # `except Exception` here silently let every attempt but the
-                # last one crash the whole container instead of retrying.
+            except (Exception, BaseExceptionGroup) as e:
+                # BaseExceptionGroup as well as Exception: the mcp client's
+                # own task group wraps a plain connection failure together
+                # with its sibling tasks' cancellation, and the group is not
+                # an Exception subclass -- so `except Exception` alone
+                # silently let every attempt but the last one crash the whole
+                # container instead of retrying. Not bare BaseException,
+                # which also swallows the CancelledError of a shutdown
+                # arriving mid-retry: that used to sleep out the remaining
+                # attempts before the process could exit.
                 await attempt_stack.aclose()
                 session = None
+                if (
+                    isinstance(e, BaseExceptionGroup)
+                    and e.subgroup(asyncio.CancelledError) is not None
+                ):
+                    # A group carrying a cancellation is this process being
+                    # shut down, not a downstream that is not up yet.
+                    raise
                 if attempt == _CONNECT_RETRIES:
                     raise
                 _log(
