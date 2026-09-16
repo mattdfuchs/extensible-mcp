@@ -5,7 +5,156 @@ semver's `0.x` range deliberately — the public API isn't frozen yet.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-15
+## [0.3.0] - 2026-09-16
+
+**Added: `local_tools` — one calling convention for every tool**
+
+`create_server(..., local_tools=[LocalTool(...)])` registers in-process tools
+alongside the downstream ones. They are indexed for `search_tools`, invoked
+through `call_tool`, and pass through the same `CallFilterPipeline` as a
+downstream tool — `DiscoveredToolsFilter`, access control, policy bundles, all
+of it.
+
+This closes a hole rather than adding a convenience. The commerce demo used
+to register its evidence tools (`request_action_vc`,
+`request_authorization_vc`, `request_invoice_approval`,
+`record_fulfillment`) directly on the FastMCP object after `create_server`
+returned. Every filter in this project runs inside `call_tool_handler`, so a
+tool registered that way was reachable by name and subject to nothing — not
+even the rule that a tool must be surfaced by `search_tools` before it can be
+called. There is no principled reason an in-process tool needs less scrutiny
+than a downstream one; where the code happens to live is not a security
+boundary. It also cost the model real tool-call rounds, which is how the hole
+was found: the chat agent had to be told that some tools were called one way
+and some another.
+
+`ServerConfig` and `LocalTool` both now reject a name containing `__` at
+construction. That separator splits a qualified name back into server and
+tool, so a server named with one re-parsed as a *different* server —
+escaping per-server bundle routing and `allow_servers` while still being
+dispatched. `load_mcp_server` rejects it too.
+
+**Security fixes from a pre-release review**
+
+An independent read of the tree before release turned up five issues that are
+fixed here. Each was reproduced or measured, not just read.
+
+- **A stored token could be sent to any URL the model chose.** Tokens are
+  keyed by server *name*, but `load_mcp_server` lets the LLM supply both the
+  name and the URL — so naming a configured server and pointing it at an
+  attacker's host handed over that server's bearer token. A connection now
+  presents a credential only when an operator named that exact URL for that
+  name in the config file; otherwise it connects without one and logs why.
+- **Host wildcards in `allow_url_patterns` were bypassable.** `fnmatch`'s `*`
+  crosses `/`, so `https://*.corp.example/*` was satisfied by
+  `https://attacker.example/x.corp.example/mcp` — the host constraint met by
+  path content, in the control the README recommends as the SSRF defence.
+  Both lists now also match the pattern's host against the URL's parsed
+  host: the allow list narrows, the deny list broadens.
+- **The OPA wasm heap grew without bound.** `opa_malloc` is a bump allocator
+  and nothing frees, so every query's data, input, builtin results and
+  result value accumulated: measured at 2 → 509 pages (33 MB) over 3000
+  queries, linear. A loop of denied calls to a governed tool would exhaust
+  memory, and SECURITY.md lists proxy DoS as in scope. The heap pointer is
+  captured after instantiation and rewound at the top of each query;
+  `_read_cstr` no longer copies all of memory per read.
+- **Secrets reached image layers.** Both Dockerfiles `COPY` the repo root,
+  and the `.dockerignore` files' "never bake secrets" section listed only
+  `.env`. Inspecting the built image found `examples/tokens` and the
+  merchant's private Ed25519 key in `/repo`: gitignored, so never in git,
+  but `COPY` takes the working tree. `**/tokens`, `**/*.key`, `**/*.jwk` and
+  `**/keys` are now excluded from both.
+- **The family control plane was reachable from the merchant container.** The
+  wallets and the policy proxy bound `0.0.0.0` on a shared compose network,
+  so the merchant could drive the proxy as an MCP client or POST a wallet's
+  `/sign/request` with its own prompt text and callback URL — and received
+  the family's whole `.env`, `STRIPE_API_KEY` included. All three now bind
+  loopback (every consumer is in the same container) and the merchant's
+  `STRIPE_API_KEY` is blanked. The approval service still has to be
+  reachable, since its passkey pages are published to the host;
+  `deploy/README.md` now has a section stating exactly what the container
+  boundary does and does not enforce, rather than implying it is the org
+  boundary.
+
+**Correctness: failures that escaped, and inputs that passed**
+
+- A stdio reconnect after a failed call ran in the request task, but the
+  transport's cancel scopes were entered in the lifespan task. The retry
+  appeared to work — the cross-task error was swallowed — but the child was
+  never reaped and `close_all()` from the lifespan task then hung forever, so
+  the proxy could no longer shut down. Each connection now runs a task that
+  owns its transport, so connect and close are safe from anywhere.
+- A credential token whose payload decoded to `[]`, `"text"` or `5` raised
+  `AttributeError` out of the wallet adapter, past the filter's handler and
+  the guidance layer, reaching the LLM as a traceback. So did
+  `{"vc": "notadict"}`. Both are now rendered denials.
+- An unreachable `did:web` admin raised `DidResolutionError`, which the filter
+  does not catch; the membership lookup is a fetch-plan source, so it now
+  raises `FetchError` and renders as a denial.
+- A CEL check evaluating to a non-empty string, map or list passed, because
+  the result was read with `bool()`. A check that was meant to compare
+  something but returned the thing instead therefore passed unconditionally,
+  and only ever in the direction that allows. Anything but a CEL bool now
+  fails closed.
+- A negative `top_k` — LLM-supplied, unvalidated — reached numpy as a
+  negative slice bound and returned nearly the whole index: asking for fewer
+  tools got you more. Non-positive now returns none.
+- The bundle selector's literal map is an exact-string lookup on a URL, so
+  `https://Evil.example/mcp/` missed an entry banning
+  `https://evil.example/mcp`. Scheme and host are case-folded and a trailing
+  slash dropped, per RFC 3986.
+- A refused downstream connection surfaced as "unhandled errors in a
+  TaskGroup (1 sub-exception)"; exception groups are now unwrapped to their
+  leaves before the message reaches the LLM.
+- Two concurrent `load_mcp_server` calls for one name both passed the
+  "already connected" check, because a network round-trip separated it from
+  the registration. `connect_url` now holds a lock across both.
+- `logging.basicConfig` ran at import, reconfiguring the root logger of any
+  application embedding the proxy. It now runs in `main()`.
+- The demo's `/settle` resolved an approved invoice by `(merchantId,
+  amountCents)` and took the most recent match, so two approved invoices
+  from one merchant for the same total meant the policy could verify one and
+  settlement charge the other. The invoice's `nonce` now names the record,
+  `charge_invoice` carries it, and the proxy's invoice adapter refuses a
+  nonce that is not the one inside the signed invoice.
+- Smaller, in the demo and identity packages: `/settle` no longer blocks the
+  event loop (and with it the approval page's polling) while a synchronous
+  payment rail runs; the console's connect-retry no longer swallows a
+  shutdown's cancellation, and no longer dies when tearing down a
+  half-opened transport; the entrypoint waits for the proxy to accept
+  connections instead of sleeping two seconds; and the wallet holds a
+  reference to its async-approval task, which asyncio could otherwise
+  collect while it waited on a human.
+
+**Packaging and CI**
+
+- `readme` was unset, so the built wheel had no long description — a PyPI
+  page would have rendered blank.
+- `httpx` is imported at module scope by `client_manager` and `cryptography`
+  by a wasm host builtin; both arrived transitively and are now declared
+  (the latter on the `wasm` extra).
+- The sdist carried only the package: no README, no LICENSE text, no tests.
+  It now includes `tests/`, README, CHANGELOG, LICENSE, SECURITY and
+  CONTRIBUTING.
+- The `dev` group listed a hand-copied subset of the three engine extras; it
+  now depends on `extensible-mcp[wasm,rego,cel]`, with `[tool.uv.sources]`
+  resolving that self-reference to the workspace.
+- CI installed with `uv sync --group dev`, which never installs the two
+  workspace members, and ran only the root suite — so 165 tests in the
+  commerce-demo and identity packages had never run in CI. All three suites
+  now run, and the pinned actions are current.
+- The README documented `regopy` as installed by default, true only for a
+  checkout via the dev group; the extras are now documented, and the
+  `RegoPolicyFilter` import error names the extra rather than a group.
+
+**Repo hygiene**
+
+`cd mcp-alternative` appeared in both deploy READMEs, the RUNBOOK, the
+compose file and both Dockerfiles — that is a local working directory name,
+and a clone lands in `extensible-mcp/`, so those steps failed for anyone
+following them. `.gitignore` no longer names a private branch. Docstrings
+that referred to numbered seams, lettered deliverables and "the fork" —
+private working vocabulary — now say the thing itself.
 
 **Removed: the self-asserted spend rail**
 
