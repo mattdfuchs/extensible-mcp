@@ -34,8 +34,8 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from .didweb import DidWebResolver
-from .fetchplan import WalletLookup
+from .didweb import DidResolutionError, DidWebResolver
+from .fetchplan import FetchError, WalletLookup
 from .types import CallRequest
 
 
@@ -77,13 +77,35 @@ def _decode_jwt_claims(token: str) -> dict[str, Any]:
     payload = parts[1]
     payload += "=" * (-len(payload) % 4)
     try:
-        return json.loads(base64.urlsafe_b64decode(payload))
+        claims = json.loads(base64.urlsafe_b64decode(payload))
     except ValueError as e:
         raise WalletBundleError(
             f"credential token payload is not valid base64url/JSON ({e}); "
             "pass the token exactly as the wallet returned it — "
             "do not retype or reconstruct it"
         ) from e
+    if not isinstance(claims, dict):
+        # A payload of `[]`, `"text"` or `5` is valid JSON but not a claims
+        # set. Every caller reads it with .get, so let it through and the
+        # AttributeError surfaces as a traceback instead of a denial.
+        raise WalletBundleError(
+            "credential token payload is a JSON "
+            f"{type(claims).__name__}, not an object of claims"
+        )
+    return claims
+
+
+def _dig(obj: Any, *path: str) -> Any:
+    """Walk a nested path, stopping at anything that is not a dict.
+
+    The claims are decoded, not verified, so every level is whatever the
+    caller put there: `{"vc": "notadict"}` decodes fine and must not raise.
+    """
+    for key in path:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(key)
+    return obj
 
 
 def _normalize_money(obj: dict[str, Any], money_fields: tuple[str, ...]) -> None:
@@ -162,9 +184,7 @@ class WalletBundleAdapter:
         token = bundle["token"]
         claims = _decode_jwt_claims(token)
         if normalize_request:
-            requests = (
-                claims.get("vc", {}).get("credentialSubject", {}).get("requests")
-            )
+            requests = _dig(claims, "vc", "credentialSubject", "requests")
             if isinstance(requests, dict):
                 _normalize_money(requests, self.money_fields)
         return {"jws": token, "claims": claims}
@@ -183,13 +203,19 @@ def make_membership_lookup(
     memberships: dict[str, dict[str, Any]], resolver: DidWebResolver
 ) -> WalletLookup:
     """The `wallet` lookup the fetch plan needs: a harvested membership by
-    subject DID, enriched with its admin's resolved key (seams 2 + bridge of
-    deliverables b and c)."""
+    subject DID, enriched with its admin's resolved key."""
 
     async def lookup(subject: str) -> dict[str, Any] | None:
         membership = memberships.get(subject)
         if membership is None:
             return None
-        return await resolver.attach_admin_key(membership)
+        try:
+            return await resolver.attach_admin_key(membership)
+        except DidResolutionError as e:
+            # This lookup is a fetch-plan source, so an unreachable or
+            # malformed did:web document is a FetchError -- the one failure
+            # the filter renders as a denial. Raised as itself it escaped the
+            # filter entirely and reached the LLM as an httpx traceback.
+            raise FetchError(f"admin DID document could not be resolved: {e}") from e
 
     return lookup

@@ -223,5 +223,16 @@ class CelPolicy:
                 raise PolicyEvaluationError(
                     f"check {check_id!r} could not be evaluated (failing closed): {e}"
                 ) from e
+            # A check is a predicate. celpy hands back whatever the
+            # expression evaluated to, and bool() would read a non-empty
+            # string or list as a pass -- so a check that was meant to
+            # compare something but returns the thing instead would silently
+            # always pass. Anything that is not a CEL bool is a malformed
+            # check, and a malformed check fails closed like any other fault.
+            if not isinstance(result, (self._celpy.celtypes.BoolType, bool)):
+                raise PolicyEvaluationError(
+                    f"check {check_id!r} evaluated to "
+                    f"{type(result).__name__}, not a boolean (failing closed)"
+                )
             out[check_id] = bool(result)
         return out

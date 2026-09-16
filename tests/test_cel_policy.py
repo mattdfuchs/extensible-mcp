@@ -294,3 +294,43 @@ def test_parse_json_malformed_raises_and_fails_closed(tmp_path):
     policy = CelPolicy(checks_path, functions=default_cel_functions())
     with pytest.raises(PolicyEvaluationError):
         policy.query({"notJson": "not valid json"}, f"{spec['package']}/allow")
+
+
+def _write_check(tmp_path: Path, expr: str) -> Path:
+    d = tmp_path / "nonbool"
+    d.mkdir()
+    (d / "checks.cel.json").write_text(json.dumps({
+        "engine": "cel-v1",
+        "package": "policybundle.examples.nonbool",
+        "tiers": [{"tier": 0, "checks": ["t0.c0"]}],
+        "checks": {"t0.c0": expr},
+    }))
+    return d / "checks.cel.json"
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        'input.merchant',            # a string: truthy, so always passed
+        'input.approval',            # a map
+        '[input.merchant]',          # a list
+        '1',                         # an int
+    ],
+)
+def test_non_boolean_check_fails_closed(tmp_path, expr):
+    """A check is a predicate. bool() read a non-empty string, map or list as
+    a pass, so a check that returned the thing it meant to compare passed
+    unconditionally -- silently, and only in the direction that allows."""
+    policy = CelPolicy(_write_check(tmp_path, expr))
+    with pytest.raises(PolicyEvaluationError, match="not a boolean"):
+        policy.query(
+            {"merchant": "acme", "approval": {"amountCents": 500}},
+            "policybundle.examples.nonbool/allow",
+        )
+
+
+def test_boolean_check_still_evaluates(tmp_path):
+    policy = CelPolicy(_write_check(tmp_path, 'input.merchant == "acme"'))
+    assert policy.query({"merchant": "acme"}, "policybundle.examples.nonbool/allow") == [
+        {"result": True}
+    ]

@@ -47,6 +47,12 @@ class VectorStore:
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         if self._embeddings is None or len(self._tools) == 0:
             return []
+        if top_k < 1:
+            # top_k comes from the LLM. A negative one used to reach
+            # argsort/argpartition as a negative slice or kth, which returns
+            # *nearly every* tool -- asking for fewer got you more. Zero
+            # already meant none; treat anything non-positive the same way.
+            return []
         query_vec = self._encode([query])[0]
         scores = self._embeddings @ query_vec
         k = min(top_k, len(self._tools))

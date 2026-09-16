@@ -26,12 +26,36 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .wasm_policy import OpaWasmPolicy
 
 # Reserved tokens.
 BANNED = "banned"  # literal-map value: refuse, do not fall through
 DENY_ALL = "deny_all"  # classifier's fail-closed default decision
+
+
+def normalize_map_key(value: Any) -> Any:
+    """Canonical form of a literal-map key, for URL-shaped keys.
+
+    The map is an exact-string lookup on a key the caller supplies, so
+    ``https://Evil.example/mcp/`` missed an entry banning
+    ``https://evil.example/mcp`` -- three spellings of one endpoint, one of
+    them banned. Case-fold scheme and host (both case-insensitive per RFC
+    3986) and drop a trailing slash so they collapse to the same key.
+
+    Anything that is not a URL with a scheme and a host is returned
+    unchanged: ``map_key`` is configurable and need not name a URL.
+    """
+    if not isinstance(value, str):
+        return value
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        return value
+    path = parts.path.rstrip("/")
+    return urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), path, parts.query, parts.fragment)
+    )
 
 
 def provenance_descriptor(
@@ -122,7 +146,9 @@ class LayeredBundleSelector:
         banned_value: str = BANNED,
         deny_value: str = DENY_ALL,
     ) -> None:
-        self.literal_map = dict(literal_map or {})
+        self.literal_map = {
+            normalize_map_key(k): v for k, v in (literal_map or {}).items()
+        }
         self.classifier = classifier
         self.map_key = map_key
         self.banned_value = banned_value
@@ -130,7 +156,7 @@ class LayeredBundleSelector:
 
     def select(self, descriptor: dict[str, Any]) -> SelectionResult:
         # 1/2: explicit operator override by admitted URL.
-        key = descriptor.get(self.map_key)
+        key = normalize_map_key(descriptor.get(self.map_key))
         if key is not None and key in self.literal_map:
             value = self.literal_map[key]
             if value == self.banned_value:

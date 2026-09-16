@@ -36,8 +36,23 @@ from .routing import BundleRouter
 from .types import CallRequest, CallResponse, LocalTool, ServerLoadRequest, ToolRecord
 from .vector_store import VectorStore
 
-logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _describe(exc: BaseException) -> str:
+    """A message worth showing the LLM.
+
+    anyio task groups wrap the real failure, so a downstream that refused a
+    connection arrived as "unhandled errors in a TaskGroup (1 sub-exception)"
+    -- true, and useless to a model deciding what to do next. Unwrap to the
+    leaves and name them.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        leaves = [_describe(e) for e in exc.exceptions]
+        inner = "; ".join(d for d in leaves if d)
+        return inner or str(exc)
+    text = str(exc).strip()
+    return text or type(exc).__name__
 
 
 def _parse_args() -> argparse.Namespace:
@@ -372,7 +387,7 @@ def create_server(
             try:
                 raw_result = await local_tools[tool_name].handler(arguments)
             except Exception as e:
-                return f"Error calling tool '{tool_name}': {e}"
+                return f"Error calling tool '{tool_name}': {_describe(e)}"
             text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
             content: list[Any] = [mcp_types.TextContent(type="text", text=text)]
             is_error = False
@@ -389,7 +404,7 @@ def create_server(
                     f"for '{e.server_name}' in the tokens file, then retry the call."
                 )
             except Exception as e:
-                return f"Error calling tool '{tool_name}': {e}"
+                return f"Error calling tool '{tool_name}': {_describe(e)}"
             content = list(result.content)
             is_error = result.isError
         else:
@@ -479,7 +494,7 @@ def create_server(
         try:
             tools = await client_mgr.connect_url(server_name, url)
         except Exception as e:
-            return f"Error connecting to '{url}': {e}"
+            return f"Error connecting to '{url}': {_describe(e)}"
 
         logger.info("Indexing %d tools from '%s'...", len(tools), server_name)
         vs.add(tools)
@@ -493,6 +508,9 @@ def create_server(
 
 
 def main() -> None:
+    # Only the CLI owns the root logger. Doing this at import time
+    # reconfigured logging for any application that embedded the proxy.
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     args = _parse_args()
     config_path = find_config_path(args.config)
     logger.info("Loading config from %s", config_path)

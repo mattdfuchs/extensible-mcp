@@ -304,6 +304,10 @@ class ClientManager:
         self._tool_original_name: dict[str, str] = {}  # qualified_name -> original name
         self._configured_urls: dict[str, str] = {}  # name -> URL from the config file
         self._tokens_file = tokens_file
+        # Serializes connect_url: the name check and the registration are
+        # separated by a network round-trip, so two concurrent loads of the
+        # same name both passed the check.
+        self._connect_lock = asyncio.Lock()
 
     async def connect_all(self, configs: list[ServerConfig]) -> list[ToolRecord]:
         all_tools: list[ToolRecord] = []
@@ -394,6 +398,10 @@ class ClientManager:
 
     async def connect_url(self, name: str, url: str) -> list[ToolRecord]:
         """Connect to a remote MCP server by URL and index its tools."""
+        async with self._connect_lock:
+            return await self._connect_url_locked(name, url)
+
+    async def _connect_url_locked(self, name: str, url: str) -> list[ToolRecord]:
         if name in self._connections:
             raise ValueError(f"Server '{name}' is already connected")
         config = ServerConfig(name=name, url=url)

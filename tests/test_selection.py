@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from extensible_mcp.selection import (
+    BANNED,
     LayeredBundleSelector,
     RegoClassifier,
     provenance_descriptor,
@@ -105,3 +106,35 @@ def test_descriptor_is_proxy_constructed():
         origin_server="payments", url="https://p.example", config_trust_tier="prod"
     )
     assert d["origin_server"] == "payments" and "tool" not in d
+
+
+class TestKeyNormalization:
+    """The literal map is an exact-string lookup on a URL, so spellings of
+    one endpoint that differ only in case or a trailing slash used to miss a
+    `banned` entry entirely and fall through to the classifier."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "https://evil.example/mcp",
+            "https://evil.example/mcp/",
+            "https://Evil.Example/mcp",
+            "HTTPS://evil.example/mcp/",
+        ],
+    )
+    def test_banned_entry_catches_equivalent_spellings(self, spelling):
+        sel = LayeredBundleSelector({"https://evil.example/mcp": BANNED})
+        result = sel.select({"url": spelling})
+        assert result.bundle is None
+        assert result.source == "map"
+
+    def test_non_url_keys_are_left_alone(self):
+        sel = LayeredBundleSelector({"Payments": "family_spend"}, map_key="name")
+        assert sel.select({"name": "Payments"}).bundle == "family_spend"
+        assert sel.select({"name": "payments"}).bundle is None
+
+    def test_path_case_is_preserved(self):
+        """Only scheme and host are case-insensitive; a path is not."""
+        sel = LayeredBundleSelector({"https://a.example/MCP": "b"})
+        assert sel.select({"url": "https://a.example/MCP"}).bundle == "b"
+        assert sel.select({"url": "https://a.example/mcp"}).bundle is None

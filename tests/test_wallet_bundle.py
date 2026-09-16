@@ -7,12 +7,17 @@ bridge to the did:web resolver."""
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
-from extensible_mcp.didweb import DidWebResolver
+from extensible_mcp.didweb import DidResolutionError, DidWebResolver
+from extensible_mcp.fetchplan import FetchError
 from extensible_mcp.types import CallRequest
 from extensible_mcp.wallet_bundle import (
     WalletBundleAdapter,
+    WalletBundleError,
     make_membership_lookup,
 )
 from tests import vc_helpers as vc
@@ -151,3 +156,47 @@ async def test_membership_lookup_bridges_adminkey(keys):
     assert kid_membership["claims"]["sub"] == vc.did_key(keys["kid"])
     # an unknown subject resolves to nothing
     assert await lookup("did:key:zUnknown") is None
+
+
+def _token_with_payload(payload: object) -> str:
+    """A syntactically fine compact JWS whose payload is the given JSON."""
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=")
+    return f"eyJhbGciOiJFZERTQSJ9.{body.decode()}.c2ln"
+
+
+@pytest.mark.parametrize("payload", [[], "a string", 5, None, True])
+def test_non_object_token_payload_is_a_clean_denial(keys, payload):
+    """Every field of the claims is read with .get, so a payload that decodes
+    to a JSON array/string/number used to raise AttributeError straight out
+    of adapt() -- past the filter's WalletBundleError handler, and past the
+    guidance layer, to the LLM as a traceback."""
+    request = _call(keys)
+    request.arguments["requestVC"] = {"token": _token_with_payload(payload)}
+    with pytest.raises(WalletBundleError, match="not an object of claims"):
+        WalletBundleAdapter().adapt(request)
+
+
+def test_non_object_vc_claim_is_tolerated(keys):
+    """`{"vc": "notadict"}` is a claims object, just not one with anything to
+    normalize. The money walk must stop, not raise."""
+    request = _call(keys)
+    request.arguments["requestVC"] = {
+        "token": _token_with_payload({"iss": "did:key:z1", "vc": "notadict"})
+    }
+    adapted = WalletBundleAdapter().adapt(request)
+    assert adapted.envelope["requestVC"]["claims"]["vc"] == "notadict"
+
+
+async def test_unresolvable_admin_did_surfaces_as_a_fetch_error(keys):
+    """FetchError is the failure the filter renders as a denial; a raw
+    DidResolutionError escaped the filter and reached the LLM as an httpx
+    traceback."""
+    adapted = WalletBundleAdapter().adapt(_call(keys))
+
+    class _Unreachable(DidWebResolver):
+        async def attach_admin_key(self, membership):
+            raise DidResolutionError("admin.example is unreachable")
+
+    lookup = make_membership_lookup(adapted.memberships, _Unreachable([ADMIN_DID]))
+    with pytest.raises(FetchError, match="could not be resolved"):
+        await lookup(vc.did_key(keys["kid"]))

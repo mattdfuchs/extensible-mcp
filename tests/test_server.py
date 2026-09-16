@@ -420,3 +420,24 @@ def test_local_tool_rejects_separator_in_name():
             input_schema={"type": "object"},
             handler=handler,
         )
+
+
+def test_describe_unwraps_exception_groups():
+    """anyio task groups wrap the real failure, so a refused connection
+    reached the LLM as 'unhandled errors in a TaskGroup (1 sub-exception)'."""
+    from extensible_mcp.server import _describe
+
+    inner = ConnectionRefusedError("All connection attempts failed")
+    assert _describe(inner) == "All connection attempts failed"
+
+    wrapped = ExceptionGroup("unhandled errors in a TaskGroup", [inner])
+    assert _describe(wrapped) == "All connection attempts failed"
+
+    nested = ExceptionGroup("outer", [ExceptionGroup("inner", [inner])])
+    assert _describe(nested) == "All connection attempts failed"
+
+    several = ExceptionGroup("outer", [inner, ValueError("bad url")])
+    assert _describe(several) == "All connection attempts failed; bad url"
+
+    # An exception carrying no message still names itself.
+    assert _describe(ExceptionGroup("outer", [RuntimeError()])) == "RuntimeError"

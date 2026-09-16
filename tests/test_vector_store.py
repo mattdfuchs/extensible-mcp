@@ -112,3 +112,16 @@ class TestVectorStore:
         original_count = len(store._tools)
         store.add([])
         assert len(store._tools) == original_count
+
+
+class TestNonPositiveTopK:
+    """top_k is LLM-supplied. A negative one reached numpy as a negative
+    slice bound or kth, which returned nearly the whole index -- asking for
+    fewer tools got you more."""
+
+    def test_negative_top_k_returns_nothing(self):
+        assert _store.search("tool", top_k=-1) == []
+        assert _store.search("tool", top_k=-3) == []
+
+    def test_zero_top_k_returns_nothing(self):
+        assert _store.search("tool", top_k=0) == []
