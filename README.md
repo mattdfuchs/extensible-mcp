@@ -64,7 +64,7 @@ The base proxy is working: dynamic server loading, RAG-based tool retrieval, an 
 
 Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 291 tests; the two example packages add 109 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 296 tests; the two example packages add 109 and 51.
 
 ## Threat Model
 
@@ -240,7 +240,7 @@ The policy receives this input on every `call_tool` invocation:
 
 The policy must define `allow` (boolean). Optionally define `deny_reason` (string) for a custom error message. See [`examples/deny_dangerous.rego`](examples/deny_dangerous.rego) for a working example. Relative paths in the config are resolved relative to the config file's directory.
 
-Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which is installed by default with `uv sync` — no extra step needed.
+Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which ships as the `rego` extra: `pip install "extensible-mcp[rego]"`, or `uv sync --extra rego` in a checkout. The policy-bundle engines are extras too — `wasm` for OPA-compiled policies and `cel` for CEL ones — since both pull compiled dependencies not everyone needs. A checkout's `--group dev` installs all three.
 
 **Response filters** — applied to tool results on their way back from the downstream server, before the LLM sees them. No reference filters ship by default; the pipeline is empty unless you wire in your own. Useful for redacting secrets that leak back from a buggy server, scrubbing or flagging prompt-injection patterns in scraped content, truncating large responses, or audit logging. See [Writing a custom filter](#writing-a-custom-filter) for the Protocol shape.
 

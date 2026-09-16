@@ -19,6 +19,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --group dev
-      - name: Run tests
-        run: uv run pytest
+        # --all-packages, or the two workspace members are never installed and
+        # their suites cannot run.
+        run: uv sync --all-packages --group dev
+      - name: Run core tests
+        run: uv run pytest -q
+      - name: Run commerce demo tests
+        run: uv run --package extensible-mcp-vc pytest examples/agentic-commerce-demo/tests -q
+      - name: Run identity tests
+        run: uv run --package household-identity pytest examples/identity/tests -q

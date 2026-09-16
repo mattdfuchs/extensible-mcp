@@ -501,6 +501,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastembed" },
     { name = "fastmcp" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "numpy" },
 ]
@@ -513,6 +514,7 @@ rego = [
     { name = "regopy" },
 ]
 wasm = [
+    { name = "cryptography" },
     { name = "joserfc" },
     { name = "jsonschema" },
     { name = "wasmtime" },
@@ -520,20 +522,18 @@ wasm = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "cel-python" },
-    { name = "joserfc" },
-    { name = "jsonschema" },
+    { name = "extensible-mcp", extra = ["cel", "rego", "wasm"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "regopy" },
-    { name = "wasmtime" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "cel-python", marker = "extra == 'cel'", specifier = ">=0.5.0" },
+    { name = "cryptography", marker = "extra == 'wasm'", specifier = ">=42.0" },
     { name = "fastembed", specifier = ">=0.6.0" },
     { name = "fastmcp", specifier = ">=2.0.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "joserfc", marker = "extra == 'wasm'", specifier = ">=1.6.5" },
     { name = "jsonschema", marker = "extra == 'wasm'", specifier = ">=4.18" },
     { name = "mcp", specifier = ">=1.0.0" },
@@ -545,13 +545,9 @@ provides-extras = ["wasm", "rego", "cel"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "cel-python", specifier = ">=0.5.0" },
-    { name = "joserfc", specifier = ">=1.6.5" },
-    { name = "jsonschema", specifier = ">=4.18" },
+    { name = "extensible-mcp", extras = ["wasm", "rego", "cel"], editable = "." },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-asyncio", specifier = ">=0.21" },
-    { name = "regopy", specifier = ">=0.4.0" },
-    { name = "wasmtime", specifier = ">=24.0" },
 ]
 
 [[package]]
