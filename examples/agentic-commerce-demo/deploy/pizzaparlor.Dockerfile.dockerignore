@@ -1,4 +1,4 @@
-# Build context is the repo root (mcp-alternative) — keep the copy lean.
+# Build context is the repo root (extensible-mcp) — keep the copy lean.
 **/.git
 **/.venv
 **/__pycache__

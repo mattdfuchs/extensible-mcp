@@ -4,7 +4,7 @@
 """Resolve ``did:web`` admin DIDs to their Ed25519 JWK, for membership chaining.
 
 The production VC policy verifies each signer's membership against the key of
-the ``did:web`` admin that issued it (seam 2).
+the ``did:web`` admin that issued it.
 That resolution is HTTPS I/O, so it cannot live inside the wasm policy — the
 proxy does it here and attaches the resolved key onto each membership
 (`membership.adminKey`), giving the policy a *static* path to read.
@@ -145,7 +145,7 @@ class DidWebResolver:
     async def attach_admin_key(self, membership: dict[str, Any]) -> dict[str, Any]:
         """Return ``membership`` with its issuer's resolved key as ``adminKey``.
 
-        For the policy's static-path read (seam 2). ``adminKey`` is the
+        For the policy's static-path read. ``adminKey`` is the
         **serialized JWK string** — the convention a policy's verify atom
         expects, an opaque string passed straight through rather than parsed
         proxy-side. An untrusted or issuer-less

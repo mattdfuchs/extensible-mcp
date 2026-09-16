@@ -78,7 +78,7 @@ def test_envelope_action_and_native_args(keys):
     adapted = WalletBundleAdapter().adapt(_call(keys))
     assert adapted.envelope["tool"] == "spend"  # unqualified action
     args = adapted.envelope["arguments"]
-    assert args["amountCents"] == 1500 and "amount" not in args  # seam 1
+    assert args["amountCents"] == 1500 and "amount" not in args  # dollars normalized to cents
     assert args["merchant"] == "acme"
 
 
@@ -106,7 +106,7 @@ def test_request_vc_shape_and_normalized_requests(keys):
     rvc = adapted.envelope["requestVC"]
     assert set(rvc) == {"jws", "claims"}
     requests = rvc["claims"]["vc"]["credentialSubject"]["requests"]
-    assert requests["amountCents"] == 1500 and "amount" not in requests  # seam 1 both sides
+    assert requests["amountCents"] == 1500 and "amount" not in requests  # normalized on both sides
     assert requests["type"] == "spend"
 
 

@@ -1,7 +1,7 @@
 # The family's side of the demo in one container: kid + parent wallets, the
 # WebAuthn approval service, the policy proxy, and the browser console (chat
 # + live log) that fronts all of it. Build context is the repo root
-# (mcp-alternative):
+# (extensible-mcp):
 #   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml build
 #
 # Stripe is opt-in at BUILD time, not just at runtime: the default build does

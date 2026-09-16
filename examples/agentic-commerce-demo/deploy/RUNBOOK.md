@@ -7,7 +7,7 @@ log, 2 passkey windows on one page). No terminal session on the host beyond
 ## 0. Prerequisites
 
 - Docker running.
-- A checkout of `mcp-alternative` — the compose build context is the repo
+- A checkout of `extensible-mcp` — the compose build context is the repo
   root; `household-identity` and this demo live inside it as workspace
   members (`examples/identity`, `examples/agentic-commerce-demo`).
 - An `ANTHROPIC_API_KEY` (see step 1) — the chat console needs it to work at
@@ -43,7 +43,7 @@ rebuild needed).
 ## 2. Start the containers
 
 ```sh
-cd mcp-alternative
+cd extensible-mcp
 docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up -d --build
 ```
 

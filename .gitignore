@@ -11,9 +11,7 @@ tokens
 .claude/
 scratch/
 
-# Not part of the public repo (business/marketing collateral, kept on
-# the private response branch). Listed here so a future merge/cherry-pick
-# from response doesn't silently reintroduce them.
+# Local drafts, not part of the repo.
 /white-paper.md
 /white-paper.pdf
 /market-brief.md

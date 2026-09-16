@@ -72,7 +72,7 @@ def ec_public_key_from_xy(x: bytes, y: bytes) -> ec.EllipticCurvePublicKey:
 def jwk_string_to_public_key(jwk: str) -> ec.EllipticCurvePublicKey:
     """Parse a P-256 EC public JWK (a JSON *string*) into a public key.
 
-    The builtin key seam (the JWK-string convention of seam 2).
+    The builtin key seam: keys cross it as serialized JWK strings.
     Expects ``kty=EC``, ``crv=P-256``, and base64url ``x``/``y`` — the shape the
     admin-attested enrollment VC carries for the passkey."""
     data = json.loads(jwk)

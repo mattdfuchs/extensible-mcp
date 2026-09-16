@@ -23,10 +23,10 @@ to configure.
 
 ## Run
 
-The build context is the repo root (`mcp-alternative`):
+The build context is the repo root (`extensible-mcp`):
 
 ```sh
-cd mcp-alternative
+cd extensible-mcp
 docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --build
 ```
 

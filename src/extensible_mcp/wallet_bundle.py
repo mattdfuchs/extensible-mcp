@@ -5,20 +5,19 @@
 
 The wallets hand the LLM `{token, membership}` bundles; the `family_spend_prod`
 policy reads the `ProdSpendInput` contract.
-This adapter bridges the two — and bakes in the three seams:
+This adapter bridges the two, in three steps:
 
 - **Decode** each wallet `token` (a compact JWS) into `claims`, pairing it as
   `{jws: token, claims}`. The policy verifies the `jws` independently, so
   decoding here adds no trust.
-- **Seam 1 (cents).** Normalize the float-dollar `amount` into integer
+- **Normalize money.** The float-dollar `amount` becomes integer
   `amountCents` via ``Decimal`` — on *both* the request VC's
   `…requests.amount` and the native call `arguments`, identically, so the
-  policy's field-by-field call-binding (rule 7) matches.
+  policy's field-by-field call-binding compares like with like.
 - **Harvest** the inline membership from each bundle into a per-call lookup
   keyed by signer DID, reconciling the wallets' inline-attachment with the
   fetch plan's `wallet`-sourced membership fields. Combined with the did:web
-  resolver (deliverable c), this yields the membership-with-`adminKey` the
-  policy reads (seam 2).
+  resolver, this yields the membership-with-`adminKey` the policy reads.
 
 The nested `vc.credentialSubject.requests` path is specific to household-
 identity's ActionRequest shape — this adapter *is* that bridge, not a generic

@@ -4,7 +4,7 @@
 # approval page, and a live log — everything else (the proxy, the wallet
 # services, the parlor's MCP server) stays internal to the compose network.
 #
-#   cd mcp-alternative
+#   cd extensible-mcp
 #   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --build
 #
 # Human surfaces: chat + log http://localhost:7300 · passkey approvals

@@ -1,12 +1,11 @@
 # Copyright (c) 2026 Matthew Fuchs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Issuer registry: which wallet fulfils which role (the zero-trust seam).
+"""Issuer registry: which wallet fulfils which role.
 
 A policy names a *role* ("a parent must sign"); the proxy decides which concrete
-wallet is that role. This generalizes the fork's two hard-coded positional URLs
-(`originator_wallet_url` / `approver_wallet_url`) into a role-keyed table, so a
-deployment can have more than two parties.
+wallet is that role. A role-keyed table rather than a fixed pair of
+originator/approver URLs, so a deployment can have more than two parties.
 
 The registry is acquisition-side routing — used when the LLM asks the proxy to
 obtain a signature for a given role. It is deployment config, never derived from
@@ -56,7 +55,8 @@ class IssuerRegistry:
         originator_role: str = "kid",
         approver_role: str = "parent",
     ) -> "IssuerRegistry":
-        """Build from the fork's two positional wallet URLs — a migration shim
-        so existing `VCConfig` (originator/approver URLs) maps onto the
-        role-keyed table without a config rewrite."""
+        """Build from a positional originator/approver pair — a shim for a
+        deployment whose config predates the role-keyed table (the demo's
+        own ``VCConfig`` is one), so it maps across without a config
+        rewrite."""
         return cls({originator_role: originator_url, approver_role: approver_url})
