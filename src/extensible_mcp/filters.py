@@ -7,6 +7,7 @@ import fnmatch
 import json
 import re
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from .types import (
     CallFilterResult,
@@ -159,7 +160,7 @@ class RegoPolicyFilter:
         except ImportError:
             raise ImportError(
                 "regopy is required for Rego policy support. "
-                "Install it with: uv sync --group rego"
+                "Install it with: pip install 'extensible-mcp[rego]' (or uv sync --extra rego)"
             )
         with open(policy_path) as f:
             self._policy_source = f.read()
@@ -266,6 +267,52 @@ class ServerLoadFilterPipeline:
         return ServerLoadResult(allowed=True)
 
 
+def _host_glob(pattern: str) -> str:
+    """The host component of a URL glob, or "" if it has none."""
+    try:
+        return urlparse(pattern).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _url_host(url: str) -> str:
+    try:
+        return urlparse(url).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _url_allows(url: str, pattern: str) -> bool:
+    """Whitelist match: the whole URL must glob **and** the pattern's host
+    must match the URL's real host.
+
+    ``fnmatch``'s ``*`` crosses ``/``, so ``https://*.corp.example/*`` is
+    otherwise satisfied by ``https://attacker.example/x.corp.example/mcp`` --
+    a host constraint met by path content. Checking the parsed host as well
+    closes that without changing what a legitimate pattern means. A whitelist
+    should err towards refusing, so this narrows.
+    """
+    if not fnmatch.fnmatch(url, pattern):
+        return False
+    host_pattern = _host_glob(pattern)
+    if not host_pattern:
+        return True
+    return fnmatch.fnmatch(_url_host(url), host_pattern)
+
+
+def _url_denies(url: str, pattern: str) -> bool:
+    """Blacklist match: the whole URL globs **or** the host does.
+
+    Deliberately the opposite asymmetry to :func:`_url_allows` -- a deny list
+    should err towards denying, so this broadens. Every URL denied before is
+    still denied, plus ones whose host matches even if the path does not.
+    """
+    if fnmatch.fnmatch(url, pattern):
+        return True
+    host_pattern = _host_glob(pattern)
+    return bool(host_pattern) and fnmatch.fnmatch(_url_host(url), host_pattern)
+
+
 class ServerLoadAccessControlFilter:
     """Config-driven allow/deny for server names and URLs."""
 
@@ -294,13 +341,13 @@ class ServerLoadAccessControlFilter:
                     reason=f"Server name '{request.server_name}' matches blocked pattern '{pattern}'.",
                 )
         for pattern in self.deny_url_patterns:
-            if fnmatch.fnmatch(request.url, pattern):
+            if _url_denies(request.url, pattern):
                 return ServerLoadResult(
                     allowed=False,
                     reason=f"URL '{request.url}' matches blocked pattern '{pattern}'.",
                 )
         if self.allow_url_patterns:
-            if not any(fnmatch.fnmatch(request.url, p) for p in self.allow_url_patterns):
+            if not any(_url_allows(request.url, p) for p in self.allow_url_patterns):
                 return ServerLoadResult(
                     allowed=False,
                     reason=f"URL '{request.url}' does not match any allowed URL pattern.",

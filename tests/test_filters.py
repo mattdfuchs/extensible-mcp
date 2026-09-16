@@ -482,3 +482,45 @@ class TestRegoPolicyFilter:
         from extensible_mcp.filters import RegoPolicyFilter
         with pytest.raises(ValueError, match="must declare a package"):
             RegoPolicyFilter(str(POLICIES_DIR / "no_package.rego"))
+
+
+class TestUrlPatternHostBinding:
+    """`fnmatch`'s `*` crosses `/`, so a pattern meant to constrain the host
+    can be satisfied by path content. README recommends `allow_url_patterns`
+    as the SSRF defence, so this matters."""
+
+    async def test_host_wildcard_is_not_satisfied_by_path_content(self):
+        f = ServerLoadAccessControlFilter(
+            allow_url_patterns=["https://*.corp.example/*"]
+        )
+        result = await f.check(
+            make_load_request(url="https://attacker.example/x.corp.example/mcp")
+        )
+        assert result.allowed is False
+
+    async def test_a_real_subdomain_still_matches(self):
+        f = ServerLoadAccessControlFilter(
+            allow_url_patterns=["https://*.corp.example/*"]
+        )
+        assert (await f.check(make_load_request(url="https://api.corp.example/mcp"))).allowed
+
+    async def test_exact_host_pattern_still_matches_a_deep_path(self):
+        f = ServerLoadAccessControlFilter(allow_url_patterns=["https://github.com/*"])
+        assert (await f.check(make_load_request(url="https://github.com/org/repo"))).allowed
+
+    async def test_a_host_cannot_be_spoofed_through_the_path(self):
+        f = ServerLoadAccessControlFilter(allow_url_patterns=["https://github.com/*"])
+        result = await f.check(make_load_request(url="https://evil.example/github.com/x"))
+        assert result.allowed is False
+
+    async def test_deny_patterns_stay_broad(self):
+        """A blacklist must err the other way: still deny on scheme, and now
+        also deny on host even where the path would not have matched."""
+        f = ServerLoadAccessControlFilter(deny_url_patterns=["http://*"])
+        assert (await f.check(make_load_request(url="http://anything/x"))).allowed is False
+
+        f = ServerLoadAccessControlFilter(
+            deny_url_patterns=["https://*.evil.example/*"]
+        )
+        result = await f.check(make_load_request(url="https://a.evil.example/p"))
+        assert result.allowed is False
