@@ -83,14 +83,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # which also swallows the CancelledError of a shutdown
                 # arriving mid-retry: that used to sleep out the remaining
                 # attempts before the process could exit.
-                await attempt_stack.aclose()
+                try:
+                    await attempt_stack.aclose()
+                except Exception:
+                    # The transport's own task group may already have crashed
+                    # and unwound, in which case exiting it from here raises
+                    # anyio's "different task" RuntimeError. The connection is
+                    # dead either way; a teardown error must not replace the
+                    # connection error we are retrying on -- doing so used to
+                    # kill the console on its first attempt instead of
+                    # retrying.
+                    pass
                 session = None
-                if (
-                    isinstance(e, BaseExceptionGroup)
-                    and e.subgroup(asyncio.CancelledError) is not None
-                ):
-                    # A group carrying a cancellation is this process being
-                    # shut down, not a downstream that is not up yet.
+                if isinstance(e, BaseExceptionGroup) and e.subgroup(
+                    lambda leaf: not isinstance(leaf, asyncio.CancelledError)
+                ) is None:
+                    # Nothing in the group but cancellations: this process is
+                    # being shut down, not a downstream that is not up yet.
+                    # (A group holding *only* a cancellation is the test --
+                    # a plain connection failure arrives in a group carrying
+                    # the sibling tasks' cancellations alongside it, so the
+                    # presence of one proves nothing.)
                     raise
                 if attempt == _CONNECT_RETRIES:
                     raise

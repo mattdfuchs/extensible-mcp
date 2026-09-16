@@ -24,13 +24,22 @@ fi
 mkdir -p "$(dirname "$DEMO_LOG_FILE")"
 : > "$DEMO_LOG_FILE"
 
+# --host 127.0.0.1, not 0.0.0.0: every consumer of these three services --
+# the proxy (wallets) and the console (proxy) -- runs inside this container
+# and reaches them over loopback, and none of the three is published to the
+# host. Binding them to 0.0.0.0 put the whole family control plane on the
+# shared compose network, where the merchant container could reach it: drive
+# the proxy as an MCP client, or POST a wallet's /sign/request with its own
+# chosen prompt text and callback URL. On loopback they are not reachable
+# from another container at all. The approval service stays on 0.0.0.0
+# because its passkey pages are published to the host.
 uv run --package household-identity wallet run \
-  --keys-dir workspace/keys --label kid --host 0.0.0.0 --port 7401 \
+  --keys-dir workspace/keys --label kid --host 127.0.0.1 --port 7401 \
   --membership-path workspace/memberships/kid.jwt --approve web \
   >> "$DEMO_LOG_FILE" 2>&1 &
 
 uv run --package household-identity wallet run \
-  --keys-dir workspace/keys --label parent --host 0.0.0.0 --port 7402 \
+  --keys-dir workspace/keys --label parent --host 127.0.0.1 --port 7402 \
   --membership-path workspace/memberships/parent.jwt --approve web \
   >> "$DEMO_LOG_FILE" 2>&1 &
 
@@ -81,12 +90,28 @@ fi
 # assistant can't reach for one and stall (see HIDE_WALLET_GATED_TOOLS in
 # family_proxy_server.py).
 HIDE_WALLET_GATED_TOOLS=true \
-  uv run --package extensible-mcp-vc python examples/family_proxy_server.py --host 0.0.0.0 --port 7400 \
+  uv run --package extensible-mcp-vc python examples/family_proxy_server.py --host 127.0.0.1 --port 7400 \
   >> "$DEMO_LOG_FILE" 2>&1 &
 
-# Give the proxy a moment to bind before the console connects to it as an
-# MCP client.
-sleep 2
+# Wait for the proxy to actually accept connections. It builds an embedding
+# index and connects three stdio downstreams first, which takes tens of
+# seconds on a cold container -- a fixed sleep either wasted time or, more
+# often, handed the console a port nothing was listening on yet.
+uv run python - << 'PYEOF'
+import socket, sys, time
+
+deadline = time.monotonic() + 120
+while time.monotonic() < deadline:
+    with socket.socket() as s:
+        s.settimeout(2)
+        try:
+            s.connect(("127.0.0.1", 7400))
+            print("[family] proxy is accepting connections on 127.0.0.1:7400")
+            sys.exit(0)
+        except OSError:
+            time.sleep(1)
+print("[family] WARNING: proxy did not come up within 120s", file=sys.stderr)
+PYEOF
 
 echo "[family] human surfaces: chat + log http://localhost:7300 · passkey approvals http://localhost:7500 (2 windows: child, parent)"
 exec env CONSOLE_HOST=0.0.0.0 CONSOLE_PORT=7300 \

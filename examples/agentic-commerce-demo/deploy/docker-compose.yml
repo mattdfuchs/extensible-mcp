@@ -4,6 +4,13 @@
 # approval page, and a live log — everything else (the proxy, the wallet
 # services, the parlor's MCP server) stays internal to the compose network.
 #
+# The family's control plane goes further than "not published": the proxy and
+# both wallets bind to loopback inside the family container (see
+# family-entrypoint.sh), so they are not reachable from the merchant
+# container either. The approval service is the exception — its passkey pages
+# are published to the host, which means the merchant container can reach its
+# API too. See deploy/README.md, "What the container boundary is and isn't".
+#
 #   cd extensible-mcp
 #   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --build
 #
@@ -57,6 +64,13 @@ services:
       - path: ../.env
         required: false
     environment:
+      # The merchant is the other side of the trust boundary, so it must not
+      # receive the family's payment credential just because both read the
+      # same .env. `environment` wins over `env_file`, so this blanks it for
+      # this container only. ANTHROPIC_API_KEY still passes through: the
+      # parlor's own clerk is an LLM, and it is the merchant org's own key in
+      # a single-developer demo.
+      STRIPE_API_KEY: ""
       MERCHANT_KEY_PATH: /data/merchant.key
       # Where this merchant fetches the settlement authority's card — the
       # rail whose signed receipts it will ship against.
