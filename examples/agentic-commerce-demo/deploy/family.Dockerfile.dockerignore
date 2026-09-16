@@ -7,6 +7,12 @@
 **/.pytest_cache
 **/.ruff_cache
 examples/agentic-commerce-demo/workspace
-# never bake secrets into image layers
+# never bake secrets into image layers.
+# These are all gitignored, so they never reach git -- but `COPY . .` takes
+# the working tree, not the index, so they need excluding here too.
 examples/agentic-commerce-demo/.env
 **/.env
+**/tokens
+**/*.key
+**/*.jwk
+**/keys

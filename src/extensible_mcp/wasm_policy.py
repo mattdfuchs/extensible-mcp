@@ -381,14 +381,39 @@ class OpaWasmPolicy:
         )
         self._verify_builtins_available()
 
+        # The OPA heap is a bump allocator: opa_malloc only moves a pointer
+        # forward and nothing ever frees. Each query marshals data, input,
+        # any builtin results and the result value into it, so without
+        # rewinding, memory grows linearly with the number of calls -- a
+        # denied call in a retry loop is enough to exhaust the instance.
+        # Mark the heap here, after init's own transient marshalling, and
+        # rewind to this point before each evaluation.
+        self._heap_base = self._exp("opa_heap_ptr_get")(self._store)
+
     # -- exports / memory helpers ------------------------------------------- #
 
     def _exp(self, name: str):
         return self._instance.exports(self._store)[name]
 
     def _read_cstr(self, addr: int) -> str:
-        data = self._memory.read(self._store, addr, self._memory.data_len(self._store))
-        return data[: data.index(0)].decode()
+        """Read a NUL-terminated string out of linear memory.
+
+        Reads in blocks rather than copying from ``addr`` to the end of
+        memory, which would be O(heap size) on every single result.
+        """
+        limit = self._memory.data_len(self._store)
+        out = bytearray()
+        pos = addr
+        while pos < limit:
+            stop = min(pos + 4096, limit)
+            block = self._memory.read(self._store, pos, stop)
+            nul = block.find(0)
+            if nul != -1:
+                out += block[:nul]
+                return bytes(out).decode()
+            out += block
+            pos = stop
+        raise PolicyEvaluationError("unterminated string in wasm memory")
 
     def _dump(self, value_addr: int) -> Any:
         """Marshal an OPA value address out to a Python object."""
@@ -475,6 +500,10 @@ class OpaWasmPolicy:
 
         self._pending_error = None
         store = self._store
+        # Everything the previous query allocated is dead: its result was
+        # marshalled out to Python before returning, so nothing in the heap
+        # is still referenced.
+        self._exp("opa_heap_ptr_set")(store, self._heap_base)
         try:
             ctx = self._exp("opa_eval_ctx_new")(store)
             self._exp("opa_eval_ctx_set_data")(store, ctx, self._load({}))

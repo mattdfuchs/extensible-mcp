@@ -319,3 +319,26 @@ def test_verify_ed25519_raw_non_string_evidence_denies_not_errors():
     assert _verify_ed25519_raw(None, "c2ln", key_b64url) is False
     assert _verify_ed25519_raw("a message", None, key_b64url) is False
     assert _verify_ed25519_raw("a message", "not-valid-base64!!!", key_b64url) is False
+
+
+def test_repeated_queries_do_not_grow_the_wasm_heap():
+    """The OPA heap is a bump allocator with no free. Each query marshals
+    data, input and a result into it, so without rewinding between calls the
+    instance grows linearly with call count -- and a denied call in a retry
+    loop is enough to exhaust it. SECURITY.md lists proxy DoS as in scope.
+    """
+    pol = OpaWasmPolicy(FIXTURE)
+    call = {"tool": "spend", "arguments": {"amountCents": 500, "merchant": "acme"}}
+
+    def pages() -> int:
+        return pol._memory.size(pol._store)
+
+    pol.query(call, ALLOW)  # one warm-up, so growth is measured at steady state
+    before = pages()
+    for _ in range(500):
+        pol.query(call, ALLOW)
+
+    assert pages() == before, (
+        f"wasm heap grew {pages() - before} pages over 500 queries; the "
+        "per-query opa_heap_ptr_set rewind is missing or ineffective"
+    )
