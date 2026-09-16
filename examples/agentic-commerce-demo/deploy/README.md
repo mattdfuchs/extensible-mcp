@@ -119,13 +119,28 @@ settle it, with no human involved.
 That is a property of this demo's deployment, not of the enforcement
 architecture: the policy still verifies every signature field-by-field, and
 it would still refuse evidence that did not verify. What the demo does not
-do is authenticate *who is allowed to ask the approval service for
-evidence in the first place*. A real deployment separates the two: the
-human-facing approval UI on its own published surface, the provisioning and
-settlement endpoints on an internal network with a caller credential.
-Doing that properly means splitting the family container, which is more
-deployment engineering than this demo carries — so it is written down here
-rather than half-done.
+do is authenticate *who is allowed to ask the approval service to vouch for
+a key in the first place*.
+
+`/register` is the link that matters. The approval service loads the admin's
+private key and will sign an enrollment credential — "this key holds role
+*parent*" — for whatever key and whatever role the request names. Its only
+production caller is the passkey page's own JavaScript, where the role is a
+dropdown. So the sole thing standing between a caller and the household's
+trust anchor is *reaching the page*. A WebAuthn assertion then proves the
+holder of that key approved these exact terms, which is exactly what it
+should prove — but it can never prove the key belongs to a particular human.
+That binding is made entirely at enrollment, and the chain is worth no more
+than its first link.
+
+The fix is therefore to authenticate enrollment: the requester proves who
+they are, and the server derives the role from that identity rather than
+believing the request body. Isolating these ports on their own network is
+worth doing as well, but it is defence in depth rather than the control to
+rely on — trusting an actor by virtue of where it sits is the posture this
+project's own [threat model](../../../README.md#threat-model) rejects.
+Neither is done here, and a login whose password everyone can guess would be
+worse than this paragraph, so the honest position for now is to state it.
 
 ## The full loop (what this is actually a demo of)
 
