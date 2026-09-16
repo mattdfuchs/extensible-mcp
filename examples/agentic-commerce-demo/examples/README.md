@@ -92,6 +92,13 @@ needs the approval service, which serves the passkey page the human taps:
 APPROVAL_HOST=0.0.0.0 uv run python examples/approval_service.py
 ```
 
+That page is behind a sign-in: enrolling a passkey mints an admin-signed "this
+key holds role *parent*", so it needs an identity to take the role from rather
+than a dropdown the caller sets. The service prints the credentials for this
+workspace when it starts (`[approval] sign-in credentials: …`) — usernames
+`child` and `parent`, passwords random per workspace. Sign in as the role you
+want the window to hold, then enrol.
+
 ### The pizza walkthrough
 
 The kid tells the assistant to order a pizza. It then:

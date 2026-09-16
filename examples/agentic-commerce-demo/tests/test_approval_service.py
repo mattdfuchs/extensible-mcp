@@ -11,17 +11,25 @@ not-required approvals are rejected."""
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from extensible_mcp_vc.invoice import invoice_challenge
-from extensible_mcp_vc.webauthn import b64url_decode
+from extensible_mcp_vc.webauthn import b64url_decode, b64url_encode
 
 from .webauthn_fixtures import approve_invoice as _approve
 from .webauthn_fixtures import enroll as _enroll
 from .webauthn_fixtures import issue_invoice as _issue
-from .webauthn_fixtures import load_approval_app, sample_invoice, trust_merchant
+from .webauthn_fixtures import (
+    attestation_object,
+    load_approval_app,
+    sample_invoice,
+    sign_in,
+    trust_merchant,
+)
 
 OVER = sample_invoice()  # $18 -> child + parent
 SOLO = sample_invoice(totalCents=500, nonce="urn:uuid:solo")  # <= $10 -> child only
@@ -156,3 +164,142 @@ def test_enrollment_vc_minted_and_admin_signed(client):
     payload = e["jws"].split(".")[1]
     decoded = _json.loads(_b64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     assert decoded == claims
+
+
+# -- enrollment is authenticated --------------------------------------------- #
+#
+# The service holds the admin's private key and signs "this passkey holds role
+# X". Before the OAuth2 flow, the only gate was reaching the page, so anything
+# on the network could enrol itself as parent and the admin would vouch for it.
+
+
+class TestEnrollmentRequiresIdentity:
+    def test_register_without_a_token_is_refused(self, client):
+        key = ec.generate_private_key(ec.SECP256R1())
+        r = client.post("/register", json={
+            "attestationObject": b64url_encode(
+                attestation_object(key.public_key(), b"cred-x")),
+            "role": "parent"})
+        assert r.status_code == 401
+        assert "Bearer" in r.headers.get("WWW-Authenticate", "")
+
+    def test_approve_without_a_token_is_refused(self, client):
+        r = client.post("/approve/whatever", json={"credentialId": "x"})
+        assert r.status_code == 401
+
+    def test_a_forged_token_is_refused(self, client):
+        key = ec.generate_private_key(ec.SECP256R1())
+        for header in ("Bearer nonsense", "Bearer a.b.c", "Basic parent:parent", "parent"):
+            r = client.post("/register", json={
+                "attestationObject": b64url_encode(
+                    attestation_object(key.public_key(), b"cred-x")),
+            }, headers={"Authorization": header})
+            assert r.status_code == 401, header
+
+    def test_the_body_cannot_choose_the_role(self, client):
+        """The point of the whole flow. Authenticated as the child, asking to be
+        enrolled as the parent: the token decides and the body is ignored."""
+        headers = sign_in(client, "child")
+        key = ec.generate_private_key(ec.SECP256R1())
+        r = client.post("/register", json={
+            "attestationObject": b64url_encode(
+                attestation_object(key.public_key(), b"cred-sneaky")),
+            "role": "parent"}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["role"] == "child"
+
+    def test_the_enrollment_credential_is_signed_for_the_token_s_role(self, client):
+        """The admin's attestation must agree with the token, since that VC is
+        what the policy reads."""
+        import json as _json
+
+        attested = TestClient(load_approval_app(with_admin_key=True))
+        headers = sign_in(attested, "parent")
+        key = ec.generate_private_key(ec.SECP256R1())
+        r = attested.post("/register", json={
+            "attestationObject": b64url_encode(
+                attestation_object(key.public_key(), b"cred-parent")),
+            "role": "child"}, headers=headers)
+        assert r.status_code == 200 and r.json()["role"] == "parent"
+        assert r.json()["adminAttested"] is True
+        enrolled = attested.get(f"/enrollment/{r.json()['credentialId']}").json()
+        payload = enrolled["jws"].split(".")[1]
+        claims = _json.loads(
+            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        assert claims["vc"]["credentialSubject"]["role"] == "parent"
+
+
+class TestTheFlowItself:
+    def test_an_unregistered_redirect_uri_is_refused(self, client):
+        """An authorization server that redirects wherever the request says is
+        an open redirect, and hands codes to whoever asked."""
+        from extensible_mcp_vc.oauth import CLIENT_ID, pkce_challenge
+
+        r = client.get("/authorize", params={
+            "response_type": "code", "client_id": CLIENT_ID,
+            "redirect_uri": "https://evil.example/collect",
+            "code_challenge": pkce_challenge("v" * 48),
+            "code_challenge_method": "S256"})
+        assert r.status_code == 400
+
+    def test_a_wrong_password_does_not_yield_a_code(self, client):
+        from extensible_mcp_vc.oauth import pkce_challenge
+
+        r = client.post("/authorize", data={
+            "username": "parent", "password": "wrong", "redirect_uri": "/",
+            "code_challenge": pkce_challenge("v" * 48), "state": "s"},
+            follow_redirects=False)
+        assert r.status_code == 401
+        assert "location" not in {k.lower() for k in r.headers}
+
+    def test_a_code_cannot_be_redeemed_twice(self, client):
+        import secrets
+        from urllib.parse import parse_qs, urlparse
+
+        from extensible_mcp_vc.oauth import CLIENT_ID, pkce_challenge
+
+        verifier = secrets.token_urlsafe(48)
+        password = next(
+            u.password for u in client.app.state.users.users if u.role == "child")
+        r = client.post("/authorize", data={
+            "username": "child", "password": password, "redirect_uri": "/",
+            "code_challenge": pkce_challenge(verifier), "state": "s"},
+            follow_redirects=False)
+        code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+        form = {"grant_type": "authorization_code", "code": code,
+                "code_verifier": verifier, "redirect_uri": "/", "client_id": CLIENT_ID}
+        assert client.post("/token", data=form).status_code == 200
+        assert client.post("/token", data=form).status_code == 400
+
+    def test_pkce_binds_the_exchange_to_the_client_that_started_it(self, client):
+        """Without the verifier check, an intercepted code is enough."""
+        import secrets
+        from urllib.parse import parse_qs, urlparse
+
+        from extensible_mcp_vc.oauth import CLIENT_ID, pkce_challenge
+
+        verifier = secrets.token_urlsafe(48)
+        password = next(
+            u.password for u in client.app.state.users.users if u.role == "child")
+        r = client.post("/authorize", data={
+            "username": "child", "password": password, "redirect_uri": "/",
+            "code_challenge": pkce_challenge(verifier), "state": "s"},
+            follow_redirects=False)
+        code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+        r = client.post("/token", data={
+            "grant_type": "authorization_code", "code": code,
+            "code_verifier": secrets.token_urlsafe(48),  # not the one used
+            "redirect_uri": "/", "client_id": CLIENT_ID})
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    def test_me_reports_the_authenticated_identity(self, client):
+        r = client.get("/me", headers=sign_in(client, "parent"))
+        assert r.status_code == 200
+        assert r.json() == {"sub": "parent", "role": "parent"}
+
+    def test_passwords_are_not_the_usernames(self, client):
+        """A fixed pair would make the login a speed bump: two guesses."""
+        for user in client.app.state.users.users:
+            assert user.password != user.username
+            assert len(user.password) >= 12

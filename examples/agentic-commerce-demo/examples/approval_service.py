@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import json
 import os
 import time
@@ -74,14 +75,21 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
 
+from extensible_mcp_vc.oauth import (
+    AUDIENCE,
+    CLIENT_ID,
+    AuthorizationServer,
+    DemoUserStore,
+    OAuthError,
+)
 from extensible_mcp_vc.invoice import (
     InvoiceError,
     invoice_challenge,
@@ -160,6 +168,28 @@ def _load_admin_signer():
 
 
 _admin_signer = _load_admin_signer()
+
+# Enrollment mints an admin-signed "this key holds role X", so it needs an
+# identity to derive X from. Passwords are random per workspace and printed at
+# startup; see oauth.py for why a real flow rather than a password check, and
+# why not a fixed pair.
+_users = DemoUserStore(_WORKSPACE)
+_auth = AuthorizationServer(users=_users)
+
+
+def _require_token(request: Request) -> dict[str, Any]:
+    """Claims for the caller's bearer token, or a 401 the browser can act on.
+
+    Enforced on the *endpoint*, not on page delivery: the threat is a process
+    that never loads the page and POSTs straight here.
+    """
+    try:
+        return _auth.verify_token(request.headers.get("Authorization"))
+    except OAuthError as e:
+        raise HTTPException(
+            401, f"{e.code}: {e.description}",
+            headers={"WWW-Authenticate": 'Bearer realm="approval"'},
+        ) from e
 
 
 def _p256_jwk_string(public_key) -> str:
@@ -270,6 +300,15 @@ def _settle_if_ready(p: dict[str, Any]) -> None:
 
 @app.post("/register")
 async def register(request: Request) -> JSONResponse:
+    """Enrol a passkey under the authenticated caller's role.
+
+    The role comes from the token and any ``role`` in the body is ignored. A
+    caller who could name its own role would self-assign authority and the
+    admin would sign it, which is the whole reason this endpoint is
+    authenticated -- authenticating the requester while still believing the
+    body would close nothing.
+    """
+    claims = _require_token(request)
     body = await request.json()
     try:
         cred_id, public_key = parse_registration(
@@ -278,7 +317,7 @@ async def register(request: Request) -> JSONResponse:
     except (WebAuthnError, KeyError, ValueError) as e:
         raise HTTPException(400, f"registration failed: {e}") from e
     cred_id_b64 = b64url_encode(cred_id)
-    role = body.get("role", "child")
+    role = claims["role"]
     _credentials[cred_id_b64] = {"key": public_key, "role": role}
     if _admin_signer is not None:
         _enrollments[cred_id_b64] = _mint_enrollment_vc(cred_id_b64, role, public_key)
@@ -425,6 +464,10 @@ async def pending(approval_id: str) -> JSONResponse:
 
 @app.post("/approve/{approval_id}")
 async def approve(approval_id: str, request: Request) -> JSONResponse:
+    # The assertion already proves possession of an enrolled key, so this is
+    # defence in depth rather than the load-bearing check -- but an approval
+    # surface that anything on the network can POST to is not one either.
+    _require_token(request)
     p = _pending.get(approval_id)
     if p is None:
         raise HTTPException(404, "unknown approval")
@@ -618,6 +661,30 @@ async function poll(){
 setInterval(poll,1500); poll();
 </script>"""
 
+_LOGIN_PAGE = """<!doctype html><meta charset=utf-8>
+<title>Sign in \u2014 approval demo</title>
+<style>body{font:16px system-ui;max-width:24em;margin:4em auto;padding:0 1em}
+input,button{font:inherit;padding:.45em;width:100%;box-sizing:border-box;margin:.25em 0}
+label{display:block;margin-top:.8em;color:#444;font-size:.9em}
+.note{color:#666;font-size:.85em;margin-top:1.5em;line-height:1.5}</style>
+<h1>Sign in</h1>
+<p>Your role is decided by who you sign in as, not by a control on the next
+page.</p>
+<!--ERROR-->
+<form method=post action=/authorize>
+<input type=hidden name=redirect_uri value="__REDIRECT_URI__">
+<input type=hidden name=code_challenge value="__CHALLENGE__">
+<input type=hidden name=state value="__STATE__">
+<label>Username (child or parent)<input name=username autocomplete=username autofocus></label>
+<label>Password<input name=password type=password autocomplete=current-password></label>
+<button type=submit>Sign in</button>
+</form>
+<p class=note>The credentials for this workspace were generated at startup and
+printed to the service log \u2014 in the containerized demo, the live log at
+:7300/logs. They are random so that reaching this page is not by itself
+authority to enrol a passkey as anyone.</p>
+"""
+
 _PAGE = """<!doctype html><meta charset=utf-8>
 <title>Approval demo</title>
 <style>body{font:16px system-ui;max-width:42em;margin:2.5em auto;padding:0 1em}
@@ -627,7 +694,8 @@ h2{margin-top:1.4em}#status{background:#eef;padding:1em;border-radius:6px}</styl
 <h1>WebAuthn approval demo</h1>
 <p>Open a second window as the other role for a two-party approval.</p>
 <h2>1. Enroll this window</h2>
-role <select id=role><option>child</option><option>parent</option></select>
+<div>Signed in as <b id=who>\u2026</b> \u2014 this window enrols and approves as
+that role.</div>
 <button onclick=enroll()>Enroll with biometric</button>
 <h2>2. What is pending</h2>
 $<input id=amt size=6 readonly> to <input id=merch readonly>
@@ -643,9 +711,53 @@ request can only be created by a merchant-signed invoice, never from this page.<
 const log=(...a)=>document.getElementById('log').textContent=a.join(' ')+"\\n"+document.getElementById('log').textContent;
 const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
 const unb64=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s),c=>c.charCodeAt(0))};
-let credentialId=null, myRole=null;
+let credentialId=null, myRole=null, token=null;
+
+// -- OAuth2 authorization code + PKCE ------------------------------------- //
+// Kept in sessionStorage so a reload does not send you round the flow again,
+// and so two windows can hold two different identities in one browser.
+const S=sessionStorage;
+const rnd=n=>b64(crypto.getRandomValues(new Uint8Array(n)));
+async function s256(v){return b64(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)))}
+
+async function signIn(){
+  const verifier=rnd(48); S.setItem('pkce_v',verifier);
+  const state=rnd(12); S.setItem('pkce_s',state);
+  const q=new URLSearchParams({response_type:'code',client_id:'approval-page',
+    redirect_uri:'/',state,code_challenge:await s256(verifier),code_challenge_method:'S256'});
+  location.href='/authorize?'+q;
+}
+
+async function completeSignIn(){
+  const u=new URL(location.href), code=u.searchParams.get('code'), state=u.searchParams.get('state');
+  if(!code) return false;
+  if(state!==S.getItem('pkce_s')){log('state mismatch; sign in again');return false}
+  const body=new URLSearchParams({grant_type:'authorization_code',code,
+    code_verifier:S.getItem('pkce_v'),redirect_uri:'/',client_id:'approval-page'});
+  const r=await fetch('/token',{method:'POST',
+    headers:{'content-type':'application/x-www-form-urlencoded'},body});
+  if(!r.ok){log('token exchange failed');return false}
+  const j=await r.json();
+  S.setItem('tok',j.access_token); S.removeItem('pkce_v'); S.removeItem('pkce_s');
+  history.replaceState({},'','/');   // don't leave the code in the address bar
+  return true;
+}
+
+const auth=()=>({'authorization':'Bearer '+token});
+
+async function boot(){
+  await completeSignIn();
+  token=S.getItem('tok');
+  if(!token){await signIn();return}
+  const r=await fetch('/me',{headers:auth()});
+  if(r.status===401){S.removeItem('tok');await signIn();return}
+  const me=await r.json(); myRole=me.role;
+  document.getElementById('who').textContent=me.sub+' ('+me.role+')';
+  log('signed in as',me.sub,'role',me.role);
+}
+
 async function enroll(){
-  myRole=document.getElementById('role').value;
+  if(!token){await signIn();return}
   const c=await navigator.credentials.create({publicKey:{
     challenge:crypto.getRandomValues(new Uint8Array(32)),
     rp:{id:location.hostname,name:'Approval demo'},
@@ -653,8 +765,12 @@ async function enroll(){
     pubKeyCredParams:[{type:'public-key',alg:-7}],
     authenticatorSelection:{userVerification:'required',residentKey:'preferred'},
     attestation:'none'}});
-  const r=await fetch('/register',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject),role:myRole})});
+  // No role in the body: the server takes it from the token. Sending one
+  // would be ignored, and relying on it is the bug this flow removes.
+  const r=await fetch('/register',{method:'POST',
+    headers:{'content-type':'application/json',...auth()},
+    body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject)})});
+  if(r.status===401){log('session expired; signing in again');S.removeItem('tok');await signIn();return}
   const j=await r.json(); credentialId=j.credentialId; log('enrolled as',j.role,'('+credentialId.slice(0,10)+'\\u2026)');
 }
 async function approve(){
@@ -669,7 +785,8 @@ async function approve(){
       challenge:unb64(cur.challenge),rpId:location.hostname,
       allowCredentials:[{type:'public-key',id:unb64(credentialId)}],userVerification:'required'}});
   }catch(e){log('declined: '+desc);return}
-  const r=await fetch('/approve/'+cur.id,{method:'POST',headers:{'content-type':'application/json'},
+  const r=await fetch('/approve/'+cur.id,{method:'POST',
+    headers:{'content-type':'application/json',...auth()},
     body:JSON.stringify({credentialId,authenticatorData:b64(a.response.authenticatorData),
       clientDataJSON:b64(a.response.clientDataJSON),signature:b64(a.response.signature)})});
   const j=await r.json();
@@ -714,8 +831,94 @@ async function poll(){
     firstPoll=false;
   }catch(e){}
 }
-setInterval(poll,1500); poll();
+boot(); setInterval(poll,1500); poll();
 </script>"""
+
+
+# -- OAuth 2.0: authorization code + PKCE ---------------------------------- #
+#
+# The demo is its own authorization server. That is the point: the page speaks
+# the flow a real IdP speaks, so pointing it at Entra, Keycloak, Okta or Auth0
+# replaces these three endpoints with configuration instead of a rewrite.
+
+
+@app.get("/authorize")
+async def authorize_form(request: Request) -> HTMLResponse:
+    q = request.query_params
+    try:
+        _auth.validate_authorization_request(
+            client_id=q.get("client_id", ""),
+            redirect_uri=q.get("redirect_uri", ""),
+            response_type=q.get("response_type", ""),
+            code_challenge=q.get("code_challenge", ""),
+            code_challenge_method=q.get("code_challenge_method", ""),
+        )
+    except OAuthError as e:
+        raise HTTPException(400, f"{e.code}: {e.description}") from e
+    return HTMLResponse(
+        _LOGIN_PAGE.replace("__REDIRECT_URI__", html.escape(q["redirect_uri"], quote=True))
+        .replace("__CHALLENGE__", html.escape(q["code_challenge"], quote=True))
+        .replace("__STATE__", html.escape(q.get("state", ""), quote=True))
+    )
+
+
+@app.post("/authorize")
+async def authorize_submit(request: Request) -> Response:
+    form = await request.form()
+    try:
+        _auth.validate_authorization_request(
+            client_id=CLIENT_ID,
+            redirect_uri=str(form.get("redirect_uri", "")),
+            response_type="code",
+            code_challenge=str(form.get("code_challenge", "")),
+            code_challenge_method="S256",
+        )
+        code = _auth.issue_code(
+            username=str(form.get("username", "")),
+            password=str(form.get("password", "")),
+            redirect_uri=str(form.get("redirect_uri", "")),
+            code_challenge=str(form.get("code_challenge", "")),
+        )
+    except OAuthError as e:
+        # Re-render rather than redirect: a failed sign-in must not hand a
+        # code-shaped anything back to the client.
+        return HTMLResponse(
+            _LOGIN_PAGE.replace("__REDIRECT_URI__", html.escape(str(form.get("redirect_uri", "")), quote=True))
+            .replace("__CHALLENGE__", html.escape(str(form.get("code_challenge", "")), quote=True))
+            .replace("__STATE__", html.escape(str(form.get("state", "")), quote=True))
+            .replace("<!--ERROR-->", f"<p style=color:#b00>{html.escape(e.description)}</p>"),
+            status_code=401,
+        )
+    sep = "&" if "?" in str(form.get("redirect_uri")) else "?"
+    target = f"{form.get('redirect_uri')}{sep}code={code}"
+    if form.get("state"):
+        target += f"&state={form.get('state')}"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/token")
+async def token(request: Request) -> JSONResponse:
+    form = await request.form()
+    try:
+        granted = _auth.exchange_code(
+            code=str(form.get("code", "")),
+            code_verifier=str(form.get("code_verifier", "")),
+            redirect_uri=str(form.get("redirect_uri", "")),
+            client_id=str(form.get("client_id", "")),
+        )
+    except OAuthError as e:
+        return JSONResponse(
+            {"error": e.code, "error_description": e.description}, status_code=400
+        )
+    return JSONResponse(granted, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/me")
+async def me(request: Request) -> JSONResponse:
+    """Who the token says you are. The page reads its role from here rather
+    than from a control the user can set."""
+    claims = _require_token(request)
+    return JSONResponse({"sub": claims["sub"], "role": claims["role"]})
 
 
 @app.get("/")
@@ -724,6 +927,10 @@ async def index() -> HTMLResponse:
 
 
 if __name__ == "__main__":
+    # Printed on every start, because the human needs them and they are
+    # random. In the containerized demo this lands in the log served at
+    # :7300/logs.
+    print(_users.banner(), flush=True)
     uvicorn.run(
         app,
         host=os.environ.get("APPROVAL_HOST", "127.0.0.1"),

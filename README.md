@@ -64,7 +64,7 @@ The base proxy is working: dynamic server loading, RAG-based tool retrieval, an 
 
 Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 340 tests; the two example packages add 122 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 340 tests; the two example packages add 133 and 51.
 
 ## Threat Model
 

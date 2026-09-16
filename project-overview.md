@@ -115,7 +115,7 @@ All four pipelines are extensible — add any filter implementing the protocol.
 - Production Verifiable-Credential enforcement end-to-end: request VC + conditional authorization VC, memberships verified against did:web admin keys, the signed request bound field-by-field to the actual call, credentials stripped before the downstream call
 - Per-server bundle selection at admission time, fail closed — a server the proxy cannot positively place is not connected
 - Search-side guidance: governed tools surface their credential parameters and when each is required
-- 340 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on both engines); the two `examples/` workspace packages add 122 and 51
+- 340 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on both engines); the two `examples/` workspace packages add 133 and 51
 - Example configs for Claude Desktop and OpenClaw, targeting GitHub's MCP server
 
 ## ABAC with signed claims

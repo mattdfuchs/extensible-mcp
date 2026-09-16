@@ -5,6 +5,61 @@ semver's `0.x` range deliberately — the public API isn't frozen yet.
 
 ## [Unreleased]
 
+## [Unreleased]
+
+**Added: enrollment is authenticated (OAuth 2.0 authorization code + PKCE)**
+
+The approval service holds the household admin's private key and signs "this
+passkey holds role *parent*" for whatever key and role a request names. Its
+only production caller was the passkey page's own JavaScript, where the role
+was a dropdown — so the sole thing between a caller and the household's trust
+anchor was reaching the page. On the compose deployment the merchant container
+shares that reachability: it could enrol itself as both child and parent, trust
+its own merchant key, sign an invoice, approve it twice and settle, with every
+signature genuinely valid because the admin genuinely signed the enrollments.
+
+WebAuthn was never the weak part. An assertion proves *the holder of key X
+approved these exact terms*, which is what the policy needs; it cannot prove X
+belongs to a particular human. That binding is made at enrollment, so the chain
+was worth no more than its first link.
+
+The page now sits behind a sign-in, and **`/register` takes the role from the
+access token and ignores any `role` in the body** — authenticating the caller
+while still believing the body would close nothing, since a caller could
+authenticate as itself and self-assign `parent`. `/approve` requires a token
+too, as defence in depth; what authorizes an approval is still possession of
+the enrolled key.
+
+Two choices worth recording. The credentials are **random per workspace**,
+printed at startup: a fixed pair would be guessable in two tries, and a visible
+login that is not a gate is worse than none because it stops a reader asking.
+And the exchange is a **real flow rather than a password check** —
+authorization code with PKCE, not the resource-owner password grant, which is
+deprecated in OAuth 2.1 — so pointing the page at Entra, Keycloak, Okta or
+Auth0 is configuration instead of a rewrite. That property is the whole reason
+to build it this way.
+
+Verified against the running containers: an unauthenticated `POST /register`
+is refused with 401 from the host *and* from inside the merchant container,
+while the page itself still serves — the gate is on the endpoint, not on page
+delivery, because the merchant never loads the page.
+
+Still unauthenticated, because their callers are processes rather than humans
+and service credentials are separate work: `/trust-merchant`,
+`/request-invoice`, `/settle`. The serious chain is broken (no enrollments
+means no manufactured approvals), but a merchant can still add its own key to
+the trusted set and put arbitrary terms in front of the humans to approve.
+
+**Fixed: tests no longer write into the repo's workspace**
+
+Four test modules loaded `approval_service.py` through their own copies of a
+module loader. The service now builds its user store at import, so those
+copies created `approval-users.json` inside the real `workspace/` — which
+`setup.py` refuses to run against, breaking the manual walkthrough after any
+test run. All four now use the shared loader, which gives each app a throwaway
+`VC_WORKSPACE`. `setup.py`'s emptiness check also ignores that one file, so
+starting the service before setup no longer wedges it.
+
 ## [0.3.0] - 2026-09-16
 
 **Added: `local_tools` — one calling convention for every tool**

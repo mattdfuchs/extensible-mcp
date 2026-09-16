@@ -28,22 +28,21 @@ from extensible_mcp_vc.invoice import invoice_challenge, sign_invoice
 from extensible_mcp_vc.meta_tools import request_invoice_approval
 from extensible_mcp_vc.webauthn import b64url_encode
 
-from .webauthn_fixtures import assertion_for, attestation_object
+from .webauthn_fixtures import (
+    assertion_for,
+    attestation_object,
+    load_approval_module,
+    sign_in_async,
+)
 
 FUTURE = 4_000_000_000  # year 2096, so the expiry check is never the reason a test fails
 
 
-def _load_approval_service():
-    path = Path(__file__).resolve().parents[1] / "examples" / "approval_service.py"
-    spec = importlib.util.spec_from_file_location("approval_service_meta_test", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 @pytest.fixture
 def approval_mod():
-    return _load_approval_service()
+    # Shared loader: isolates VC_WORKSPACE, so importing the service does not
+    # write approval-users.json into the repo's real workspace.
+    return load_approval_module()
 
 
 def _client_for(app) -> httpx.AsyncClient:
@@ -63,13 +62,17 @@ def _invoice(**over):
     return inv
 
 
-async def _enroll(client, role):
+async def _enroll(client, role, store):
+    """Sign in as ``role``, then enrol a passkey under it. The role comes from
+    the token; nothing is sent in the body."""
+    headers = await sign_in_async(client, role, store)
     key = ec.generate_private_key(ec.SECP256R1())
     cred_id = f"cred-{role}".encode()
     r = await client.post("/register", json={
         "attestationObject": b64url_encode(attestation_object(key.public_key(), cred_id)),
-        "role": role})
-    assert r.status_code == 200
+    }, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == role
     return key, r.json()["credentialId"]
 
 
@@ -79,7 +82,7 @@ async def _trust_merchant(client, merchant_key, merchant_id="pizza-1"):
     assert r.status_code == 200
 
 
-async def _approve_once_pending(client, key, cred_id, challenge):
+async def _approve_once_pending(client, key, cred_id, challenge, headers):
     """Poll ``/pending`` until the invoice this test just submitted shows
     up, then approve it — mirrors what the browser page does, at the speed
     a test needs rather than a human's."""
@@ -90,6 +93,7 @@ async def _approve_once_pending(client, key, cred_id, challenge):
             return await client.post(
                 f"/approve/{j['id']}",
                 json={"credentialId": cred_id, **assertion_for(key, challenge)},
+                headers=headers,
             )
         await asyncio.sleep(0.02)
     raise AssertionError("invoice never became pending")
@@ -102,14 +106,17 @@ async def test_returns_evidence_not_a_receipt_once_solo_approved(approval_mod):
     merchant_key = Ed25519PrivateKey.generate()
     async with _client_for(approval_mod.app) as client:
         await _trust_merchant(client, merchant_key)
-        child_key, child_cred_id = await _enroll(client, "child")
+        store = approval_mod._users
+        child_headers = await sign_in_async(client, "child", store)
+        child_key, child_cred_id = await _enroll(client, "child", store)
 
         invoice = _invoice()
         signature = sign_invoice(invoice, merchant_key)
         challenge = invoice_challenge(invoice)
 
         approver = asyncio.create_task(
-            _approve_once_pending(client, child_key, child_cred_id, challenge)
+            _approve_once_pending(client, child_key, child_cred_id, challenge,
+                                  child_headers)
         )
         result = await request_invoice_approval(
             client, invoice, signature, poll_interval_seconds=0.02, timeout_seconds=5.0,
@@ -134,20 +141,25 @@ async def test_dual_tier_waits_for_both_legs(approval_mod):
     merchant_key = Ed25519PrivateKey.generate()
     async with _client_for(approval_mod.app) as client:
         await _trust_merchant(client, merchant_key)
-        child_key, child_cred_id = await _enroll(client, "child")
-        parent_key, parent_cred_id = await _enroll(client, "parent")
+        store = approval_mod._users
+        child_headers = await sign_in_async(client, "child", store)
+        parent_headers = await sign_in_async(client, "parent", store)
+        child_key, child_cred_id = await _enroll(client, "child", store)
+        parent_key, parent_cred_id = await _enroll(client, "parent", store)
 
         invoice = _invoice(totalCents=1500, nonce="urn:uuid:meta-dual")
         signature = sign_invoice(invoice, merchant_key)
         challenge = invoice_challenge(invoice)
 
         async def _approve_both():
-            r1 = await _approve_once_pending(client, child_key, child_cred_id, challenge)
+            r1 = await _approve_once_pending(client, child_key, child_cred_id, challenge,
+                                             child_headers)
             assert r1.status_code == 200
             assert r1.json()["status"] == "pending"  # child alone isn't enough
             r2 = await client.post(
                 f"/approve/{r1.json()['id']}",
                 json={"credentialId": parent_cred_id, **assertion_for(parent_key, challenge)},
+                headers=parent_headers,
             )
             assert r2.status_code == 200
             return r2

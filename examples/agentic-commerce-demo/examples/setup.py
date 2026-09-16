@@ -36,7 +36,14 @@ def main() -> None:
     ws: Path = args.workspace
     admin_did: str = args.admin_did
 
-    if ws.exists() and any(ws.iterdir()):
+    # The guard is about not clobbering keys and memberships. The approval
+    # service writes its own approval-users.json here the first time it starts,
+    # so ignore that one file -- otherwise running the service before setup
+    # (easy to do by hand) makes setup refuse for a reason that has nothing to
+    # do with the state it cares about.
+    owned_elsewhere = {"approval-users.json"}
+    existing = [e for e in ws.iterdir() if e.name not in owned_elsewhere] if ws.exists() else []
+    if existing:
         raise SystemExit(f"refusing to overwrite non-empty workspace at {ws}")
     (ws / "keys").mkdir(parents=True, exist_ok=True)
     (ws / "memberships").mkdir(parents=True, exist_ok=True)

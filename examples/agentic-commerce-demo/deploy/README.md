@@ -95,52 +95,54 @@ its signed invoices. It is worth being exact about how much of that the
 compose topology actually enforces, because a reader could reasonably
 assume more.
 
-**What it does enforce.** The family's control plane — the policy proxy
-(`:7400`) and both wallets (`:7401`/`:7402`) — binds to loopback inside the
-family container. Everything that uses those three lives in the same
-container, so nothing is lost, and the merchant container cannot reach any
-of them: not to drive the proxy as an MCP client, and not to POST a
-wallet's `/sign/request` with prompt text and a callback URL of its own
-choosing. The merchant also no longer receives the family's
-`STRIPE_API_KEY`, which it used to get simply because both containers read
-the same `.env`.
+**The control plane is off the network.** The policy proxy (`:7400`) and both
+wallets (`:7401`/`:7402`) bind to loopback inside the family container.
+Everything that uses those three lives in the same container, so nothing is
+lost, and the merchant container cannot reach any of them: not to drive the
+proxy as an MCP client, and not to POST a wallet's `/sign/request` with prompt
+text and a callback URL of its own choosing. The merchant also does not
+receive the family's `STRIPE_API_KEY`, which it used to get simply because
+both containers read the same `.env`.
 
-**What it doesn't.** The approval service (`:7500`) is published to the
-host, because its passkey pages are a human surface — and a port the host
-can reach on a single-container service is a port the other container can
-reach too. So the merchant container can still reach that service's whole
-API, which has no authentication: `/register` mints an admin-signed
-enrollment credential for any caller and takes the `role` from the request
-body, `/trust-merchant` adds any key to the trusted set, and `/settle`
-charges an approved invoice. A compromised merchant could enrol itself as
-both child and parent, trust its own key, sign an invoice, approve it, and
-settle it, with no human involved.
+**Enrollment is authenticated.** `:7500` has to stay reachable — its passkey
+pages are a human surface, and a port the host can reach on a single-container
+service is a port the sibling container can reach too. So the endpoint is
+gated rather than the network.
 
-That is a property of this demo's deployment, not of the enforcement
-architecture: the policy still verifies every signature field-by-field, and
-it would still refuse evidence that did not verify. What the demo does not
-do is authenticate *who is allowed to ask the approval service to vouch for
-a key in the first place*.
+`/register` is the link that matters, because the approval service holds the
+admin's private key and signs "this key holds role *parent*". A WebAuthn
+assertion proves *the holder of key X approved these exact terms*, which is
+what it should prove — it can never prove X belongs to a particular human.
+That binding is made entirely at enrollment, so the chain is worth no more
+than its first link. The page therefore sits behind an OAuth 2.0
+authorization-code + PKCE sign-in, and **`/register` derives the role from the
+access token, ignoring any `role` in the request body** — authenticating the
+caller while still believing the body would close nothing, since a caller
+could authenticate as itself and self-assign `parent`.
 
-`/register` is the link that matters. The approval service loads the admin's
-private key and will sign an enrollment credential — "this key holds role
-*parent*" — for whatever key and whatever role the request names. Its only
-production caller is the passkey page's own JavaScript, where the role is a
-dropdown. So the sole thing standing between a caller and the household's
-trust anchor is *reaching the page*. A WebAuthn assertion then proves the
-holder of that key approved these exact terms, which is exactly what it
-should prove — but it can never prove the key belongs to a particular human.
-That binding is made entirely at enrollment, and the chain is worth no more
-than its first link.
+The credentials are generated per workspace and printed at startup (look for
+`[family] passkey page sign-in:` in `docker compose logs`, or at
+:7300/logs). They are random on purpose: a fixed pair would be a speed bump
+rather than a control, guessable in two tries, and a visible login that is
+not a gate is worse than none because it stops a reader asking. The flow is a
+real one rather than a password check so that pointing the page at Entra,
+Keycloak, Okta or Auth0 is configuration instead of a rewrite.
 
-The fix is therefore to authenticate enrollment: the requester proves who
-they are, and the server derives the role from that identity rather than
-believing the request body. Isolating these ports on their own network is
-worth doing as well, but it is defence in depth rather than the control to
-rely on — trusting an actor by virtue of where it sits is the posture this
-project's own [threat model](../../../README.md#threat-model) rejects.
-Neither is done here, and a login whose password everyone can guess would be
-worse than this paragraph, so the honest position for now is to state it.
+**What is still open.** Three endpoints on `:7500` remain unauthenticated
+because their callers are other processes rather than humans, and giving them
+service credentials is separate work: `/trust-merchant` (configuration
+reachable as a POST — its own docstring admits it), `/request-invoice`, and
+`/settle`. The serious chain is broken, since a merchant can no longer obtain
+admin-signed child and parent enrollments and therefore cannot manufacture
+approvals. What it can still do is add its own key to the trusted-merchant
+set, and put an invoice with arbitrary terms in front of your humans and ask
+them to approve it — which is the design working, in that the humans see the
+real terms and can decline, but it is a social-engineering surface.
+
+Isolating these ports on their own network is worth doing too, as defence in
+depth — not as the control to rely on, since trusting an actor by virtue of
+where it sits is the posture this project's own
+[threat model](../../../README.md#threat-model) rejects.
 
 ## The full loop (what this is actually a demo of)
 

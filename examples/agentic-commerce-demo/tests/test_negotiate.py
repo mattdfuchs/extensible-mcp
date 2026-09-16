@@ -36,7 +36,7 @@ from extensible_mcp_vc.negotiate import (
 )
 from extensible_mcp_vc.webauthn import b64url_encode
 
-from .webauthn_fixtures import assertion_for, attestation_object
+from .webauthn_fixtures import assertion_for, attestation_object, load_approval_app, sign_in
 
 ORDER = [{"name": "Large Pepperoni", "qty": 1}]  # 1800 cents -> child + parent
 
@@ -57,8 +57,8 @@ def merchant():
 
 @pytest.fixture
 def approvals():
-    mod = _load("examples/approval_service.py", "approval_service")
-    return TestClient(mod.app)
+    # Shared loader: isolates VC_WORKSPACE (see load_approval_app).
+    return TestClient(load_approval_app())
 
 
 def _enroll(client, role):
@@ -66,7 +66,7 @@ def _enroll(client, role):
     cred_id = f"cred-{role}".encode()
     r = client.post("/register", json={
         "attestationObject": b64url_encode(attestation_object(key.public_key(), cred_id)),
-        "role": role})
+    }, headers=sign_in(client, role))
     assert r.status_code == 200
     return key, r.json()["credentialId"]
 
@@ -120,9 +120,11 @@ def test_end_to_end_negotiate_then_approve(merchant, approvals):
     assert set(req["required_roles"]) == {"child", "parent"}
 
     ch = invoice_challenge(invoice)
-    approvals.post(f"/approve/{req['id']}", json={"credentialId": cid, **assertion_for(ck, ch)})
+    approvals.post(f"/approve/{req['id']}", json={"credentialId": cid, **assertion_for(ck, ch)},
+                   headers=sign_in(approvals, "child"))
     out = approvals.post(f"/approve/{req['id']}",
-                         json={"credentialId": pid, **assertion_for(pk, ch)}).json()
+                         json={"credentialId": pid, **assertion_for(pk, ch)},
+                         headers=sign_in(approvals, "parent")).json()
     # Fully approved; settlement is now a separate, explicit step (see /settle).
     assert out["status"] == "approved" and set(out["approved_roles"]) == {"child", "parent"}
     settled = approvals.post(

@@ -73,7 +73,7 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml logs 
 |-----|---------|
 | http://localhost:7300 | **Chat** — type the order here instead of running `claude`. |
 | http://localhost:7300/logs | **Live log** — every tool call, policy verdict, and settlement step, streamed. Put this on the projector. |
-| http://localhost:7500 ×2 windows | **Enroll passkeys**: window A role=child, window B role=parent (once per container lifetime — enrollments are in-memory). These windows are also where Touch ID prompts appear. |
+| http://localhost:7500 ×2 windows | **Sign in, then enroll passkeys**: window A as `child`, window B as `parent` — the role comes from who you sign in as, so there is nothing to choose afterwards. Once per container lifetime; enrollments are in-memory. These windows are also where Touch ID prompts appear. |
 | http://localhost:7500/audit | The evidence-chain view — an alternative to `/logs` for a more narrative projector view. |
 
 ## 4. Run a flow
@@ -117,6 +117,16 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
   hold 7300 or 7500; stop those terminals.
 - **Chat returns an error on the first message** — almost always a missing
   or invalid `ANTHROPIC_API_KEY`; check step 1.
+- **The passkey page asks you to sign in** — that is expected. The username is
+  `child` or `parent`; the password is random per workspace and printed at
+  startup. Find it with:
+  ```sh
+  docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+    logs family | grep 'passkey page sign-in'
+  ```
+  It is also in the live log at http://localhost:7300/logs. Signing in as
+  `parent` is what makes that window the parent — enrollment takes the role
+  from the token, not from a control on the page.
 - **Passkey prompt errors / credential not found** — you enrolled before a
   container restart (in-memory), or opened `127.0.0.1` instead of
   `localhost`. Re-enroll both roles.

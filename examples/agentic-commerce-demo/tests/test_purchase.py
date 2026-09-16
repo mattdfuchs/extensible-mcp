@@ -29,6 +29,7 @@ from extensible_mcp_vc.webauthn import b64url_decode, b64url_encode
 
 from .webauthn_fixtures import assertion_for as _assertion_for
 from .webauthn_fixtures import attestation_object as _attestation_object
+from .webauthn_fixtures import load_approval_app, sign_in
 
 # A far-future / far-past expiry so the wall-clock check in the endpoint is
 # deterministic (the endpoint verifies invoices against real time).
@@ -36,17 +37,13 @@ FUTURE = 4_000_000_000  # year 2096
 PAST = 1  # 1970
 
 
-def _load_app():
-    path = Path(__file__).resolve().parents[1] / "examples" / "approval_service.py"
-    spec = importlib.util.spec_from_file_location("approval_service", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.app
-
-
 @pytest.fixture
 def client():
-    return TestClient(_load_app())
+    # The shared loader, not a private copy: it gives each app a throwaway
+    # VC_WORKSPACE, so importing the service does not create
+    # approval-users.json inside the repo's real workspace -- which would make
+    # setup.py refuse to run against it.
+    return TestClient(load_approval_app())
 
 
 def _enroll(client, role):
@@ -54,7 +51,7 @@ def _enroll(client, role):
     cred_id = f"cred-{role}".encode()
     r = client.post("/register", json={
         "attestationObject": b64url_encode(_attestation_object(key.public_key(), cred_id)),
-        "role": role})
+    }, headers=sign_in(client, role))
     assert r.status_code == 200
     return key, r.json()["credentialId"]
 
@@ -89,9 +86,14 @@ def _issue(client, key, inv):
 
 
 def _approve(client, approval_id, key, cred_id, challenge, *, flags=0x05):
+    # Any signed-in household member may POST an approval: what authorizes it
+    # is possession of the enrolled key, proved by the assertion. The token
+    # only keeps the endpoint off the open network, so the role it carries is
+    # immaterial here.
     return client.post(
         f"/approve/{approval_id}",
         json={"credentialId": cred_id, **_assertion_for(key, challenge, flags=flags)},
+        headers=sign_in(client, "child"),
     )
 
 
