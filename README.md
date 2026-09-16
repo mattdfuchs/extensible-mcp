@@ -10,7 +10,7 @@ extensible-mcp is built as that enforcement point. Every operation between the L
 
 ### The Order Pizza demo: Zero Trust, fully elaborated
 
-The project's changes come at two levels. There are code-level additions — CEL as a second policy-rule language alongside Rego, and a **Bundle API** for assembling the pieces (a manifest, a fetch plan, human-facing guidance) you attach to the filter pipeline — but the more significant addition is the **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)), a full working elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
+Two things in this repo carry that idea. A [**policy bundle**](#policy-bundles) is how a policy over signed evidence is written and attached to the filter pipeline — a manifest, a fetch plan, human-facing guidance, and the rules themselves in either Rego-compiled-to-WASM or CEL. The **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)) is that machinery worked all the way through: a full elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
 
 Our Zero Trust posture assumes any statement an agent makes about a user's intent — an agent that is subject to hallucination and prompt injection — is hearsay. User intent can only be asserted, in a non-repudiable way, by a signed statement the LLM could not have produced itself. We get that from the W3C's **Verifiable Credentials** framework: a statement wrapped in a signed envelope, where the signature is the signer vouching for it.
 
@@ -119,7 +119,7 @@ The relationship model's assumption that the request is genuine, and the commerc
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
 # Clone and install
@@ -133,6 +133,16 @@ cp config.example.json config.json
 ```
 
 `config.example.json` is intentionally a minimal starter — see the Configuration section below for the full set of options (URL servers, `rego_policy`, `load_control`, etc.).
+
+**What `uv sync` installs, and what it leaves out.** Bare `uv sync` gets you the proxy and nothing else: no test dependencies, none of the three policy engines (they are [optional extras](#policy-bundles)), and neither example package — the two under `examples/` are separate workspace members, not part of the root install. Three rungs, widest last:
+
+| Command | Adds |
+|---|---|
+| `uv sync` | the proxy itself |
+| `uv sync --group dev` | pytest, plus all three engine extras (`wasm`, `rego`, `cel`) |
+| `uv sync --all-packages --all-extras --group dev` | the `examples/` workspace members and their extras too |
+
+Use the middle one to work on the proxy, the last one to run every suite in the repo. To install a single engine without the rest, name its extra: `uv sync --extra wasm`.
 
 If your config references `$VAR_NAME`-style values (e.g. `"GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"` in a stdio server's `env` block), drop a `.env` file in the same directory as the loaded config or export the variables in your shell — the proxy resolves dotenv first, then `os.environ`. The `.env` lookup is per-config-directory, so a `.env` at the repo root won't apply to configs loaded from elsewhere.
 
@@ -268,6 +278,8 @@ Without `load_control`, an LLM could be prompt-injected into connecting to a mal
 | `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. |
 | `policy.wasm` *or* `checks.cel.json` | The rules themselves, in whichever engine you prefer. |
 
+Both engines are optional extras, because each pulls dependencies not every deployment wants: `pip install "extensible-mcp[wasm]"` for the OPA/WASM one, `[cel]` for CEL. They are imported lazily, so `PolicyBundle.load` is where a base install discovers it is missing one.
+
 The two engines are interchangeable over the same other three files. A Rego policy is compiled to WASM:
 
 ```bash
@@ -300,7 +312,7 @@ server = create_server(config, extra_call_filters=[policy_filter])
 
 The filter assembles the policy's input from the fetch plan, evaluates it, and on a denial returns the rendered guidance rather than the raw check ids. Note what it does with the call's arguments: any field the fetch plan sources from `call` other than `tool` and `arguments` is a **credential field** — it's pulled out of the arguments, fed to the policy, and *not* forwarded downstream. The downstream tool sees only its own native arguments, never the evidence that authorized them. To govern bundles per downstream server rather than pipeline-wide, pass `bundle_router` to `create_server` instead.
 
-Seven worked bundles live under [`tests/fixtures/`](tests/fixtures/) — both engines, from a two-credential spend policy up to an invoice-settlement one — each with a `PROVENANCE.md` recording where it came from and what it is. [`project-overview.md`](project-overview.md) covers the modules involved.
+Seven worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: six call-gate policies across both engines, from a two-credential spend policy up to an invoice-settlement one, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. [`project-overview.md`](project-overview.md) covers the modules involved.
 
 ### Writing a custom filter
 
@@ -404,12 +416,13 @@ backed by the identity/wallet package in
 [`examples/identity/`](examples/identity/) — both are workspace members of
 this repo; see their own READMEs for setup, or
 [`deploy/`](examples/agentic-commerce-demo/deploy/) to run it
-containerized, needing nothing beyond Docker and a browser.
+containerized, needing nothing on the host beyond Docker, a browser, and an
+`ANTHROPIC_API_KEY` (the chat window runs its own agent loop).
 
 ## Development
 
 ```bash
-# Install with dev dependencies
+# Install with dev dependencies (see Setup for what each rung adds)
 uv sync --group dev
 
 # Run tests
@@ -418,6 +431,10 @@ uv run pytest
 # Run a single test file
 uv run pytest tests/test_filters.py -v
 ```
+
+`uv run pytest` runs the proxy's own suite. The two `examples/` packages have
+their own, which need the wider install — see
+[CONTRIBUTING.md](CONTRIBUTING.md#running-tests) for all three.
 
 ## Contributing
 

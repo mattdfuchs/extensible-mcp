@@ -8,7 +8,7 @@ extensible-mcp's threat model rests on a single premise: an LLM that can be prom
 
 This package supplies that channel by requiring W3C Verifiable Credentials at call time. Each gated call carries two JWT-VCs: one signed by the originator (the principal asking for the action), one signed by the approver (the principal authorizing it), bound to each other so the LLM cannot swap an authorization for one request onto a different request. Both signers must be current members of a trust network rooted at a `did:web` admin.
 
-The sibling package [`household-identity`](../identity) provides the wallet service that holds keys and prompts the human for approval, and the DID server that publishes the admin's DID document and issues membership credentials. The two packages together implement the demo's wallet rail; healthcare and other deployments reuse the same primitives with a different trust anchor.
+The sibling package [`household-identity`](../identity) provides the wallet service that holds keys and prompts the human for approval, and a DID server that publishes the admin's DID document and issues membership credentials. The demo's own walkthrough never starts that server: `setup.py` issues the memberships directly and hands the proxy the admin's DID document through `preresolved_did_documents`, so nothing has to be resolved over HTTPS on a laptop. A deployment where the admin is genuinely remote runs it. The two packages together implement the demo's wallet rail; healthcare and other deployments reuse the same primitives with a different trust anchor.
 
 ## One enforcement path, two rails
 

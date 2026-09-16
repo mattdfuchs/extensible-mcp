@@ -73,12 +73,12 @@ The policy needs to be evaluated at call time against the actual request, not fr
 
 ### Key modules
 
-- **`server.py`** — FastMCP server, lifespan management, handler registration
+- **`server.py`** — FastMCP server, lifespan management, handler registration for the three meta-tools. `create_server(config, *, extra_*_filters=…, bundle_router=…, local_tools=…)` is the embedding entry point; `local_tools` registers in-process tools that are discovered and dispatched exactly like downstream ones, through the same call filters.
 - **`client_manager.py`** — Manages stdio/HTTP connections to downstream servers, tool indexing, call proxying. Tools namespaced as `{server}__{tool}`.
 - **`vector_store.py`** — In-memory vector index using FastEmbed (ONNX runtime). Cosine similarity via normalized dot product.
 - **`filters.py`** — Pluggable pipelines for all four paths: search (`ToolFilter`), call (`CallFilter`), response (`ResponseFilter`), and server load (`ServerLoadFilter`). `AccessControlFilter` implements both search and call.
 - **`config.py`** — JSON config in Claude Desktop's `mcpServers` format plus `filters` section.
-- **`types.py`** — `ServerConfig`, `ToolRecord`, `SearchResult`, `CallRequest`, `CallFilterResult`, `ToolPolicy`.
+- **`types.py`** — the shared dataclasses: `ServerConfig`, `ToolRecord`, `LocalTool`, `SearchResult`, and the per-pipeline request/result pairs (`CallRequest`/`CallFilterResult`, `CallResponse`/`ResponseFilterResult`, `ServerLoadRequest`/`ServerLoadResult`).
 
 Policy-bundle enforcement:
 
@@ -88,16 +88,21 @@ Policy-bundle enforcement:
 - **`bundle.py` / `fetchplan.py`** — Loads a policy bundle (the enforced rules, in either engine's shape, + `manifest.json` + `fetchplan.json` + optional `guidance.json`) and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers (`call` / `config` / `clock` / `wallet`).
 - **`wasm_filter.py`** — Call filters that enforce a bundle: the generic `WasmPolicyFilter`, and the production `VCPolicyFilter` (two-VC chain: signed request + conditional authorization, memberships chained to a did:web admin).
 - **`selection.py` / `routing.py`** — Which bundle governs a server: operator literal-map overrides layered over an optional Rego classifier, decided from proxy-controlled provenance facts at admission time (never from tool-supplied metadata), then routed per call. Unplaceable servers are refused.
+- **`guidance.py`** — Renders a denial from the bundle's guidance layer: a policy's failed check ids become an explanation of which conditions failed and what evidence is still missing. `render_denial` is exported for embedders.
 - **`augment.py`** — Search-side augmenter: a governed tool's surfaced schema and description gain its credential parameters, marked required or required-only-when, with the deciding conditions rendered from the bundle's guidance.
 - **`didweb.py` / `wallet_bundle.py` / `issuer.py`** — did:web admin key resolution (SSRF-guarded, cached, fail-closed), adaptation of wallet `{token, membership}` bundles into the policy's input shape, and the role→wallet issuer registry.
 
 ### Filter architecture
 
 ```
-Search path:   VectorStore.search() → SimilarityThresholdFilter → AccessControlFilter → BundleAugmenter → results
+Search path:   VectorStore.search() → SimilarityThresholdFilter → AccessControlFilter → [BundleAugmenter] → results
 Call path:     CallRequest → AccessControlFilter → DiscoveredToolsFilter → (policy filters) → BundleRouter → downstream server
 Response path: tool result → (response filters) → LLM
 Server load:   load request → ServerLoadAccessControlFilter → bundle admission (fail closed) → connect + index
+
+Stages in [brackets] are not defaults: `BundleAugmenter` is present only when an embedder
+passes it via `extra_search_filters`, as the commerce demo does. The unbracketed stages are
+built by `create_server` from config.
 ```
 
 All four pipelines are extensible — add any filter implementing the protocol.
@@ -110,7 +115,7 @@ All four pipelines are extensible — add any filter implementing the protocol.
 - Production Verifiable-Credential enforcement end-to-end: request VC + conditional authorization VC, memberships verified against did:web admin keys, the signed request bound field-by-field to the actual call, credentials stripped before the downstream call
 - Per-server bundle selection at admission time, fail closed — a server the proxy cannot positively place is not connected
 - Search-side guidance: governed tools surface their credential parameters and when each is required
-- 251 tests passing (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on both engines)
+- 320 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on both engines); the two `examples/` workspace packages add 114 and 51
 - Example configs for Claude Desktop and OpenClaw, targeting GitHub's MCP server
 
 ## ABAC with signed claims
@@ -123,7 +128,7 @@ The vision from the Policy as Type research (applying dependent typing to access
 
 This separates the LLM's role (orchestrating evidence gathering) from the proxy's role (enforcing policy), avoiding the trap of prompt-based security where the LLM itself is the enforcement mechanism.
 
-Still open: richer denial guidance (rendering a policy's failed checks into "satisfy one of…" remediation messages), wiring the issuer registry into credential acquisition, and broader evidence sources — push approvals, signed documents, AP2 mandates (SD-JWT rather than JWT-VC, so a new verifier rather than free reuse of the existing one).
+Still open: wiring the issuer registry into credential acquisition, and broader evidence sources — push approvals, signed documents, AP2 mandates (SD-JWT rather than JWT-VC, so a new verifier rather than free reuse of the existing one).
 
 ## Technical details
 

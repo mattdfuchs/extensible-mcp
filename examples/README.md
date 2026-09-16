@@ -11,7 +11,7 @@ Together they demonstrate the two enforcement points in the filter pipeline. The
 
 This file is only about the GitHub proxy example above — name- and argument-shape rules over an existing public MCP server, with no signed evidence involved.
 
-The larger end-to-end demo lives in [`agentic-commerce-demo/`](agentic-commerce-demo/) and has its own README. It's a different kind of example: a child ordering a pizza, a parent approving it above a threshold, and a merchant quoting a binding price — each party's intent carried by a signature rather than by the agent's say-so, evaluated by a policy bundle rather than by a single `.rego` file. Run it containerized from [`agentic-commerce-demo/deploy/`](agentic-commerce-demo/deploy/) with nothing but Docker and a browser. The wallet and DID pieces it builds on are in [`identity/`](identity/), also with its own README.
+The larger end-to-end demo lives in [`agentic-commerce-demo/`](agentic-commerce-demo/) and has its own README. It's a different kind of example: a child ordering a pizza, a parent approving it above a threshold, and a merchant quoting a binding price — each party's intent carried by a signature rather than by the agent's say-so, evaluated by a policy bundle rather than by a single `.rego` file. Run it containerized from [`agentic-commerce-demo/deploy/`](agentic-commerce-demo/deploy/) with nothing on the host but Docker, a browser, and an `ANTHROPIC_API_KEY` for the chat window's agent loop. The wallet and DID pieces it builds on are in [`identity/`](identity/), also with its own README.
 
 Start here if you want to see the filter pipeline in a few minutes against a server you already use; start there if you want to see what it takes to make an agent's authority provable.
 

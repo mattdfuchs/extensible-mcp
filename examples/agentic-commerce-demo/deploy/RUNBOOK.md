@@ -1,8 +1,10 @@
 # Runbook: bringing the two-org demo up
 
-Moving pieces: 2 containers (family, pizzaparlor), 3 browser tabs (chat,
-log, 2 passkey windows on one page). No terminal session on the host beyond
-`docker compose` itself. Everything else lives inside the containers.
+Moving pieces: 2 containers (family, pizzaparlor) and 4 browser windows —
+chat, live log, and the passkey page open twice (one window per role, child
+and parent). A fifth URL, the audit view, is optional. No terminal session on
+the host beyond `docker compose` itself; everything else lives inside the
+containers.
 
 ## 0. Prerequisites
 
