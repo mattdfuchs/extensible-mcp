@@ -12,124 +12,13 @@ path that should surface as TokenExpiredError.
 from __future__ import annotations
 
 import asyncio
-import socket
+import time
 
-import httpx
 
 import pytest
-import uvicorn
-from fastmcp import FastMCP
-from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 
 from extensible_mcp.client_manager import ClientManager, TokenExpiredError
 from extensible_mcp.types import ServerConfig
-
-
-class TokenStore:
-    """Mutable set of accepted bearers. Tests mutate `valid` to simulate rotation."""
-
-    def __init__(self, initial: set[str]) -> None:
-        self.valid: set[str] = set(initial)
-        # Every Authorization header the server actually received, so a test
-        # can assert on what left the proxy rather than only on whether the
-        # connection failed -- a failure has many causes, a leaked credential
-        # has one.
-        self.seen_authorization: list[str] = []
-
-
-class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Reject any request whose Authorization bearer isn't in the shared store."""
-
-    def __init__(self, app, store: TokenStore) -> None:
-        super().__init__(app)
-        self.store = store
-
-    async def dispatch(self, request, call_next):
-        auth = request.headers.get("Authorization", "")
-        self.store.seen_authorization.append(auth)
-        if not auth.startswith("Bearer "):
-            return Response("Missing bearer", status_code=401)
-        if auth[7:] not in self.store.valid:
-            return Response("Bad bearer", status_code=401)
-        return await call_next(request)
-
-
-def _bound_socket() -> socket.socket:
-    """A listening socket to hand uvicorn, rather than a port number.
-
-    Picking a free port and closing it leaves a window: the port is free, so
-    anything else -- including the next test's teardown releasing a socket the
-    kernel then re-hands out -- can take it before uvicorn binds. Passing the
-    socket itself closes the window, because it is never unbound.
-    """
-    sock = socket.socket()
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    sock.listen(128)
-    return sock
-
-
-@pytest.fixture
-async def mock_mcp_server():
-    """Start a FastMCP HTTP server with bearer auth on a random port."""
-    store = TokenStore({"correct-token"})
-
-    server = FastMCP(name="mock-bearer-server")
-
-    @server.tool()
-    def echo(message: str) -> str:
-        """Return the input unchanged."""
-        return message
-
-    middleware = [Middleware(BearerAuthMiddleware, store=store)]
-    app = server.http_app(middleware=middleware, transport="streamable-http")
-
-    sock = _bound_socket()
-    port = sock.getsockname()[1]
-    config = uvicorn.Config(
-        app=app, host="127.0.0.1", port=port, log_level="error", lifespan="on"
-    )
-    uv_server = uvicorn.Server(config)
-    task = asyncio.create_task(uv_server.serve(sockets=[sock]))
-
-    url = f"http://127.0.0.1:{port}/mcp"
-
-    async def _stop() -> None:
-        uv_server.should_exit = True
-        try:
-            await asyncio.wait_for(task, timeout=10)
-        except asyncio.TimeoutError:
-            task.cancel()
-        finally:
-            sock.close()
-
-    # Readiness proved by a real request, not by uvicorn's `started` flag.
-    # `started` says the socket is accepting; it does not say this app can
-    # answer, and a request that arrives too early comes back 500 / "No
-    # response returned" rather than failing to connect -- which is what CI
-    # was seeing under load. The bearer middleware answers 401 to an
-    # unauthenticated GET, so a 401 proves uvicorn, the middleware and the
-    # app are all live.
-    async with httpx.AsyncClient() as probe:
-        for _ in range(200):  # up to ~10s
-            try:
-                r = await probe.get(url, timeout=1.0)
-            except httpx.HTTPError:
-                await asyncio.sleep(0.05)
-                continue
-            if r.status_code == 401:
-                break
-            await asyncio.sleep(0.05)
-        else:
-            await _stop()
-            raise RuntimeError("Mock MCP server never became ready")
-
-    try:
-        yield url, store
-    finally:
-        await _stop()
 
 
 @pytest.mark.asyncio

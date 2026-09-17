@@ -27,11 +27,9 @@ from extensible_mcp import admin
 from extensible_mcp.config import load_config
 from extensible_mcp.server import _parse_args, reconcile_servers
 
-from .test_url_auth_integration import (  # reuse the live bearer-checking server
-    BearerAuthMiddleware,  # noqa: F401
-    TokenStore,  # noqa: F401
-    mock_mcp_server,  # noqa: F401
-)
+# The bearer-checking mock MCP server comes from conftest.py -- no import
+# needed, and none possible: a fixture imported from another test module
+# brings none of its own dependencies with it.
 
 
 def _write_config(tmp_path: Path, **servers) -> Path:
