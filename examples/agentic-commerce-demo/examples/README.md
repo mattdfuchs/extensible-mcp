@@ -96,8 +96,9 @@ That page is behind a sign-in: enrolling a passkey mints an admin-signed "this
 key holds role *parent*", so it needs an identity to take the role from rather
 than a dropdown the caller sets. The service prints the credentials for this
 workspace when it starts (`[approval] sign-in credentials: …`) — usernames
-`child` and `parent`, passwords random per workspace. Sign in as the role you
-want the window to hold, then enrol.
+`child` and `parent`, passwords random per workspace, and also readable
+afterwards in `workspace/approval-users.json`. Sign in as the role you want the
+window to hold, then enrol.
 
 ### The pizza walkthrough
 

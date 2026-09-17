@@ -92,7 +92,8 @@ class DemoUserStore:
 
     Persisted so a restart does not invalidate the credentials a human has
     already been shown, and so the manual walkthrough and the containerized
-    run agree. Written 0600; a real deployment has no equivalent file.
+    run agree -- and so they can be read back after the startup line has
+    scrolled away. Written 0600; a real deployment has no equivalent file.
     """
 
     FILENAME = "approval-users.json"

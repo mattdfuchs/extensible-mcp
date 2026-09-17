@@ -120,9 +120,11 @@ access token, ignoring any `role` in the request body** — authenticating the
 caller while still believing the body would close nothing, since a caller
 could authenticate as itself and self-assign `parent`.
 
-The credentials are generated per workspace and printed at startup (look for
-`[family] passkey page sign-in:` in `docker compose logs`, or at
-:7300/logs). They are random on purpose: a fixed pair would be a speed bump
+The credentials are generated per workspace and printed at startup — look for
+`[family] passkey page sign-in:` in `docker compose logs family`, or read
+`workspace/approval-users.json` inside the container. (Not `:7300/logs`: that
+stream begins at the current end of the log, so it never replays a line printed
+before you opened it.) They are random on purpose: a fixed pair would be a speed bump
 rather than a control, guessable in two tries, and a visible login that is
 not a gate is worse than none because it stops a reader asking. The flow is a
 real one rather than a password check so that pointing the page at Entra,

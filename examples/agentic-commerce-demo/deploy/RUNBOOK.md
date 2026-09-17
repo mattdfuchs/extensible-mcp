@@ -124,9 +124,17 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
   docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
     logs family | grep 'passkey page sign-in'
   ```
-  It is also in the live log at http://localhost:7300/logs. Signing in as
-  `parent` is what makes that window the parent — enrollment takes the role
-  from the token, not from a control on the page.
+  Or read them straight out of the container:
+  ```sh
+  docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+    exec family cat workspace/approval-users.json
+  ```
+  Not `:7300/logs` — that stream starts at the current end of the log, so it
+  shows what happens from the moment you open it and will not replay the line
+  printed at startup.
+
+  Signing in as `parent` is what makes that window the parent — enrollment
+  takes the role from the token, not from a control on the page.
 - **Passkey prompt errors / credential not found** — you enrolled before a
   container restart (in-memory), or opened `127.0.0.1` instead of
   `localhost`. Re-enroll both roles.
