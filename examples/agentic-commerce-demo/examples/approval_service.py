@@ -33,9 +33,9 @@ Running it on one laptop (development / multi-principal demo)
 ------------------------------------------------------------
     uv run python examples/approval_service.py      # -> http://localhost:7500
 
-Open two browser windows. In window A, set the role to ``child`` and enroll; in
-window B, set it to ``parent`` and enroll (each enrollment mints a distinct
-credential). Request an over-$10 approval in either window, then click Approve
+Open two browser windows. Sign in to window A as ``child`` and enroll; sign in
+to window B as ``parent`` and enroll (each enrollment mints a distinct
+credential, and the role comes from the sign-in). Request an over-$10 approval in either window, then click Approve
 in each — the status area shows it complete only once both have signed. On one
 laptop the same Touch ID stands in for both principals; that demonstrates the
 mechanism (distinct keys, roles, and action-bound approvals composed), not two
@@ -682,7 +682,7 @@ page.</p>
 <p class=note>The credentials for this workspace were generated at startup and
 printed to the service log \u2014 in the containerized demo, the live log at
 :7300/logs. They are random so that reaching this page is not by itself
-authority to enrol a passkey as anyone.</p>
+authority to enroll a passkey as anyone.</p>
 """
 
 _PAGE = """<!doctype html><meta charset=utf-8>
@@ -694,12 +694,12 @@ h2{margin-top:1.4em}#status{background:#eef;padding:1em;border-radius:6px}</styl
 <h1>WebAuthn approval demo</h1>
 <p>Open a second window as the other role for a two-party approval.</p>
 <h2>1. Enroll this window</h2>
-<div>Signed in as <b id=who>\u2026</b> \u2014 this window enrols and approves as
-that role.</div>
+<div>Signed in as <b id=who>\u2026</b> \u2014 this window enrolls and approves
+as that role.</div>
 <button onclick=enroll()>Enroll with biometric</button>
 <h2>2. What is pending</h2>
 $<input id=amt size=6 readonly> to <input id=merch readonly>
-<span style=color:#666>(&le;$10 needs child only; over $10 needs child + parent)</span>
+<div style=color:#666>(&le;$10 needs child only; over $10 needs child + parent)</div>
 <div style=color:#666;font-size:.9em>These mirror the invoice currently awaiting
 approval — blank when there is none. Nothing here is editable: an approval
 request can only be created by a merchant-signed invoice, never from this page.</div>
