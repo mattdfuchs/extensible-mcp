@@ -3,7 +3,7 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
-## [Unreleased]
+## [0.3.1] - 2026-09-17
 
 **Added: `extensible-mcp add-server`, and reload on SIGHUP**
 
