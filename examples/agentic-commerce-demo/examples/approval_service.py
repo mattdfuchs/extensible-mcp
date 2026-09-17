@@ -680,9 +680,9 @@ page.</p>
 <button type=submit>Sign in</button>
 </form>
 <p class=note>The credentials for this workspace were generated at startup and
-printed to the service log \u2014 in the containerized demo, the live log at
-:7300/logs. They are random so that reaching this page is not by itself
-authority to enroll a passkey as anyone.</p>
+printed to the service log; they are also in <code>workspace/approval-users.json</code>.
+They are random so that reaching this page is not by itself authority to enroll
+a passkey as anyone.</p>
 """
 
 _PAGE = """<!doctype html><meta charset=utf-8>
