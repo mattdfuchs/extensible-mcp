@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import socket
 
+import httpx
+
 import pytest
 import uvicorn
 from fastmcp import FastMCP
@@ -54,12 +56,19 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def _free_port() -> int:
+def _bound_socket() -> socket.socket:
+    """A listening socket to hand uvicorn, rather than a port number.
+
+    Picking a free port and closing it leaves a window: the port is free, so
+    anything else -- including the next test's teardown releasing a socket the
+    kernel then re-hands out -- can take it before uvicorn binds. Passing the
+    socket itself closes the window, because it is never unbound.
+    """
     sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+    sock.listen(128)
+    return sock
 
 
 @pytest.fixture
@@ -77,29 +86,50 @@ async def mock_mcp_server():
     middleware = [Middleware(BearerAuthMiddleware, store=store)]
     app = server.http_app(middleware=middleware, transport="streamable-http")
 
-    port = _free_port()
+    sock = _bound_socket()
+    port = sock.getsockname()[1]
     config = uvicorn.Config(
         app=app, host="127.0.0.1", port=port, log_level="error", lifespan="on"
     )
     uv_server = uvicorn.Server(config)
-    task = asyncio.create_task(uv_server.serve())
-
-    # Wait up to 5s for the server to come up.
-    for _ in range(100):
-        if uv_server.started:
-            break
-        await asyncio.sleep(0.05)
-    else:
-        uv_server.should_exit = True
-        await task
-        raise RuntimeError("Mock MCP server failed to start within 5s")
+    task = asyncio.create_task(uv_server.serve(sockets=[sock]))
 
     url = f"http://127.0.0.1:{port}/mcp"
+
+    async def _stop() -> None:
+        uv_server.should_exit = True
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except asyncio.TimeoutError:
+            task.cancel()
+        finally:
+            sock.close()
+
+    # Readiness proved by a real request, not by uvicorn's `started` flag.
+    # `started` says the socket is accepting; it does not say this app can
+    # answer, and a request that arrives too early comes back 500 / "No
+    # response returned" rather than failing to connect -- which is what CI
+    # was seeing under load. The bearer middleware answers 401 to an
+    # unauthenticated GET, so a 401 proves uvicorn, the middleware and the
+    # app are all live.
+    async with httpx.AsyncClient() as probe:
+        for _ in range(200):  # up to ~10s
+            try:
+                r = await probe.get(url, timeout=1.0)
+            except httpx.HTTPError:
+                await asyncio.sleep(0.05)
+                continue
+            if r.status_code == 401:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            await _stop()
+            raise RuntimeError("Mock MCP server never became ready")
+
     try:
         yield url, store
     finally:
-        uv_server.should_exit = True
-        await task
+        await _stop()
 
 
 @pytest.mark.asyncio
