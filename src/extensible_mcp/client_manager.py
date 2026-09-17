@@ -79,6 +79,11 @@ class _Connection:
         self._last_token_value: str | None = None
         self._token_set_at: float | None = None
 
+    def set_tokens_file(self, tokens_file: Path | None) -> None:
+        self._tokens_file = tokens_file
+        self._last_token_value = None
+        self._token_set_at = None
+
     @property
     def is_url(self) -> bool:
         return self.config.url is not None
@@ -309,28 +314,37 @@ class ClientManager:
         # same name both passed the check.
         self._connect_lock = asyncio.Lock()
 
+    async def connect_configured(self, config: ServerConfig) -> list[ToolRecord]:
+        """Connect one server an *operator* configured, and index its tools.
+
+        The counterpart to ``connect_url``, which serves the LLM: a server that
+        arrives here was named in the config file, so it is allowed to present
+        a stored credential. Recording it in ``_configured_urls`` is what
+        authorizes that, and is why a reload must come through here rather than
+        through ``connect_url``.
+
+        Raises on failure; callers decide whether one bad server is fatal.
+        """
+        if config.url:
+            self._configured_urls[config.name] = config.url
+        conn = _Connection(config, tokens_file=self._tokens_file, tokens_allowed=True)
+        if conn.is_url:
+            tools_raw = await conn.list_tools_ephemeral()
+            self._connections[config.name] = conn
+            tools = self._index_tools(config.name, tools_raw)
+        else:
+            await conn.connect()
+            self._connections[config.name] = conn
+            result = await conn.session.list_tools()
+            tools = self._index_tools(config.name, result.tools)
+        logger.info("Connected to '%s': %d tools", config.name, len(tools))
+        return tools
+
     async def connect_all(self, configs: list[ServerConfig]) -> list[ToolRecord]:
         all_tools: list[ToolRecord] = []
         for config in configs:
             try:
-                if config.url:
-                    self._configured_urls[config.name] = config.url
-                conn = _Connection(
-                    config, tokens_file=self._tokens_file, tokens_allowed=True
-                )
-                if conn.is_url:
-                    tools_raw = await conn.list_tools_ephemeral()
-                    self._connections[config.name] = conn
-                    tools = self._index_tools(config.name, tools_raw)
-                else:
-                    await conn.connect()
-                    self._connections[config.name] = conn
-                    result = await conn.session.list_tools()
-                    tools = self._index_tools(config.name, result.tools)
-                all_tools.extend(tools)
-                logger.info(
-                    "Connected to '%s': %d tools", config.name, len(tools)
-                )
+                all_tools.extend(await self.connect_configured(config))
             except Exception:
                 logger.warning(
                     "Failed to connect to '%s', skipping", config.name, exc_info=True
@@ -338,6 +352,29 @@ class ClientManager:
         if not self._connections:
             raise RuntimeError("Could not connect to any downstream MCP server")
         return all_tools
+
+    def server_names(self) -> set[str]:
+        """Names of the servers currently connected."""
+        return set(self._connections)
+
+    def set_tokens_file(self, tokens_file: Path | None) -> None:
+        """Point at a (possibly new) tokens file.
+
+        Needed because the file often does not exist when the proxy starts --
+        ``load_config`` reports ``None`` for a tokens file that is not there --
+        and the whole point of ``add-server`` is to create it afterwards. A
+        reload that kept the startup value would connect the new server with no
+        credential at all.
+
+        Existing connections pick it up for free: a URL connection resolves the
+        token per call.
+        """
+        if tokens_file == self._tokens_file:
+            return
+        logger.info("Tokens file is now: %s", tokens_file or "(none)")
+        self._tokens_file = tokens_file
+        for conn in self._connections.values():
+            conn.set_tokens_file(tokens_file)
 
     def _index_tools(
         self, server_name: str, tools: list[mcp_types.Tool]

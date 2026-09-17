@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
+import os
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,7 @@ from fastmcp import FastMCP, Context
 from fastmcp.server.lifespan import lifespan
 import mcp.types as mcp_types
 
+from . import admin
 from .client_manager import ClientManager, TokenExpiredError
 from .config import Config, find_config_path, load_config
 from .filters import (
@@ -39,6 +43,99 @@ from .vector_store import VectorStore
 logger = logging.getLogger(__name__)
 
 
+def _install_reload_handler(
+    ctx: dict[str, Any], reload_config: Callable[[], Config] | None
+) -> Callable[[], None]:
+    """Reload the server list on SIGHUP, if the embedder asked for it.
+
+    Installed from inside the lifespan because that is the only place holding
+    the live ``ClientManager`` and ``VectorStore``; opt-in because a library
+    must not claim a process-wide signal on its own. The CLI passes
+    ``reload_config``; an embedded proxy passes nothing and nothing changes.
+
+    The handler only schedules the work: a signal handler runs between
+    bytecodes, so anything awaited there would run outside the loop's control.
+    """
+    if reload_config is None or not hasattr(signal, "SIGHUP"):
+        return lambda: None
+
+    loop = asyncio.get_running_loop()
+
+    async def _reload() -> None:
+        try:
+            config = reload_config()
+        except Exception:
+            logger.warning("Reload: config could not be read; ignoring", exc_info=True)
+            return
+        added, refused = await reconcile_servers(ctx, config)
+        if added:
+            logger.info("Reload: added %s", ", ".join(added))
+        if refused:
+            logger.warning("Reload: refused or unreachable: %s", ", ".join(refused))
+        if not added and not refused:
+            logger.info("Reload: nothing new in the config")
+
+    def _on_sighup() -> None:
+        loop.create_task(_reload())
+
+    loop.add_signal_handler(signal.SIGHUP, _on_sighup)
+    logger.info("Reload on SIGHUP is armed (pid %d)", os.getpid())
+
+    def remove() -> None:
+        loop.remove_signal_handler(signal.SIGHUP)
+
+    return remove
+
+
+async def reconcile_servers(
+    ctx: dict[str, Any], config: Config
+) -> tuple[list[str], list[str]]:
+    """Connect and index servers in ``config`` that are not connected yet.
+
+    Additive only. A server that has disappeared from the config stays
+    connected, and one whose URL changed keeps the URL it was admitted with --
+    disconnecting under a signal would cancel calls in flight, and silently
+    re-pointing a name at a new host is exactly the substitution the token
+    binding exists to prevent. Both are deliberate; removal is an operator
+    action, which means a restart.
+
+    A changed *token* needs nothing: a URL server resolves the tokens file per
+    call, so the next call already uses the new value.
+
+    Returns ``(added, refused)``.
+    """
+    client_mgr: ClientManager = ctx["client_manager"]
+    vs: VectorStore = ctx["vector_store"]
+    router: BundleRouter | None = ctx.get("bundle_router")
+
+    # The tokens file usually does not exist when the proxy starts -- creating
+    # it is what `add-server` does -- so the manager has to be told where it is
+    # now, or the server it just wrote a token for connects without one.
+    client_mgr.set_tokens_file(config.tokens_file)
+
+    known = client_mgr.server_names()
+    wanted = [sc for sc in config.servers if sc.name not in known]
+    if router is not None:
+        wanted = _admit_servers(router, wanted)
+    refused = [sc.name for sc in config.servers
+               if sc.name not in known and sc.name not in {w.name for w in wanted}]
+
+    added: list[str] = []
+    for server_config in wanted:
+        try:
+            records = await client_mgr.connect_configured(server_config)
+        except Exception:
+            logger.warning(
+                "Reload: could not connect '%s', leaving it out",
+                server_config.name, exc_info=True,
+            )
+            refused.append(server_config.name)
+            continue
+        vs.add(records)
+        added.append(server_config.name)
+    return added, refused
+
+
 def _describe(exc: BaseException) -> str:
     """A message worth showing the LLM.
 
@@ -55,10 +152,35 @@ def _describe(exc: BaseException) -> str:
     return text or type(exc).__name__
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extensible MCP Proxy")
     parser.add_argument("--config", type=str, default=None, help="Path to config file")
-    return parser.parse_args()
+    sub = parser.add_subparsers(dest="command")
+
+    add = sub.add_parser(
+        "add-server",
+        help="Verify an authenticated MCP server, record it, and reload a running proxy",
+        description=(
+            "Connect to URL as an MCP client using TOKEN, and only if that "
+            "works write the server into the config file and the token into "
+            "the tokens file, then SIGHUP a proxy running against that config "
+            "so it indexes the new tools without a restart. The token is never "
+            "seen by the model: this is an operator command, not an MCP tool."
+        ),
+    )
+    add.add_argument("--name", required=True, help="Server name, the tool namespace prefix")
+    add.add_argument("--url", required=True, help="Streamable HTTP MCP endpoint")
+    add.add_argument(
+        "--token",
+        help="Bearer token. Omit for an unauthenticated server; use --token-stdin to pipe it.",
+    )
+    add.add_argument(
+        "--token-stdin",
+        action="store_true",
+        help="Read the token from stdin, keeping it out of the shell history and process list",
+    )
+    add.add_argument("--config", type=str, default=None, help="Path to config file")
+    return parser.parse_args(argv)
 
 
 def _build_pipelines(
@@ -269,6 +391,7 @@ def create_server(
     extra_load_filters: Sequence[ServerLoadFilter] = (),
     bundle_router: BundleRouter | None = None,
     local_tools: Sequence[LocalTool] = (),
+    reload_config: Callable[[], Config] | None = None,
 ) -> FastMCP:
     """Create a configured FastMCP proxy server for the given config.
 
@@ -304,9 +427,13 @@ def create_server(
             bundle_router=bundle_router,
             local_tools=local_tools,
         )
-        yield ctx
-        logger.info("Shutting down, closing connections...")
-        await ctx["client_manager"].close_all()
+        remove_handler = _install_reload_handler(ctx, reload_config)
+        try:
+            yield ctx
+        finally:
+            remove_handler()
+            logger.info("Shutting down, closing connections...")
+            await ctx["client_manager"].close_all()
 
     server = FastMCP(
         name="extensible-mcp",
@@ -507,13 +634,72 @@ def create_server(
     return server
 
 
-def main() -> None:
+def _add_server_command(args: argparse.Namespace) -> int:
+    """`extensible-mcp add-server`: verify, record, reload."""
+    config_path = find_config_path(args.config)
+    token = args.token
+    if args.token_stdin:
+        token = sys.stdin.read().strip()
+    if args.token and args.token_stdin:
+        print("Pass --token or --token-stdin, not both.", file=sys.stderr)
+        return 2
+
+    try:
+        verified = asyncio.run(admin.verify_server(args.name, args.url, token))
+    except admin.AdminError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        admin.add_server_to_config(config_path, args.name, args.url)
+    except admin.AdminError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if token:
+        tokens_path = load_config(config_path).tokens_file or config_path.parent / "tokens"
+        admin.write_token(tokens_path, args.name, token)
+        print(f"Token for '{args.name}' written to {tokens_path} (0600).")
+
+    print(
+        f"Verified {args.url}: {len(verified.tool_names)} tool(s) "
+        f"({', '.join(verified.tool_names[:5])}"
+        f"{', …' if len(verified.tool_names) > 5 else ''})."
+    )
+    print(f"Added '{args.name}' to {config_path}.")
+
+    pid = admin.signal_reload(config_path)
+    if pid is None:
+        print("No running proxy found for this config; it will pick this up at next start.")
+    else:
+        print(f"Signalled the proxy (pid {pid}) to reload.")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     # Only the CLI owns the root logger. Doing this at import time
     # reconfigured logging for any application that embedded the proxy.
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-    args = _parse_args()
+    args = _parse_args(argv)
+    if args.command == "add-server":
+        return _add_server_command(args)
+
     config_path = find_config_path(args.config)
     logger.info("Loading config from %s", config_path)
     config = load_config(config_path)
-    server = create_server(config)
-    server.run()
+    # reload_config is what arms SIGHUP. The CLI supplies it -- and with it the
+    # policy that "the config" means this file -- while the lifespan supplies
+    # the machinery, since only it holds the live manager and index.
+    server = create_server(config, reload_config=lambda: load_config(config_path))
+    try:
+        pid_file = admin.write_pid_file(config_path)
+    except admin.AdminError as e:
+        # Two proxies on one config would race on the same downstreams, and
+        # leave add-server signalling whichever wrote the file last.
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    try:
+        server.run()
+    finally:
+        admin.remove_pid_file(pid_file)
+    return 0

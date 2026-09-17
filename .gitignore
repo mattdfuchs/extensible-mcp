@@ -17,3 +17,6 @@ scratch/
 /market-brief.md
 /gtm-plan.md
 /posts/
+
+# Written by the proxy so `add-server` can signal it.
+*.pid

