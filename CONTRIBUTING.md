@@ -73,8 +73,38 @@ it as a workspace member.
 - Update [`CHANGELOG.md`](CHANGELOG.md) under an `[Unreleased]` heading if
   the change is user-visible.
 
-## License
+## License and sign-off
 
-By contributing, you agree your contribution is licensed under the
-Apache License 2.0 (see [`LICENSE`](LICENSE)), the same license as the rest
-of the project.
+Contributions are under the Apache License 2.0 (see [`LICENSE`](LICENSE)),
+the same license as the rest of the project.
+
+Every commit needs a `Signed-off-by` line, which `git` will add for you:
+
+```bash
+git commit -s -m "your message"
+```
+
+It produces a trailer naming you:
+
+```
+Signed-off-by: Jane Developer <jane@example.com>
+```
+
+That line is a [Developer Certificate of Origin](https://developercertificate.org/)
+sign-off. It is not a copyright assignment and not a CLA — you keep your
+copyright, and nothing beyond the Apache-2.0 license is granted. What you are
+certifying is that you wrote the patch, or that you have the right to submit
+it under that license.
+
+This project is an argument about not taking things on trust, so it would be
+odd not to ask where code came from. It also means a later question about the
+provenance of any line has an answer recorded at the time, rather than a
+reconstruction.
+
+CI checks it on every pull request. If you forget, the fix is one command —
+no need to redo the work:
+
+```bash
+git rebase --signoff main     # sign off everything on your branch
+git push --force-with-lease
+```

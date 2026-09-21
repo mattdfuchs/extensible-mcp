@@ -7,6 +7,37 @@ on:
     branches: [main]
 
 jobs:
+  # Contributions carry a Developer Certificate of Origin sign-off. Only on
+  # pull requests: the DCO is a statement by a *contributor* about code they
+  # are submitting, and the maintainer pushing to their own repo is not making
+  # that statement to anyone.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Every commit is signed off by its author
+        run: |
+          missing=0
+          for sha in $(git rev-list ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}); do
+            author="$(git show -s --format='%an <%ae>' "$sha")"
+            if ! git show -s --format='%B' "$sha" | grep -qiF "Signed-off-by: $author"; then
+              echo "::error::$(git show -s --format='%h %s' "$sha")"
+              echo "  missing: Signed-off-by: $author"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo ""
+            echo "Add sign-offs with:  git commit -s   (or, to fix existing commits)"
+            echo "  git rebase --signoff ${{ github.event.pull_request.base.sha }}"
+            echo "See CONTRIBUTING.md for what signing off certifies."
+            exit 1
+          fi
+          echo "All commits signed off."
+
   test:
     runs-on: ubuntu-latest
     strategy:
