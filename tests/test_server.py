@@ -441,3 +441,85 @@ def test_describe_unwraps_exception_groups():
 
     # An exception carrying no message still names itself.
     assert _describe(ExceptionGroup("outer", [RuntimeError()])) == "RuntimeError"
+
+
+# -- the discovery rule is per session, not per process ---------------------- #
+#
+# Reported 2026-09-28 against the public repo, as an in-scope bypass of the
+# "can only call what it surfaced" property. A single shared set turned the
+# guarantee into "anything anyone connected to this proxy has ever surfaced" --
+# a monotonically growing global allowlist. On stdio one process serves one
+# client, so it made no difference there; on an HTTP transport serving several
+# sessions it was real.
+
+
+@pytest.mark.asyncio
+async def test_one_session_cannot_call_what_another_discovered():
+    """The bypass, end to end: two clients on one proxy. A searches, B calls."""
+    server = create_server(_make_config())
+    async with Client(server) as client_a, Client(server) as client_b:
+        found = await client_a.call_tool(
+            "search_tools", {"query": "add numbers", "top_k": 3}
+        )
+        assert "mock__add_numbers" in found.content[0].text
+
+        # A may call it, having surfaced it.
+        allowed = await client_a.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}},
+        )
+        assert "12" in allowed.content[0].text
+
+        # B never searched, and must not inherit A's discovery.
+        refused = await client_b.call_tool(
+            "call_tool",
+            {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}},
+        )
+        assert "not been discovered" in refused.content[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_each_session_keeps_its_own_discoveries():
+    """Scoping must not break the normal case: both sessions search, both call."""
+    server = create_server(_make_config())
+    async with Client(server) as client_a, Client(server) as client_b:
+        for client in (client_a, client_b):
+            await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        for client in (client_a, client_b):
+            result = await client.call_tool(
+                "call_tool",
+                {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
+            )
+            assert "3" in result.content[0].text
+
+
+def test_the_filter_scopes_by_session_and_evicts_safely():
+    """Unit-level: the store is per session, and bounded.
+
+    Eviction is the safe direction here -- forgetting a discovery denies a call
+    that would have been allowed -- so flooding the proxy with sessions
+    restricts others rather than freeing them.
+    """
+    from extensible_mcp.filters import DiscoveredToolsFilter
+
+    f = DiscoveredToolsFilter(max_sessions=2)
+    f.register(["a__x"], "s1")
+    f.register(["b__y"], "s2")
+    assert f.discovered_for("s1") == {"a__x"}
+    assert f.discovered_for("s2") == {"b__y"}
+    assert f.discovered_for("s3") == set()
+
+    f.register(["c__z"], "s3")          # over the bound: evicts s1, the oldest
+    assert f.discovered_for("s1") == set()
+    assert f.discovered_for("s3") == {"c__z"}
+
+
+def test_a_sessionless_transport_still_works():
+    """stdio has no session, so those calls share one bucket -- which is the
+    single-client case the guarantee was written for."""
+    from extensible_mcp.filters import DiscoveredToolsFilter
+
+    f = DiscoveredToolsFilter()
+    f.register(["a__x"])
+    assert f.discovered_for() == {"a__x"}
+    assert f.discovered_for(None) == {"a__x"}

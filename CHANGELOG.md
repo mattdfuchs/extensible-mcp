@@ -3,6 +3,46 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.3.2] - 2026-09-28
+
+**Fixed: the discovery rule is scoped per session, not per process**
+
+Reported externally against the public repo as an in-scope bypass of the
+"the LLM can only call tools it has surfaced via `search_tools`" property, and
+it was one. `DiscoveredToolsFilter` held a single `set[str]` for the whole
+process, so the guarantee was really "any tool anyone connected to this proxy
+has ever surfaced" -- a monotonically growing global allowlist. On stdio, where
+one process serves one client, it made no difference; on an HTTP transport
+serving several sessions, a tool one session surfaced became callable by every
+other.
+
+`CallRequest` gains an optional `session_id` (defaulting to `None`, so
+third-party filters are unaffected), populated from `ctx.session_id`, and the
+filter keys its sets by it. Sessionless transports share one bucket, which is
+exactly the single-client case the guarantee was written for.
+
+Two details worth recording. `CallFilterPipeline` rebuilds the request for each
+filter, and until this was caught it dropped the new field -- which silently
+restored the bypass while every happy-path test passed; the demo's two wire
+adapters rebuild it too and had the same hole. And the per-session store is
+bounded, evicting least-recently-used: here eviction is the *safe* direction,
+because forgetting a discovery denies a call rather than allowing one, so
+flooding the proxy with sessions restricts other sessions instead of freeing
+them. (`SingleUseEvidenceFilter` refuses rather than evicts, because there
+eviction would let a replay through.)
+
+**Documentation: `SECURITY.md` advertised the property unqualified**
+
+The README had carried the process-scope caveat since 0.3.0, but `SECURITY.md`
+listed the property in scope with no qualification -- so a researcher reading
+the security policy took it at face value, correctly. That contradiction was
+the real defect. `SECURITY.md` now states the scope and adds a *Not claimed*
+section: the proxy does not authenticate its caller and has no notion of which
+user a session acts for, so access control and the tool catalogue are
+deployment-wide rather than per-principal. Where a principal is established it
+is established by signed evidence, which answers *who asked for this action*
+rather than *who is on the other end of this session*.
+
 ## [0.3.1] - 2026-09-17
 
 **Added: `extensible-mcp add-server`, and reload on SIGHUP**

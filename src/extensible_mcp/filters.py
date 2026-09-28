@@ -116,6 +116,10 @@ class CallFilterPipeline:
                     tool_name=tool_name,
                     arguments=arguments,
                     server_name=request.server_name,
+                    # Carried through, or a session-scoped filter would see
+                    # None for every call and fall back to the shared bucket --
+                    # silently restoring the bypass this scoping exists to fix.
+                    session_id=request.session_id,
                 )
             )
             if not result.allowed:
@@ -127,17 +131,53 @@ class CallFilterPipeline:
         )
 
 
+# How many sessions' discovery sets a single proxy remembers. Reaching it
+# evicts the least recently used, which is the *safe* direction: forgetting a
+# discovery denies a call that would have been allowed, so an attacker who
+# floods the proxy with sessions restricts other sessions rather than freeing
+# them. (Contrast SingleUseEvidenceFilter, where eviction would let a replay
+# through and so refuses instead.)
+MAX_TRACKED_SESSIONS = 4096
+
+
 class DiscoveredToolsFilter:
-    """Call-side filter: only allows tools previously returned by search_tools."""
+    """Call-side filter: only allows tools previously returned by search_tools.
 
-    def __init__(self) -> None:
-        self._discovered: set[str] = set()
+    Scoped per MCP session, not per process. A single shared set turns the
+    guarantee from "this conversation surfaced it" into "anyone connected to
+    this proxy has ever surfaced it" -- a monotonically growing global
+    allowlist. On stdio that is a distinction without a difference, because one
+    process serves one client; on an HTTP transport serving several sessions it
+    is a real bypass, and it was reported as one.
 
-    def register(self, tool_names: list[str]) -> None:
-        self._discovered.update(tool_names)
+    ``session_id`` is ``None`` on transports without sessions, and those calls
+    share one bucket -- which is exactly right for stdio and no weaker than the
+    single-client case it describes.
+
+    Note what this filter does *not* do: it scopes state to a connection, not
+    to a principal. Nothing here establishes who a session acts for.
+    """
+
+    def __init__(self, max_sessions: int = MAX_TRACKED_SESSIONS) -> None:
+        # Ordered, so the oldest entry is the first key: dicts preserve
+        # insertion order, and a re-registration moves its session to the end.
+        self._by_session: dict[str | None, set[str]] = {}
+        self._max_sessions = max_sessions
+
+    def register(self, tool_names: list[str], session_id: str | None = None) -> None:
+        """Record tools surfaced to ``session_id``'s conversation."""
+        discovered = self._by_session.pop(session_id, set())
+        discovered.update(tool_names)
+        self._by_session[session_id] = discovered  # re-inserted => most recent
+        while len(self._by_session) > self._max_sessions:
+            self._by_session.pop(next(iter(self._by_session)))
+
+    def discovered_for(self, session_id: str | None = None) -> set[str]:
+        """What ``session_id`` has surfaced. A copy; mutating it changes nothing."""
+        return set(self._by_session.get(session_id, ()))
 
     async def check(self, request: CallRequest) -> CallFilterResult:
-        if request.tool_name in self._discovered:
+        if request.tool_name in self._by_session.get(request.session_id, ()):
             return CallFilterResult(
                 allowed=True,
                 tool_name=request.tool_name,

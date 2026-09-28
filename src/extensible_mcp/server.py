@@ -474,7 +474,11 @@ def create_server(
         discovered_filter: DiscoveredToolsFilter = ctx.lifespan_context["discovered_filter"]
         results = vs.search(query, top_k=top_k)
         results = pipeline.apply(results, query)
-        discovered_filter.register([r.tool.qualified_name for r in results])
+        # Registered against this session, so what one conversation surfaced
+        # does not become callable by another.
+        discovered_filter.register(
+            [r.tool.qualified_name for r in results], ctx.session_id
+        )
         return _format_search_results(results)
 
     @server.tool(
@@ -501,7 +505,10 @@ def create_server(
         server_name = parts[0] if len(parts) == 2 else ""
 
         request = CallRequest(
-            tool_name=tool_name, arguments=arguments, server_name=server_name
+            tool_name=tool_name,
+            arguments=arguments,
+            server_name=server_name,
+            session_id=ctx.session_id,
         )
         filter_result = await call_pipeline.apply(request)
         if not filter_result.allowed:

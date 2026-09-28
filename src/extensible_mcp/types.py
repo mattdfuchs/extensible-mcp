@@ -101,11 +101,23 @@ class SearchResult:
 
 @dataclass
 class CallRequest:
-    """Input to the call filter pipeline."""
+    """Input to the call filter pipeline.
+
+    ``session_id`` identifies the MCP session the call arrived on, when the
+    transport has one — ``None`` on stdio, where a process serves exactly one
+    client and the distinction is empty. It exists so a filter can scope state
+    to the conversation that created it rather than to the process; see
+    ``DiscoveredToolsFilter``.
+
+    It is deliberately *not* an identity claim. It says which connection this
+    came from, not who the connection acts for. Nothing about the principal
+    behind a session is established anywhere in the proxy today.
+    """
 
     tool_name: str
     arguments: dict[str, Any]
     server_name: str
+    session_id: str | None = None
 
 
 @dataclass

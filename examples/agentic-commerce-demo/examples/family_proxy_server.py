@@ -162,6 +162,7 @@ class PizzaWireAdapter(WalletBundleAdapter):
                 tool_name=request.tool_name,
                 arguments=args,
                 server_name=request.server_name,
+                session_id=request.session_id,
             )
         )
 
@@ -296,6 +297,7 @@ class InvoiceGatedFilter:
             tool_name=request.tool_name,
             arguments=adapted_args,
             server_name=request.server_name,
+            session_id=request.session_id,
         )
         inner = WasmPolicyFilter(
             self._bundle,
