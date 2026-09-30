@@ -45,3 +45,20 @@ this specific action*, which is a different question from *who is on the other
 end of this session*. Reports that the second question is unanswered are
 accurate and already known; a design for it is being worked on. Reports that
 the first is answerable without valid evidence are very much in scope.
+
+**The proxy does not prevent a client from reaching other servers.** It governs
+what passes through it. A client that can connect elsewhere — another MCP server
+in its own configuration, a stdio server that needs no credential, or a shell —
+is outside the proxy's reach by construction, and no credential the proxy
+withholds changes that: withholding a token does not deny access to something
+that never asked for one.
+
+Sole-path is therefore a deployment property rather than an enforced one. It is
+achieved by network egress control and by the operator holding the downstream
+credentials — `client_manager` presents a token only to a URL an operator
+configured for that name, so a server that requires auth is not reachable by a
+client that has never seen its token. The containerized demo shows the intended
+shape: the downstream org publishes no ports and is reachable only over the
+compose network. A deployment that skips that work has skipped something, and a
+report assuming the proxy supplies it unaided is a known limit rather than a
+finding.
