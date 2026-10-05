@@ -14,7 +14,12 @@ from .didweb import (
 from .fetchplan import FetchContext, FetchError, FetchExecutor, WalletLookup
 from .filters import CallFilter, ResponseFilter, ServerLoadFilter, ToolFilter
 from .guidance import render_denial
-from .replay import SingleUseEvidenceFilter, wallet_bundle_jti
+from .replay import (
+    InMemorySpentStore,
+    SingleUseEvidenceFilter,
+    SpentStore,
+    wallet_bundle_jti,
+)
 from .issuer import IssuerRegistry
 from .routing import BundleRouter
 from .selection import (
@@ -85,6 +90,8 @@ __all__ = [
     "policy_deny_reason",
     "provenance_descriptor",
     "render_denial",
+    "InMemorySpentStore",
     "SingleUseEvidenceFilter",
+    "SpentStore",
     "wallet_bundle_jti",
 ]

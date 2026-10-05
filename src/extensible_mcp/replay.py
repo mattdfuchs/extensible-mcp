@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 from .types import CallFilterResult, CallRequest
 from .wallet_bundle import _coerce_bundle, _decode_jwt_claims
@@ -62,6 +62,80 @@ def _credential_expiry(value: Any) -> float | None:
     return float(exp) if isinstance(exp, (int, float)) and not isinstance(exp, bool) else None
 
 
+# Reserve outcomes. Strings rather than a bool so the two refusals keep their
+# distinct explanations: one is the caller's to fix by getting a new approval,
+# the other is ours and says so.
+RESERVED = "reserved"
+ALREADY_SPENT = "already-spent"
+AT_CAPACITY = "at-capacity"
+
+
+class SpentStore(Protocol):
+    """Where spent evidence is remembered.
+
+    ``reserve`` **must be atomic**: test and set in one step, with no await
+    between them. That is the whole contract, and it is the reason this is not
+    a "have I seen this?" query plus a separate write -- two concurrent calls
+    carrying one credential would both pass such a query before either wrote.
+
+    A shared implementation (Redis ``SET key val NX PX``, a conditional insert)
+    gives replay protection across restarts and across several proxies. The
+    in-memory default gives it within one process only.
+    """
+
+    async def reserve(self, key: str, expires_at: float) -> str:
+        """Claim ``key`` until ``expires_at``. One of the three outcomes above."""
+        ...
+
+    async def release(self, key: str) -> None:
+        """Hand back a reservation whose call the policy then refused."""
+        ...
+
+
+class InMemorySpentStore:
+    """The default: a bounded dict, per process.
+
+    Refuses at capacity rather than evicting, because evicting a live entry to
+    make room is precisely how a replay gets through -- so the bound pushes
+    back on new work instead of forgetting old work.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._max_entries = max_entries
+        self._clock = clock
+        # id -> the time after which the entry may be forgotten, which is the
+        # credential's own expiry: past it the policy refuses the credential
+        # anyway, so remembering it buys nothing.
+        self._spent: dict[str, float] = {}
+
+    def prune(self, now: float) -> None:
+        for key in [k for k, exp in self._spent.items() if exp <= now]:
+            del self._spent[key]
+
+    def __len__(self) -> int:
+        return len(self._spent)
+
+    async def reserve(self, key: str, expires_at: float) -> str:
+        # Every statement here is synchronous on purpose. No await between the
+        # membership test and the insert means the pair cannot interleave with
+        # another task on this event loop.
+        self.prune(self._clock())
+        if key in self._spent:
+            return ALREADY_SPENT
+        if len(self._spent) >= self._max_entries:
+            return AT_CAPACITY
+        self._spent[key] = expires_at
+        return RESERVED
+
+    async def release(self, key: str) -> None:
+        self._spent.pop(key, None)
+
+
 class SingleUseEvidenceFilter:
     """Wrap a call filter so each piece of signed evidence authorizes one call.
 
@@ -81,10 +155,22 @@ class SingleUseEvidenceFilter:
     conservative direction, since the proxy cannot know whether the downstream
     acted.
 
-    The store is in memory and per process. That is the same scope as
-    ``DiscoveredToolsFilter``'s, and it means a restart forgets what has been
-    spent; a deployment that needs replay protection across restarts or across
-    several proxies should pass a shared store instead of relying on this.
+    **Reserved before the policy runs, released if the policy refuses.** An
+    earlier version tested the store, awaited the policy, and recorded
+    afterwards. Two concurrent calls carrying one credential therefore both
+    passed the test before either recorded, and one approval authorized both --
+    the replay this filter exists to prevent, reached by concurrency rather
+    than by sequence. Reserving first closes that while keeping a refused
+    call's credential spendable. The cost is one narrow false denial: of two
+    concurrent calls on a single credential, the one that loses the race is
+    told the approval is used even if the winner is then refused and releases
+    it. Refusing wrongly is the safe direction and a retry succeeds.
+
+    The default store is in memory and per process, the same scope as
+    ``DiscoveredToolsFilter``'s, so a restart forgets what has been spent and
+    two proxies do not share it. Pass ``store=`` with a shared implementation
+    for replay protection across either; the contract is that ``reserve`` is
+    atomic.
     """
 
     def __init__(
@@ -96,31 +182,29 @@ class SingleUseEvidenceFilter:
         clock: Callable[[], float] = time.time,
         default_ttl_seconds: float = 3600.0,
         max_entries: int = DEFAULT_MAX_ENTRIES,
+        store: SpentStore | None = None,
     ) -> None:
         self._inner = inner
         self._credential_fields = tuple(credential_fields)
         self._extract_id = extract_id
         self._clock = clock
         self._default_ttl_seconds = default_ttl_seconds
-        self._max_entries = max_entries
-        # id -> the time after which the entry may be forgotten, which is the
-        # credential's own expiry: past it the policy refuses the credential
-        # anyway, so remembering it buys nothing.
-        self._spent: dict[str, float] = {}
+        # `store or ...` would be wrong: InMemorySpentStore defines __len__, so
+        # an empty store is falsy -- and a store is always empty when it is
+        # handed in, which would silently discard every injected one.
+        self._store: SpentStore = (
+            store
+            if store is not None
+            else InMemorySpentStore(max_entries=max_entries, clock=clock)
+        )
 
     @property
     def bundle(self) -> Any:
         """Delegate, so a router that reads ``filter.bundle`` still works."""
         return getattr(self._inner, "bundle", None)
 
-    def _prune(self, now: float) -> None:
-        expired = [k for k, exp in self._spent.items() if exp <= now]
-        for k in expired:
-            del self._spent[k]
-
     async def check(self, request: CallRequest) -> CallFilterResult:
         now = self._clock()
-        self._prune(now)
 
         present = [f for f in self._credential_fields if f in request.arguments]
         ids: list[tuple[str, float]] = []
@@ -144,30 +228,42 @@ class SingleUseEvidenceFilter:
             exp = _credential_expiry(value)
             ids.append((cid, exp if exp is not None else now + self._default_ttl_seconds))
 
-        for cid, _ in ids:
-            if cid in self._spent:
+        # Claim every id before the policy runs. A partial claim is rolled back,
+        # so a refused reservation never leaves half of this call's credentials
+        # held against a call that is not going to happen.
+        held: list[str] = []
+        for cid, exp in ids:
+            outcome = await self._store.reserve(cid, exp)
+            if outcome != RESERVED:
+                await self._release(held)
+                if outcome == ALREADY_SPENT:
+                    return self._deny(
+                        request,
+                        "that approval has already been used. A signed approval "
+                        "authorizes one call; ask for a new one rather than "
+                        "re-sending this one.",
+                    )
                 return self._deny(
                     request,
-                    "that approval has already been used. A signed approval "
-                    "authorizes one call; ask for a new one rather than "
-                    "re-sending this one.",
+                    "the proxy cannot currently guarantee this approval has not "
+                    "already been used, so it is refusing the call.",
                 )
+            held.append(cid)
 
-        if ids and len(self._spent) + len(ids) > self._max_entries:
-            # Evicting a live entry to make room would let a replay through, so
-            # refuse instead. Reaching this means the proxy is being driven far
-            # harder than a human-approval rail implies.
-            return self._deny(
-                request,
-                "the proxy cannot currently guarantee this approval has not "
-                "already been used, so it is refusing the call.",
-            )
-
-        result = await self._inner.check(request)
-        if result.allowed:
-            for cid, exp in ids:
-                self._spent[cid] = exp
+        try:
+            result = await self._inner.check(request)
+        except BaseException:
+            # The policy faulted rather than decided, so the evidence was never
+            # used against anything. Hand it back.
+            await self._release(held)
+            raise
+        if not result.allowed:
+            await self._release(held)
         return result
+
+    async def _release(self, keys: Sequence[str]) -> None:
+        for key in keys:
+            await self._store.release(key)
 
     def _deny(
         self,

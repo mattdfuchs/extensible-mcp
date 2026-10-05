@@ -11,6 +11,7 @@ same VC pair that legitimately buys one $15 pizza must not buy three.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -19,7 +20,13 @@ import pytest
 
 from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.didweb import DidWebResolver
-from extensible_mcp.replay import SingleUseEvidenceFilter, wallet_bundle_jti
+from extensible_mcp.replay import (
+    ALREADY_SPENT,
+    RESERVED,
+    InMemorySpentStore,
+    SingleUseEvidenceFilter,
+    wallet_bundle_jti,
+)
 from extensible_mcp.types import CallFilterResult, CallRequest
 from extensible_mcp.wallet_bundle import WalletBundleAdapter
 from extensible_mcp.wasm_filter import VCPolicyFilter
@@ -108,8 +115,8 @@ class TestGuard:
         assert (await f.check(_call(b))).allowed is True
         assert (await f.check(_call(b))).allowed is False
         now[0] = 1600.0
-        f._prune(now[0])
-        assert f._spent == {}
+        f._store.prune(now[0])
+        assert len(f._store) == 0
 
     async def test_a_credential_with_no_jti_is_refused_not_admitted(self):
         """Unspendable evidence must not be treated as fresh evidence."""
@@ -145,6 +152,93 @@ class TestGuard:
         full = await f.check(_call(_bundle("urn:c")))
         assert full.allowed is False
         assert "cannot currently guarantee" in full.reason
+
+    async def test_concurrent_calls_cannot_spend_one_approval_twice(self):
+        """The replay this filter exists to stop, reached by concurrency.
+
+        The guard reserved nothing before awaiting the policy, so N concurrent
+        calls carrying one credential all passed the "already spent?" test
+        before any of them recorded, and one human approval authorized all N.
+        """
+
+        class _SlowAllow:
+            def __init__(self) -> None:
+                self.seen = 0
+
+            async def check(self, request: CallRequest) -> CallFilterResult:
+                self.seen += 1
+                await asyncio.sleep(0)  # any real policy awaits: wasm, wallet
+                return CallFilterResult(
+                    allowed=True,
+                    tool_name=request.tool_name,
+                    arguments=dict(request.arguments),
+                )
+
+        inner = _SlowAllow()
+        f = SingleUseEvidenceFilter(inner)
+        b = _bundle("urn:concurrent")
+        results = await asyncio.gather(*(f.check(_call(b)) for _ in range(8)))
+
+        assert sum(1 for r in results if r.allowed) == 1
+        # The losers are refused before the policy runs, so it is not asked
+        # eight times about a credential that can only be spent once.
+        assert inner.seen == 1
+        refused = [r for r in results if not r.allowed]
+        assert all("already been used" in r.reason for r in refused)
+
+    async def test_a_reservation_is_released_when_the_policy_refuses(self):
+        """Reserving first must not burn an approval the policy then rejects."""
+        inner = _Recorder(allow=False)
+        f = SingleUseEvidenceFilter(inner)
+        b = _bundle("urn:released")
+
+        assert (await f.check(_call(b))).allowed is False
+        assert len(f._store) == 0, "a refused call must leave the credential spendable"
+
+        inner.allow = True
+        assert (await f.check(_call(b))).allowed is True
+
+    async def test_a_faulting_policy_releases_the_reservation(self):
+        """An engine fault is not a decision, so it must not spend evidence."""
+
+        class _Explodes:
+            async def check(self, request: CallRequest) -> CallFilterResult:
+                raise RuntimeError("wasm trap")
+
+        f = SingleUseEvidenceFilter(_Explodes())
+        with pytest.raises(RuntimeError):
+            await f.check(_call(_bundle("urn:faulted")))
+        assert len(f._store) == 0
+
+    async def test_an_injected_store_is_used_instead_of_the_default(self):
+        """The docstring promised a shared store; the constructor now takes one."""
+        calls: list[tuple[str, str]] = []
+
+        class _Recording(InMemorySpentStore):
+            async def reserve(self, key, expires_at):
+                outcome = await super().reserve(key, expires_at)
+                calls.append(("reserve", outcome))
+                return outcome
+
+            async def release(self, key):
+                calls.append(("release", key))
+                await super().release(key)
+
+        store = _Recording()
+        f = SingleUseEvidenceFilter(_Recorder(), store=store)
+        b = _bundle("urn:injected")
+        assert (await f.check(_call(b))).allowed is True
+        assert (await f.check(_call(b))).allowed is False
+        assert calls == [("reserve", RESERVED), ("reserve", ALREADY_SPENT)]
+        assert len(store) == 1
+
+    async def test_the_default_store_reserve_is_a_single_step(self):
+        """The store contract: test-and-set, never a query plus a later write."""
+        store = InMemorySpentStore()
+        assert await store.reserve("k", 9999999999.0) == RESERVED
+        assert await store.reserve("k", 9999999999.0) == ALREADY_SPENT
+        await store.release("k")
+        assert await store.reserve("k", 9999999999.0) == RESERVED
 
     async def test_a_denial_carries_no_evidence_forward(self):
         f = SingleUseEvidenceFilter(_Recorder())
