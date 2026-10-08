@@ -186,6 +186,63 @@ class TestGuard:
         refused = [r for r in results if not r.allowed]
         assert all("already been used" in r.reason for r in refused)
 
+    async def test_a_chain_sharing_one_jti_does_not_refuse_itself(self):
+        """A bundle's authorization credential carries the same ``jti`` as the
+        request credential it signs over -- the policy requires it
+        (``requestVC.claims.jti == authorizationVC.claims.jti``). So two
+        credential fields routinely yield one key, and reserving it twice would
+        make the call refuse itself before the policy ever ran."""
+        inner = _Recorder()
+        f = SingleUseEvidenceFilter(
+            inner, credential_fields=("requestVC", "authorizationVC")
+        )
+        shared = _bundle("urn:one-chain")
+        call = CallRequest(
+            tool_name="payments__spend",
+            arguments={
+                "amount": 15.0,
+                "merchant": "acme",
+                "requestVC": shared,
+                "authorizationVC": shared,
+            },
+            server_name="payments",
+        )
+
+        first = await f.check(call)
+        assert first.allowed is True, "the chain must not refuse itself"
+        assert inner.seen == 1
+        assert len(f._store) == 1, "one chain spends one entry, not two"
+
+        # And it is still single-use.
+        assert (await f.check(call)).allowed is False
+
+    async def test_the_longest_expiry_wins_when_one_jti_appears_twice(self):
+        """Forgetting at the earlier expiry would leave the later-expiring
+        credential replayable."""
+        now = [1000.0]
+        inner = _Recorder()
+        f = SingleUseEvidenceFilter(
+            inner,
+            clock=lambda: now[0],
+            credential_fields=("requestVC", "authorizationVC"),
+        )
+        call = CallRequest(
+            tool_name="payments__spend",
+            arguments={
+                "amount": 15.0,
+                "merchant": "acme",
+                "requestVC": _bundle("urn:two-exp", exp=1200),
+                "authorizationVC": _bundle("urn:two-exp", exp=1800),
+            },
+            server_name="payments",
+        )
+        assert (await f.check(call)).allowed is True
+
+        now[0] = 1500.0  # past the earlier exp, before the later one
+        f._store.prune(now[0])
+        assert len(f._store) == 1, "must still be remembered as spent"
+        assert (await f.check(call)).allowed is False
+
     async def test_a_reservation_is_released_when_the_policy_refuses(self):
         """Reserving first must not burn an approval the policy then rejects."""
         inner = _Recorder(allow=False)

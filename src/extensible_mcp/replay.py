@@ -228,6 +228,18 @@ class SingleUseEvidenceFilter:
             exp = _credential_expiry(value)
             ids.append((cid, exp if exp is not None else now + self._default_ttl_seconds))
 
+        # One chain shares one id: a bundle's authorization credential carries
+        # the same `jti` as the request credential it signs over, and the policy
+        # requires that (`requestVC.claims.jti == authorizationVC.claims.jti`).
+        # So two credential fields routinely yield one key, and reserving it
+        # twice would make the second attempt refuse the call it is part of.
+        # Keep the longest expiry: forgetting at the earlier one would leave the
+        # later-expiring credential replayable.
+        deduped: dict[str, float] = {}
+        for cid, exp in ids:
+            deduped[cid] = max(exp, deduped.get(cid, exp))
+        ids = list(deduped.items())
+
         # Claim every id before the policy runs. A partial claim is rolled back,
         # so a refused reservation never leaves half of this call's credentials
         # held against a call that is not going to happen.
