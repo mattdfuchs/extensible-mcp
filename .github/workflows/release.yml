@@ -1,0 +1,79 @@
+# Publishes to PyPI on a version tag, via trusted publishing (OIDC).
+#
+# No API token exists anywhere: PyPI is configured to trust this repository
+# and this workflow filename, and mints a short-lived credential at publish
+# time. If the workflow is renamed, the PyPI-side publisher must be updated to
+# match or the upload is refused.
+#
+# The build and publish jobs are deliberately separate. The publish job does
+# not check out the repository, so no repository code ever runs in the job that
+# holds the OIDC token -- the one job with `id-token: write` can only upload
+# the artifacts the build job produced.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: The tag must match the packaged version
+        # A published version cannot be replaced, only yanked, so a tag that
+        # disagrees with pyproject.toml is caught here rather than on PyPI.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv run python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME implies version $tag, but pyproject.toml says $pkg"
+            exit 1
+          fi
+          echo "tag and pyproject agree on $pkg"
+
+      - name: Install dependencies
+        run: uv sync --all-packages --group dev
+
+      - name: Tests must pass before anything is published
+        run: |
+          uv run pytest -q
+          uv run --package extensible-mcp-vc pytest examples/agentic-commerce-demo/tests -q
+          uv run --package household-identity pytest examples/identity/tests -q
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check the artifacts the way PyPI will
+        run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Must match the environment registered with the PyPI publisher. Add a
+    # required reviewer to this environment to make a tag push propose a
+    # release rather than perform one.
+    environment: pypi
+    permissions:
+      # Required for trusted publishing. Nothing else is granted: this job has
+      # no write access to the repository and never checks it out.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # Generates PEP 740 provenance attestations by default under trusted
+      # publishing, so a consumer can verify the artifact came from this
+      # repository and this workflow.
+      - uses: pypa/gh-action-pypi-publish@release/v1
