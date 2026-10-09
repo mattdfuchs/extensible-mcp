@@ -1,6 +1,6 @@
 [project]
 name = "extensible-mcp"
-version = "0.3.2"
+version = "0.3.3"
 description = "MCP proxy that replaces tool definitions with semantic search"
 readme = "README.md"
 requires-python = ">=3.11"

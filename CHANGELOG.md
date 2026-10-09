@@ -3,6 +3,76 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.3.3] - 2026-10-09
+
+**Fixed: one signed approval could authorize several concurrent calls**
+
+`SingleUseEvidenceFilter` tested the spent store, awaited the inner policy, then
+recorded the spend on success. The `await` is a yield point, so two calls
+carrying the same credential both passed the "already spent?" test before either
+recorded, and both were allowed -- the replay the filter exists to prevent,
+reached by concurrency rather than by sequence. Measured rather than inferred:
+eight concurrent calls spent one approval eight times, and the policy was
+consulted eight times about a credential that may be spent once.
+
+**This affects the shipped stdio configuration.** A single MCP session
+dispatches each JSON-RPC request as its own task -- measured: two `call_tool`
+requests from one stdio client entered the handler simultaneously and overlapped
+for the whole of a 300 ms handler. A model emitting several tool calls in one
+turn is the ordinary fast path for parallel tool use, so the window opens
+without an adversary; an injected model that wanted to double-spend would simply
+emit the call twice. Affected: 0.3.0 (where the filter was introduced) through
+0.3.2.
+
+The guard now **reserves** every credential id before running the policy and
+releases on a refusal or a fault, which keeps the property the old ordering was
+chosen for: a refused call leaves the credential spendable. Reservation happens
+before any yield, so there is no window. A partial claim is rolled back, and a
+policy that faults rather than decides hands the evidence back.
+
+The cost is one narrow false denial, documented in the filter's docstring: of
+two concurrent calls on a single credential, the one that loses the race is told
+the approval is used even if the winner is then refused and releases it.
+Refusing wrongly is the safe direction and a retry succeeds.
+
+**Added: `SpentStore`, so replay protection can outlive one process**
+
+Reservation has to be atomic, and a shared store needs an `await` between a
+query and a write -- which would reopen the window. So atomicity is the store's
+contract rather than the filter's: `SpentStore` is a Protocol with
+`reserve(key, expires_at) -> str` and `release(key)`, where `reserve` must be a
+single test-and-set. `InMemorySpentStore` is the default and refuses at capacity
+rather than evicting, since evicting a live entry is how a replay gets through.
+`SingleUseEvidenceFilter(..., store=...)` takes an alternative; a Redis
+`SET key val NX PX` satisfies the contract directly. `SpentStore`,
+`InMemorySpentStore` and the three outcome constants are exported from the
+package root.
+
+This makes true something the filter's docstring has claimed since 0.3.0 -- that
+"a deployment that needs replay protection across restarts or across several
+proxies should pass a shared store" -- for which no parameter existed.
+
+**Still not addressed, and the default is still in-memory**
+
+A restart forgets unexpired entries, and for this property forgetting fails
+*open*: a spent credential becomes spendable again. (Contrast
+`DiscoveredToolsFilter`, where forgetting denies.) The default store is not
+shared between processes, so N proxies means one approval is spendable once per
+proxy. `store=` is the seam; no shared implementation ships. And
+`InMemorySpentStore.reserve` is atomic against asyncio tasks, not against
+threads.
+
+**A note on the fix's own first attempt**
+
+The reserve loop initially iterated credential *fields* and reserved each id
+independently. A bundle's authorization credential carries the same `jti` as the
+request credential it signs over -- the policy requires it
+(`requestVC.claims.jti == authorizationVC.claims.jti`, with
+`authorizationVC.claims.requestHash == sha256(requestVC.jws)`) -- so two fields
+yield one key, and the second reservation refused the call its own credentials
+authorized. Caught before release; recorded because the shared-`jti` invariant
+is easy to rediscover the hard way.
+
 ## [0.3.2] - 2026-09-28
 
 **Fixed: the discovery rule is scoped per session, not per process**
