@@ -3,6 +3,35 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.3.4] - 2026-10-10
+
+**No runtime change.** Packaging only, and the first release published to PyPI.
+Nothing in `src/` differs from 0.3.3; an existing deployment has no reason to
+upgrade except to install from an index rather than a checkout.
+
+**Added: `[project.urls]`** — repository, changelog, issues and security policy,
+so the PyPI page carries sidebar links rather than a README and no way out.
+
+**Added: a trusted-publishing release workflow.** `release.yml` publishes on a
+`v*` tag via PyPI's OIDC trusted publishing, so no API token exists anywhere:
+PyPI is configured to trust this repository and this workflow filename and mints
+a short-lived credential at publish time. Renaming the workflow breaks
+publishing until the PyPI-side publisher is updated to match.
+
+Three properties of that workflow worth stating, since they are deliberate:
+
+- Build and publish are separate jobs, and the publish job does not check out
+  the repository. No repository code runs in the job holding the OIDC token; it
+  can only upload what the build job produced.
+- The tag must agree with `pyproject.toml`'s version. A published version can be
+  yanked but never replaced, so a mismatched tag is caught before upload rather
+  than discovered after.
+- All three test suites run before anything is built, for the same reason.
+
+`pypa/gh-action-pypi-publish` also emits PEP 740 provenance attestations by
+default under trusted publishing, so a consumer can verify an artifact came
+from this repository and this workflow.
+
 ## [0.3.3] - 2026-10-09
 
 **Fixed: one signed approval could authorize several concurrent calls**
