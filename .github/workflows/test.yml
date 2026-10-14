@@ -38,6 +38,26 @@ jobs:
           fi
           echo "All commits signed off."
 
+  # `main` is the published history: it is pushed to the public repository at
+  # release. NOTES.md and anything else from the `response` branch are private
+  # working notes, and a merge or cherry-pick that brings them across is the one
+  # slip that cannot be withdrawn. Add a path to the list to cover it too.
+  no-private-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: main carries no private working notes
+        run: |
+          status=0
+          for path in NOTES.md; do
+            if [ -e "$path" ]; then
+              echo "::error file=$path::private working notes must never reach main"
+              status=1
+            fi
+          done
+          if [ "$status" = 0 ]; then echo "No private working notes in the tree."; fi
+          exit $status
+
   test:
     runs-on: ubuntu-latest
     strategy:
