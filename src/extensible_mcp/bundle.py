@@ -13,7 +13,7 @@ A bundle is a directory the proxy consumes verbatim:
   A conforming toolchain may target either.
 - ``manifest.json``  — JSON Schema of the closed input (type defs + validation)
 - ``fetchplan.json`` — where each input field comes from (``call`` / ``config``
-  / ``clock`` / ``wallet``)
+  / ``clock`` / ``wallet`` / ``derive``)
 - ``guidance.json``  — the human/LLM-facing layer (optional; a toolchain that
   doesn't emit it is loaded and used with plainer denial messages)
 
@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .fetchplan import validate_derive_plan
 from .policy_engine import PolicyEngine
 from .wasm_policy import OpaWasmPolicy
 
@@ -65,6 +66,7 @@ class PolicyBundle:
         name: str | None = None,
         builtins: dict[str, Any] | None = None,
         engine: Literal["rego", "cel"] | None = None,
+        primitives: dict[str, Any] | None = None,
     ) -> "PolicyBundle":
         """Load a bundle directory. ``builtins`` overrides the default host
         built-ins — e.g. ``default_builtins(webauthn_rp_id=...)`` for a policy
@@ -78,7 +80,17 @@ class PolicyBundle:
         artifact is present. Raises :class:`FileNotFoundError` if the forced
         engine's artifact is missing — a directory carrying both artifacts
         (e.g. a shadow-comparison fixture) needs this to load the non-default
-        one; it is never inferred silently."""
+        one; it is never inferred silently.
+
+        ``primitives`` overrides the vocabulary a ``derive`` fetch-plan entry
+        may name — ``default_primitives(webauthn_rp_id=...)`` for a deployment
+        whose plans fold a passkey check over enrolled keys. The fetch plan's
+        ``derive`` entries are validated here, at load: a bare key-consuming
+        primitive, a hoisted key, or an ``fn`` this proxy cannot satisfy raises
+        :class:`~extensible_mcp.fetchplan.DerivePlanError` before the bundle
+        can govern a call — the discipline an unregistered host built-in
+        already gets, for the same reason. The proxy owns which primitives
+        consume a key, whatever the bundle declares about them."""
         d = Path(directory)
         cel_path = d / "checks.cel.json"
         wasm_path = d / "policy.wasm"
@@ -101,6 +113,9 @@ class PolicyBundle:
             package = _derive_package(policy)
         manifest = json.loads((d / "manifest.json").read_text())
         fetchplan = json.loads((d / "fetchplan.json").read_text())
+        # A plan whose derived fields are shaped wrong is a bundle that must
+        # never reach a call, so this is a load-time refusal, not a runtime one.
+        validate_derive_plan(fetchplan, primitives=primitives)
         guidance_path = d / "guidance.json"
         guidance = (
             json.loads(guidance_path.read_text()) if guidance_path.exists() else None

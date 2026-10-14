@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
+from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.fetchplan import (
     DerivePlanError,
     FetchContext,
     FetchError,
     FetchExecutor,
+    default_primitives,
     validate_derive_plan,
 )
 from extensible_mcp.wasm_policy import OpaWasmPolicy
@@ -505,3 +508,139 @@ def test_validate_rejects_an_unknown_argument_marker():
     )
     with pytest.raises(DerivePlanError, match="unknown argument marker"):
         validate_derive_plan(plan)
+
+
+# -- the refusals, where they actually have to happen: PolicyBundle.load ------ #
+#
+# A plan whose derived fields are shaped wrong is a bundle that must never
+# govern a call, so it is refused when it is loaded — not when a call first
+# reaches the unsafe entry. Same discipline as an unregistered host built-in.
+
+
+def _bundle_dir(tmp_path, plan):
+    """A real loadable bundle (the family_spend artifacts) with one planted
+    fetch plan."""
+    d = tmp_path / "derive_bundle"
+    shutil.copytree(FIXTURE_DIR, d)
+    (d / "fetchplan.json").write_text(json.dumps(plan))
+    return d
+
+
+def test_load_accepts_a_well_formed_derive_plan(tmp_path):
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        _config_entry("trustedMerchants"), _SIGNER_IDS_ENTRY, _PARSED_ENTRY,
+    )
+    bundle = PolicyBundle.load(_bundle_dir(tmp_path, plan))
+    assert bundle.fetchplan["entries"][-2]["source"]["fn"] == "verify_ed25519_raw"
+
+
+def test_load_refuses_a_bare_key_consuming_primitive(tmp_path):
+    """There is no bare-boolean form of verification in the format at all: a
+    single-trust-root deployment writes a one-element candidate list and the
+    rule checks membership. So there is nothing for an author to remember."""
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        {"field": "invoiceSignatureOK",
+         "source": {"kind": "derive", "fn": "verify_ed25519_raw",
+                    "args": [{"$input": "invoiceCanonical"},
+                             {"$input": "invoiceSignature"}, "AAAA"]}},
+    )
+    with pytest.raises(DerivePlanError, match="folded"):
+        PolicyBundle.load(_bundle_dir(tmp_path, plan))
+
+
+def test_load_refuses_a_bare_verification_the_bundle_declares_key_free(tmp_path):
+    """The classification is proxy-owned.
+
+    A generator bug is enough to emit ``verify_ed25519_raw`` as a pure
+    primitive; if the bundle's own declaration decided the question, the plan
+    would get a bare boolean back from a load that passed its own check — the
+    merchant-swap failure one layer down.
+    """
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        {"field": "invoiceSignatureOK",
+         "source": {"kind": "derive", "fn": "verify_ed25519_raw",
+                    "args": [{"$input": "invoiceCanonical"},
+                             {"$input": "invoiceSignature"}, "AAAA"]}},
+        primitives={"verify_ed25519_raw": {"class": "pure"}},
+    )
+    with pytest.raises(DerivePlanError, match="consumes a key"):
+        PolicyBundle.load(_bundle_dir(tmp_path, plan))
+
+
+def test_load_refuses_a_key_producing_primitive_as_a_top_level_fn(tmp_path):
+    """A derived key emitted as its own field floats free of the DID it came
+    from: the rule would check ``verify(jws, signerKey)`` and, separately,
+    ``signerDid in trustedDids``, with nothing relating the two — a trusted DID
+    presented alongside an attacker's key passes."""
+    plan = _plan(
+        _config_entry("signerDid"),
+        {"field": "signerKey",
+         "source": {"kind": "derive", "fn": "key_from_did_key",
+                    "args": [{"$input": "signerDid"}]}},
+    )
+    with pytest.raises(DerivePlanError, match=r"only inside '\$apply'"):
+        PolicyBundle.load(_bundle_dir(tmp_path, plan))
+
+
+def test_load_refuses_a_key_producing_primitive_folded(tmp_path):
+    """Folding it does not rescue it: the witness would still be the key."""
+    plan = _plan(
+        _config_entry("candidates"),
+        {"field": "signerKeys",
+         "source": {"kind": "derive", "fn": "key_from_did_key",
+                    "over": {"$input": "candidates"},
+                    "args": [{"$item": "did"}], "project": "did"}},
+    )
+    with pytest.raises(DerivePlanError, match="produces a key"):
+        PolicyBundle.load(_bundle_dir(tmp_path, plan))
+
+
+def test_load_refuses_an_fn_used_but_not_declared(tmp_path):
+    plan = _plan(
+        _config_entry("jws"),
+        {"field": "digest",
+         "source": {"kind": "derive", "fn": "sha256", "args": [{"$input": "jws"}]}},
+        primitives=["parse_json"],
+    )
+    with pytest.raises(DerivePlanError, match="not declared"):
+        PolicyBundle.load(_bundle_dir(tmp_path, plan))
+
+
+def test_load_refuses_a_declared_primitive_the_proxy_cannot_satisfy(tmp_path):
+    """``verify_webauthn`` exists only once a relying party is configured, so
+    a bundle declaring it without one fails at load rather than denying
+    quietly at the first call — and loads when the deployment supplies it."""
+    plan = _plan(
+        _config_entry("candidates"),
+        {"field": "approverDids",
+         "source": {"kind": "derive", "fn": "verify_webauthn",
+                    "over": {"$input": "candidates"},
+                    "args": [{"$input": "authData"}, {"$input": "clientDataJSON"},
+                             {"$input": "signature"}, {"$item": "jwk"}],
+                    "project": "did"}},
+        primitives={"verify_webauthn": {"class": "key-consuming"}},
+    )
+    d = _bundle_dir(tmp_path, plan)
+    with pytest.raises(DerivePlanError, match="no implementation for"):
+        PolicyBundle.load(d)
+    bundle = PolicyBundle.load(
+        d, primitives=default_primitives(webauthn_rp_id="example.com")
+    )
+    assert bundle.name == "derive_bundle"
+
+
+def test_load_still_accepts_every_shipped_fetch_plan():
+    """The source kind is purely additive: the rego and cel bundles keep their
+    crypto builtins, declare no primitive vocabulary, and must keep loading."""
+    plans = sorted((Path(__file__).parent / "fixtures").glob("*/fetchplan.json"))
+    assert plans  # the corpus is the point of the assertion
+    for path in plans:
+        plan = json.loads(path.read_text())
+        validate_derive_plan(plan)
+        assert not [
+            e for e in plan["entries"] if e["source"]["kind"] == "derive"
+        ], f"{path} uses derive; the migration is explicitly out of scope"
+    assert PolicyBundle.load(FIXTURE_DIR).fetchplan["entries"]
