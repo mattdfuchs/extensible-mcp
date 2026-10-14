@@ -1,7 +1,8 @@
 {"type": "object",
  "title": "InvoiceSpendInput",
  "required":
- ["arguments",
+ ["tool",
+  "arguments",
   "invoice",
   "trustedMerchants",
   "childApproval",
@@ -14,6 +15,7 @@
   "trustedMerchants":
   {"type": "array", "items": {"$ref": "#/definitions/TrustedMerchant"}},
   "trustedAdminDids": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+  "tool": {"type": "string"},
   "parentEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
   "parentApproval": {"$ref": "#/definitions/WebAuthnApproval"},
   "now": {"$ref": "#/definitions/Timestamp"},

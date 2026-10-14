@@ -17,11 +17,29 @@ the $10 solo-approval threshold — each independently bound to
 `hash(invoice.canonical)`. No wallet-issued VC anywhere in this bundle:
 the demo's actual approval service gates both roles on WebAuthn alone.
 
+- Re-pinned to upstream commit `0ee19df` (the named-check-id
+  regeneration). `guidance.json` carries `"id_scheme": "named-welded"`.
 - Package: `policybundle.examples.family_spend_invoice` — anonymized for
   this public release (originally the supplier's own package path);
   behavior verified byte-for-byte against this repository's own test
   suite (`test_invoice_policy.py`) before and after
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 ids, tiers 9 + 14)
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 named check ids,
+  tiers 9 + 14 — `solo.*` / `dual.*`, e.g.
+  `solo.invoice.signed_by_trusted_merchant`,
+  `dual.parent_approval.invoice_challenge_binds`). Replaces the earlier
+  positional `t0.c*` / `t1.c*` scheme; ids are opaque join keys, so the
+  authored sentences and every rendered denial are unchanged.
+- **This re-pin closes the `tool` gap.** The manifest previously declared
+  no `tool` property while being `additionalProperties: false` at the root,
+  so an assembled envelope — which always carries `tool` — failed
+  validation on every call, allowed or denied, and the demo's invoice
+  filter had to run with `validate_input=False`. `InvoiceSpendInput` now
+  declares `tool`, required and call-sourced. `policy.rego` does not read
+  it: there is no signed statement of a tool name anywhere in this flow to
+  bind it against, and the approval challenge already covers the whole
+  canonical invoice. Declared-not-read is exactly what validation needs,
+  and the standing exception retires with this re-pin
+  (`test_invoice_policy.py::test_a_genuine_call_validates_against_the_manifest`).
 - Uses the custom host builtins `verify_webauthn` (existing) and
   `verify_ed25519_raw` (new — verifies a raw Ed25519
   signature over an exact string with both signature and key as
