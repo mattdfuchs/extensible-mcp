@@ -192,6 +192,27 @@ def test_solo_tier_allows_on_child_approval_alone(bundle, merchant_key, admin_ke
     assert bundle.policy.query(full, bundle.allow_entrypoint) == [{"result": True}]
 
 
+def test_a_genuine_call_validates_against_the_manifest(
+    bundle, merchant_key, admin_key, child_passkey
+):
+    """The re-pinned manifest declares ``tool`` (required, call-sourced), so
+    the envelope a filter actually assembles validates.
+
+    This is the test the standing ``validate_input=False`` exception in
+    ``family_proxy_server.py`` retires against: the manifest previously had
+    no ``tool`` property while being ``additionalProperties: false`` at the
+    root, and ``WasmPolicyFilter.check()`` always sets ``envelope["tool"]``
+    — so validation failed on *every* call, allowed or denied, and had to be
+    disabled wholesale. The policy still does not read the field; it is
+    declared, which is what validation needs."""
+    invoice, base = _base_input(merchant_key, total_cents=400)
+    full = _with_child(base, invoice, admin_key, child_passkey)
+    assembled = {**full, "tool": "pay_invoice"}
+    assert bundle.validate_input(assembled) == []
+    # ...and the declared-but-unread field does not change the decision.
+    assert bundle.policy.query(assembled, bundle.allow_entrypoint) == [{"result": True}]
+
+
 def test_dual_tier_denies_without_parent(bundle, merchant_key, admin_key, child_passkey):
     """The parent leg is *guarded*, not unconditionally required (per
     manifest/fetchplan) — genuinely absent above the threshold must deny

@@ -119,14 +119,10 @@ def main() -> None:
             adapter=WalletBundleAdapter(),  # LLM sends requestVC / authorizationVC
             resolver=resolver,
             trusted_admin_dids=[ADMIN_DID],
-            # Manifest validation is off for this demo: the generated manifest
-            # closes the W3C-VC claim objects (additionalProperties: false),
-            # but real household-identity wallets carry @context/type/jti/id/
-            # family, so default-on validation rejects genuine credentials the
-            # policy itself accepts. Open reconciliation:
-            # the manifest should leave externally-supplied VC claim sub-objects
-            # open. See the boot-run finding.
-            validate_input=False,
+            # validate_input defaults on — the 2026-09-09 re-pin left the
+            # wallet-supplied VC claim bodies open (additionalProperties:
+            # true), so real wallets' @context/type/jti/… extras validate
+            # cleanly. Same as the server path in family_proxy_server.py.
         )
 
     selector = LayeredBundleSelector(
