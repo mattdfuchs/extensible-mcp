@@ -58,6 +58,53 @@ jobs:
           if [ "$status" = 0 ]; then echo "No private working notes in the tree."; fi
           exit $status
 
+  # GitHub's own secret scanning and push protection need Advanced Security,
+  # which a private repository does not get -- and privacy only defers the
+  # hazard anyway, since release is a push of this `main` to the public
+  # repository. So the scan runs here, and it is a gate: gitleaks exits 1 when
+  # it reports a finding, this step swallows no exit status and sets no
+  # `continue-on-error`, so a finding fails the job rather than annotating it.
+  # The allowlist lives in .gitleaks.toml, one entry per string that only
+  # looks like a credential, with the reason it cannot be one beside it.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The whole history, so a pull request is scanned over its full diff
+          # range rather than at its tip: a secret added in one commit of the
+          # branch and deleted in the next is still in the history that gets
+          # published.
+          fetch-depth: 0
+      - name: Install gitleaks
+        env:
+          # Pinned, and the download is checksummed: a scanner fetched over
+          # the network is on the trust path of every later commit.
+          VERSION: 8.28.0
+          SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v$VERSION/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "$SHA256  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: No secrets in the history under review
+        run: |
+          set -euo pipefail
+          scan=(gitleaks git . --no-banner --redact --config .gitleaks.toml)
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            # Every commit this pull request would add to main.
+            scan+=(--log-opts "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}")
+          else
+            # A push to main is the last gate before the public repository, so
+            # scan everything reachable from it -- not the other refs that
+            # fetch-depth 0 brings along, which are not what gets published.
+            scan+=(--log-opts HEAD)
+          fi
+          "${scan[@]}"
+
   test:
     runs-on: ubuntu-latest
     strategy:
