@@ -34,8 +34,12 @@ from extensible_mcp.filters import (
     ServerLoadFilterPipeline,
 )
 from extensible_mcp.routing import BundleRouter
-from extensible_mcp.selection import LayeredBundleSelector
-from extensible_mcp.server import create_server
+from extensible_mcp.selection import (
+    BANNED,
+    LayeredBundleSelector,
+    provenance_descriptor,
+)
+from extensible_mcp.server import _admit_servers, create_server
 from extensible_mcp.types import (
     CallFilterResult,
     CallRequest,
@@ -393,3 +397,176 @@ async def test_every_request_field_reaches_every_filter():
         ),
     )
     assert dropped == {}
+
+
+# --------------------------------------------------------------------------- #
+# 3. A server the selector cannot place is refused.
+#
+# Bundle selection is fail-closed by construction: both terminals of the
+# literal-map/classifier chain end in a denial. What makes that load-bearing is
+# the other half -- at call time the router *passes through* a call whose
+# server it holds no filter for, because an ungoverned server is a legitimate
+# configuration. So admission is the only thing standing between "no bundle
+# could be chosen for this server" and "this server's tools are callable with
+# no policy at all". A refusal that admitted the server anyway would not read
+# as a failure anywhere: the calls would simply succeed.
+#
+# Two ways to end up unplaceable, and both are refusals here: the selector
+# cannot name a bundle, or it names one the deployment cannot build a filter
+# for (`filter_factory` returning None).
+# --------------------------------------------------------------------------- #
+
+PLACED_URL = "https://payments.example/mcp"
+UNPLACEABLE_URL = "https://weather.example/mcp"
+
+
+class _StubPolicyFilter:
+    """Stands in for a WasmPolicyFilter: the router only needs `bundle` at
+    admission and `check` at call time."""
+
+    def __init__(self, bundle: str) -> None:
+        self.bundle = bundle
+
+    async def check(self, request: CallRequest) -> CallFilterResult:
+        return CallFilterResult(
+            allowed=True, tool_name=request.tool_name, arguments=request.arguments
+        )
+
+
+class _PlacingClassifier:
+    """A classifier that places every descriptor, so a refusal in a test using
+    it can only have come from the layer above."""
+
+    def __init__(self, bundle: str = "family_spend") -> None:
+        self.bundle = bundle
+        self.calls: list[dict[str, Any]] = []
+
+    def decide(self, descriptor: dict[str, Any]) -> str:
+        self.calls.append(descriptor)
+        return self.bundle
+
+
+def _descriptor(url: str = PLACED_URL) -> dict[str, Any]:
+    return provenance_descriptor(
+        origin_server="payments", url=url, config_trust_tier="prod"
+    )
+
+
+def test_selector_with_nothing_to_place_a_descriptor_refuses():
+    """No map entry and no classifier is a refusal, not a pass."""
+    result = LayeredBundleSelector().select(_descriptor())
+    assert not result.allowed and result.bundle is None
+
+
+def test_banned_map_entry_does_not_fall_through_to_a_classifier():
+    """`banned` is terminal: the layer below must not rescue it."""
+    classifier = _PlacingClassifier()
+    # Positive control: on its own, the classifier does place this descriptor.
+    assert LayeredBundleSelector(classifier=classifier).select(_descriptor()).allowed
+
+    banned = LayeredBundleSelector({PLACED_URL: BANNED}, classifier)
+    result = banned.select(_descriptor())
+    assert not result.allowed and result.bundle is None
+    assert len(classifier.calls) == 1  # the ban short-circuited, asked nobody
+
+
+def test_router_refuses_a_server_the_selector_cannot_place():
+    asked: list[str] = []
+
+    def factory(bundle: str):
+        asked.append(bundle)
+        return _StubPolicyFilter(bundle)
+
+    router = BundleRouter(LayeredBundleSelector(), factory)
+    result = router.admit(
+        server_name="weather", url=UNPLACEABLE_URL, how_loaded="static"
+    )
+    assert not result.allowed
+    assert not router.governs("weather")
+    assert router.bundle_for("weather") is None
+    assert asked == []  # nothing was selected, so nothing was built
+
+
+async def test_filter_factory_returning_none_refuses_rather_than_admitting():
+    """A named-but-unavailable bundle refuses the server.
+
+    This is the case that cannot be allowed to degrade quietly: the bundle
+    *was* selected, so the server is one the deployment means to govern, and
+    the only reason there is no filter is that the deployment could not build
+    one. The second half of the test shows what admitting it anyway would
+    cost -- the router has no filter for that server, so every call to it
+    passes through untouched.
+    """
+    router = BundleRouter(
+        LayeredBundleSelector({PLACED_URL: "family_spend"}), lambda bundle: None
+    )
+    result = router.admit(
+        server_name="payments", url=PLACED_URL, how_loaded="static"
+    )
+    assert not result.allowed
+    assert "unavailable" in result.reason
+    assert not router.governs("payments")
+
+    arguments = {"amountCents": 500, "merchant": "acme"}
+    passthrough = await router.check(
+        CallRequest(
+            tool_name="payments__send", arguments=arguments, server_name="payments"
+        )
+    )
+    assert passthrough.allowed and passthrough.arguments == arguments
+
+
+def test_admit_servers_leaves_out_every_refused_server():
+    """The load-time helper that turns a refusal into "not connected"."""
+
+    def factory(bundle: str):
+        return _StubPolicyFilter(bundle) if bundle == "family_spend" else None
+
+    router = BundleRouter(
+        LayeredBundleSelector(
+            {PLACED_URL: "family_spend", "https://sandbox.example/mcp": "readonly"}
+        ),
+        factory,
+    )
+    servers = [
+        ServerConfig(name="payments", url=PLACED_URL),
+        ServerConfig(name="weather", url=UNPLACEABLE_URL),  # unplaceable
+        ServerConfig(name="sandbox", url="https://sandbox.example/mcp"),  # no filter
+    ]
+    assert {s.name for s in _admit_servers(router, servers)} == {"payments"}
+
+
+async def test_refused_server_is_never_connected_or_callable():
+    """End to end: a refused server's tools do not exist as far as the LLM is
+    concerned -- not surfaced by search_tools, and not callable.
+
+    Two identical downstream servers under one router, one placed and one not,
+    so the assertion is about the refusal and not about a proxy that failed to
+    start. The map keys on the admitted server name because both of these are
+    stdio and so have no URL to key on.
+    """
+    config = Config(
+        servers=[
+            ServerConfig(name="placed", command=sys.executable, args=[MOCK_SERVER_PATH]),
+            ServerConfig(name="refused", command=sys.executable, args=[MOCK_SERVER_PATH]),
+        ],
+        filters=FiltersConfig(similarity_threshold=0.0),
+    )
+    router = BundleRouter(
+        LayeredBundleSelector({"placed": "family_spend"}, map_key="origin_server"),
+        lambda bundle: _StubPolicyFilter(bundle),
+    )
+    server = create_server(config, bundle_router=router)
+    async with Client(server) as client:
+        search = await client.call_tool(
+            "search_tools", {"query": "add numbers", "top_k": 10}
+        )
+        text = search.content[0].text
+        assert "placed__add_numbers" in text  # the admitted server still works
+        assert "refused__add_numbers" not in text
+
+        call = await client.call_tool(
+            "call_tool",
+            {"tool_name": "refused__add_numbers", "arguments": {"a": 1, "b": 2}},
+        )
+        assert "not been discovered" in call.content[0].text.lower()
