@@ -44,6 +44,27 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --
 
 `regopy` has no wheel on some platforms and builds from source needing git and a C++ toolchain, so a `--group dev` sync can be slow or fail there; the `rego` filter lazy-imports it and errors helpfully.
 
+## Working on a change
+
+- **Every commit is signed off** — `git commit -s`. The `dco` job is a required
+  check, so an unsigned commit fails the PR; `git rebase --signoff main` fixes a
+  branch that already exists. `CONTRIBUTING.md` says what signing off certifies.
+- **No `Co-Authored-By` trailers.**
+- **One branch and one PR per issue**, with `Closes #N` in the PR body. Keep each
+  reviewable change as its own commit — a batch of small fixes should be
+  revertable one at a time.
+- **The author does not merge their own PR.** The required checks gate
+  correctness; merging is a human decision about whether the change is the one
+  that was asked for.
+- **`NOTES.md` and the `response` branch are private working notes.** Never
+  merge, cherry-pick or copy them onto `main`. `main` is the published history,
+  which makes this the one mistake that cannot be taken back — the
+  `no-private-notes` job enforces it rather than trusting care.
+- **Run all three suites before opening a PR**, not just the one covering the
+  files you touched. If a suite cannot be installed on your platform, say so on
+  the issue instead of skipping it quietly: `tests/` guards the engines it can,
+  but an unrun suite is not a passing one.
+
 ## Architecture
 
 The proxy is a FastMCP server that connects to downstream MCP servers as a client, indexes their tools, and exposes three meta-tools:
