@@ -348,6 +348,28 @@ async def test_derive_composed_tolerates_a_malformed_did_key(key):
     assert assembled["membershipSignerDids"] == []
 
 
+async def test_derive_apply_resolves_its_own_input_and_literal_arguments():
+    """``$apply`` is an ordinary nested call: its arguments resolve the same
+    three ways any other entry's do, and it is not restricted to a key
+    position — only to one level, and to primitives that do not consume a key.
+    """
+    plan = _plan(
+        _config_entry("encodedPayload"),
+        {"field": "payloadDigest",
+         "source": {"kind": "derive", "fn": "sha256",
+                    "args": [{"$apply": {"fn": "base64url_decode",
+                                         "args": [{"$input": "encodedPayload"}]}}]}},
+        {"field": "literalDigest",
+         "source": {"kind": "derive", "fn": "sha256",
+                    "args": [{"$apply": {"fn": "base64url_decode",
+                                         "args": ["YS1saXRlcmFs"]}}]}},
+    )
+    ctx = FetchContext(config={"encodedPayload": _b64u(b"the-payload")})
+    assembled = await FetchExecutor().assemble(plan, ctx)
+    assert assembled["payloadDigest"] == hashlib.sha256(b"the-payload").hexdigest()
+    assert assembled["literalDigest"] == hashlib.sha256(b"a-literal").hexdigest()
+
+
 async def test_derive_is_guard_aware(key):
     """A derived field whose ``$input`` reads an omitted optional credential is
     omitted too, exactly as a wallet lookup on one is."""
