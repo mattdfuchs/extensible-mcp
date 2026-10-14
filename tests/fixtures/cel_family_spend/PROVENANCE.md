@@ -20,6 +20,19 @@ positive-assertion form (`verify_eddsa(...)`) — `condition` is never
 programmatically read by `render_denial`, so this is a documentation-only
 polarity difference between engine profiles, not a functional one.
 
+**Check ids: relabelled, not re-pinned.** The ids were positional (tier
+index + check index) until the external toolchain's named scheme landed
+upstream; this hand-authored bundle adopted the same names,
+taken position by position with the authored sentence as the guard, so the
+whole fixture family joins on one scheme and the Rego teaching sibling
+still shares them exactly. `guidance.json` records
+`"id_scheme": "named-welded"`. Ids are opaque join keys — nothing in `src/`
+parses one — so every rendered denial is byte-identical. This is **not** an
+adoption of the upstream CEL bundle of the same name, which is a different
+artifact: generated expressions with `has()` guards and a `guards` block,
+i.e. exactly the guard-aware shape the next paragraph explains this
+teaching bundle deliberately does not have.
+
 **No `has()` guards in `checks.cel.json`.** Not an oversight: this bundle's
 `manifest.json` (like the original it mirrors) puts `authorizationVC` in
 the root `required` list unconditionally — it predates the guard-aware-

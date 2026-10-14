@@ -13,9 +13,22 @@ CEL sibling's simplifications exactly so the two are directly comparable.
 - Package: `policybundle.examples.family_spend` (`/` as the entrypoint
   path separator, `.` in the CEL sibling's own `package` field — cosmetic,
   same policy).
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 tier-local check
-  ids, `t0.c0`–`t0.c7` / `t1.c0`–`t1.c14`, matching the CEL sibling's ids
-  exactly).
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 named check ids,
+  `solo.*` / `full_chain.*`, matching the CEL sibling's ids exactly).
+  `guidance.json` records `"id_scheme": "named-welded"`.
+- **Relabelled, not re-pinned.** The ids were positional (tier index +
+  check index) until the external toolchain's named scheme landed
+  upstream; this hand-authored bundle adopted the same names so the whole
+  fixture family joins on one scheme. The names are the ones the toolchain
+  emits for the identical check at the identical position in its own
+  `family_spend` bundle (upstream commit `0ee19df`), taken position by
+  position with the authored sentence as the guard — so a reader comparing
+  the two sees the same id for the same condition. Nothing else moved:
+  ids are opaque join keys, nothing in `src/` parses one, and every
+  rendered denial is byte-identical. The bundle itself stays hand-authored
+  — this is **not** an adoption of the upstream artifact of the same name,
+  which is a different (and differently-signed) policy with a guard-aware
+  manifest and a `call_credentials` block.
 - `manifest.json`/`fetchplan.json`/`guidance.json` are shared verbatim with
   the CEL sibling — both already fully engine-agnostic, nothing here is
   Rego-specific.

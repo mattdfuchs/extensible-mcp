@@ -29,7 +29,7 @@
    "guard":
    {"required_in_tiers": [1],
     "field": "authorizationVC",
-    "deciding_checks": ["t1.c7", "t1.c8"],
+    "deciding_checks": ["full_chain.arguments.amount_cents_above", "full_chain.arguments.amount_cents_at_most"],
     "always": false},
    "field": "authorizationVC"},
   {"source": {"kind": "config"},
