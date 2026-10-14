@@ -258,7 +258,8 @@ class PolicyBundle:
     # -- guidance lookups --------------------------------------------------- #
 
     def check_sentence(self, check_id: str) -> str | None:
-        """Look up a named check's authored sentence by id (``t1.c7``)."""
+        """Look up a named check's authored sentence by id
+        (``full_chain.arguments.amount_cents_above``)."""
         if not self.guidance:
             return None
         for tier in self.guidance.get("tiers", []):
