@@ -51,6 +51,26 @@ Run the relevant suite(s) before opening a PR — a change to `src/extensible_mc
 should keep both example packages' suites green too, since they depend on
 it as a workspace member.
 
+## Secret scanning
+
+A `gitleaks` job runs on every push and pull request, and a finding fails the
+build. It is here because GitHub's own secret scanning needs Advanced Security,
+which this repository does not have, and because `main` is pushed to the public
+repository at release — a credential committed privately is a credential
+published later.
+
+```bash
+gitleaks git .    # every commit reachable from HEAD, which is what CI scans
+gitleaks dir .    # the working tree, including changes you have not committed
+```
+
+The credential suites generate their keys at run time, so they leave the
+scanner nothing to find. If some *committed* string trips the scan and is
+genuinely not a secret, add an entry to [`.gitleaks.toml`](.gitleaks.toml)
+permitting that one string — matched by its value, not by the file it sits in —
+with a comment saying why it cannot be a credential. Don't exclude a path and
+don't disable a rule: the next secret will be in the file you excluded.
+
 ## Code style
 
 - No comments that just restate what the code does — only ones that explain

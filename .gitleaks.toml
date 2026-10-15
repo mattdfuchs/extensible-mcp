@@ -1,0 +1,48 @@
+# gitleaks configuration: the `secrets` job in .github/workflows/test.yml runs
+# the scan, and `gitleaks git .` from the repo root runs the same thing locally.
+#
+# Secret scanning and push protection need GitHub Advanced Security, which a
+# private repository does not get. Privacy also only *defers* the hazard:
+# release is a push of this `main` to the public repository, so anything
+# committed here reaches a public history in the end.
+#
+# Nothing below turns a rule off, and no path is ignored -- in particular not
+# `tests/`, where the credential work lives. Each allowlist permits one exact
+# string, or one exactly-specified shape of string, and says why that string
+# cannot be a credential. Key material the suites *generate* at run time
+# (tests/vc_helpers.py, the Ed25519 and RSA helpers in the example packages)
+# needs no entry at all: it is never committed, so the scanner never sees it.
+# What needs entries is committed source text that the default
+# `generic-api-key` heuristic reads as an assignment of a high-entropy value.
+
+[extend]
+useDefault = true
+
+# `key: Ed25519PrivateKey` is a Python type annotation. The heuristic sees
+# `key:` followed by a CamelCase word and cannot tell an annotation from an
+# assignment. These class names are a closed set, so permit exactly those
+# names -- not the `key:` prefix, and not the files they appear in.
+[[allowlists]]
+description = "cryptography key class names used as type annotations"
+regexes = ['''^(Ed25519|X25519|RSA|EC|ECDSA)(Private|Public)Key$''']
+
+# A did:key identifier is a multibase-encoded *public* key: `z` is base58btc
+# and `6Mk` is what the ed25519-pub multicodec (0xed01) encodes to. An Ed25519
+# private key has a different multicodec and therefore a different prefix,
+# which this pattern does not match -- committing one still fails the scan.
+[[allowlists]]
+description = "did:key Ed25519 public-key identifiers"
+regexes = ['''^z6Mk[1-9A-HJ-NP-Za-km-z]{40,48}$''']
+
+# Two illustrative non-tokens, permitted by their exact text rather than by
+# the file they sit in. The README's is elided mid-token and ends in a literal
+# `...`. The other is hand-written in tests/test_client_manager.py, to check
+# that a configured bearer token reaches the Authorization header; its
+# signature segment is the literal word `signature`. Neither is a JWT and
+# neither decodes to anything.
+[[allowlists]]
+description = "elided and hand-written placeholder bearer tokens in docs and tests"
+regexes = [
+  '''^eyJhbGciOiJIUzI1NiIs\.\.\.$''',
+  '''^eyJhbGc=signature$''',
+]
