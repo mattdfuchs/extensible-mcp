@@ -11,6 +11,11 @@ jobs:
   # pull requests: the DCO is a statement by a *contributor* about code they
   # are submitting, and the maintainer pushing to their own repo is not making
   # that statement to anyone.
+  #
+  # Merge commits are skipped. They author no content of their own -- every
+  # non-merge commit in the range is still checked individually -- and the
+  # branch protection is `strict`, so GitHub's own "Update branch" button
+  # creates a merge commit nobody can sign off and no contributor authored.
   dco:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -21,7 +26,7 @@ jobs:
       - name: Every commit is signed off by its author
         run: |
           missing=0
-          for sha in $(git rev-list ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}); do
+          for sha in $(git rev-list --no-merges ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}); do
             author="$(git show -s --format='%an <%ae>' "$sha")"
             if ! git show -s --format='%B' "$sha" | grep -qiF "Signed-off-by: $author"; then
               echo "::error::$(git show -s --format='%h %s' "$sha")"
