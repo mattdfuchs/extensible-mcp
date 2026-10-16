@@ -291,7 +291,7 @@ Without `load_control`, an LLM could be prompt-injected into connecting to a mal
 | File | What it is |
 |---|---|
 | `manifest.json` | JSON Schema for the policy's whole input object. Names the input contract, declares which fields are required, and closes it with `additionalProperties: false`. |
-| `fetchplan.json` | Where each input field comes from. One entry per field, with `source.kind` of `call` (from the tool call), `config` (from deployment config), `clock` (current time), or `wallet` (fetched by a lookup you supply, parameterized by other input fields). |
+| `fetchplan.json` | Where each input field comes from. One entry per field, with `source.kind` of `call` (from the tool call), `config` (from deployment config), `clock` (current time), `wallet` (fetched by a lookup you supply, parameterized by other input fields), or `derive` (computed from earlier fields by one primitive, for a policy language that cannot evaluate the primitive itself). A `derive` entry that verifies a signature may only be *folded* over candidate keys and *project* a witness — never applied bare to yield a verdict, because a verdict no longer carries the relation the rule has to keep. |
 | `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. |
 | `policy.wasm` *or* `checks.cel.json` | The rules themselves, in whichever engine you prefer. |
 
