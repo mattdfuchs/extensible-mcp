@@ -1,6 +1,7 @@
 {"input": "InvoiceSpendInput",
  "entries":
- [{"source": {"kind": "call"},
+ [{"source": {"kind": "call"}, "schema": {"type": "string"}, "field": "tool"},
+  {"source": {"kind": "call"},
    "schema": {"$ref": "#/definitions/InvoiceArgs"},
    "guard":
    {"required_in_tiers": [0, 1],
@@ -33,7 +34,9 @@
    "guard":
    {"required_in_tiers": [1],
     "field": "parentApproval",
-    "deciding_checks": ["t1.c8", "t1.c9"],
+    "deciding_checks":
+    ["dual.arguments.amount_cents_above",
+     "dual.arguments.amount_cents_at_most"],
     "always": false},
    "field": "parentApproval"},
   {"source": {"kind": "config"},

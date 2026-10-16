@@ -306,16 +306,13 @@ class InvoiceGatedFilter:
                 "trustedMerchants": await self._fetch_trusted_merchants(),
             },
             wallet_lookup=self._wallet_lookup,
-            # See the class docstring's manifest note: this
-            # bundle's manifest has no `tool` property and is
-            # additionalProperties:false at the root, but
-            # WasmPolicyFilter.check() always sets envelope["tool"] — so
-            # validation would fail on every allowed call, not just
-            # malformed ones. The invoice-hash challenge already binds the
-            # approval to this exact invoice, a stronger binding than a
-            # canonicalized tool name would add, so skipping validation
-            # here costs nothing this bundle was actually relying on.
-            validate_input=False,
+            # Manifest validation is on by default: the re-pinned bundle
+            # declares `tool` (required, call-sourced), so the envelope
+            # WasmPolicyFilter.check() assembles validates instead of
+            # failing on every call. The policy still does not *read* it —
+            # there is no signed statement of a tool name in this flow to
+            # bind it against — but it is declared, so validation no longer
+            # has to be turned off wholesale.
         )
         result = await inner.check(adapted)
         if nonce is not None:

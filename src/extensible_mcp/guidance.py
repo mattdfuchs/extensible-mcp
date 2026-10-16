@@ -4,11 +4,12 @@
 """The "why it failed" renderer: failed-check ids × guidance → the denial.
 
 The runtime half is the policy's ``failed_checks`` entrypoint — a flat set of
-tier-local check ids (``"t1.c5"``). The static half is the bundle's
-``guidance.json``: the tier structure with per-check ``{id, sentence,
-remedy_class}``, the call-field guards, and ``call_credentials`` (issuer
-roles). This module joins the two into the disjunctive denial message, per
-four properties the design deliberately holds to:
+tier-scoped check ids
+(``"full_chain.requester_membership.sub_matches"``). The static half is the
+bundle's ``guidance.json``: the tier structure with per-check ``{id,
+sentence, remedy_class}``, the call-field guards, and ``call_credentials``
+(issuer roles). This module joins the two into the disjunctive denial
+message, per four properties the design deliberately holds to:
 
 1. the runtime value is a *set* of failed checks — when the policy denies,
    every tier failed, possibly at several checks;

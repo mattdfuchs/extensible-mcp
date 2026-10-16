@@ -26,8 +26,14 @@ have been anonymized for this public release; behavior verified byte-for-byte
 against this repository's own test suite (`test_webauthn_policy.py`) before
 and after.
 
+- Re-pinned to upstream commit `0ee19df` (the named-check-id regeneration).
+  `guidance.json` carries `"id_scheme": "named-welded"`.
 - Package: `policybundle.examples.family_spend_webauthn`
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (21 ids, tiers 8 + 13)
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (21 named check ids,
+  tiers 8 + 13 — `solo.*` / `full_chain.*`, e.g.
+  `full_chain.approval.spend_challenge_binds`). Replaces the earlier
+  positional `t0.c*` / `t1.c*` scheme; ids are opaque join keys, so the
+  authored sentences and every rendered denial are unchanged.
 - Uses the custom host builtins `verify_webauthn`, `key_from_did_key` (plus
   stock `io.jwt.verify_eddsa`, `crypto.sha256`, `base64url.encode_no_pad` —
   a standard OPA builtin the wasm target still leaves host-provided)

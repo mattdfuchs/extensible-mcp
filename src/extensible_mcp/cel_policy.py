@@ -22,8 +22,8 @@ evidentiary denial must be an explicit ``false`` the bundle author wrote
 
     {"engine": "cel-v1",
      "package": "<entrypoint prefix>",
-     "tiers": [{"tier": 0, "checks": ["t0.c0", ...]}, ...],
-     "checks": {"t0.c0": "<CEL expression, authored positively>", ...}}
+     "tiers": [{"tier": 0, "checks": ["solo.request_vc.signed_by", ...]}, ...],
+     "checks": {"solo.request_vc.signed_by": "<CEL expression, authored positively>", ...}}
 
 Checks are authored positively (must evaluate ``true`` to pass) — the
 opposite polarity from Rego bundles' failure-form ``condition`` strings in

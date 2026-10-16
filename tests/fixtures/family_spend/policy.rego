@@ -141,117 +141,117 @@ deny_reason contains "required: input.approverMembership.claims.role == \"parent
 	input.approverMembership.claims.role != "parent"
 }
 
-failed_checks contains "t0.c0" if {
+failed_checks contains "solo.request_vc.signed_by" if {
 	not allow
 	not signed_by(input.requestVC.jws, input.trustRootJwk)
 }
 
-failed_checks contains "t0.c1" if {
+failed_checks contains "solo.request_vc.within_window" if {
 	not allow
 	not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)
 }
 
-failed_checks contains "t0.c2" if {
+failed_checks contains "solo.request_vc.action_matches" if {
 	not allow
 	input.requestVC.claims.action != input.tool
 }
 
-failed_checks contains "t0.c3" if {
+failed_checks contains "solo.request_vc.arguments_matches" if {
 	not allow
 	input.requestVC.claims.arguments != input.arguments
 }
 
-failed_checks contains "t0.c4" if {
+failed_checks contains "solo.requester_membership.member_of" if {
 	not allow
 	not member_of(input.requesterMembership, input.trustRootDID, input.now, input.trustRootJwk)
 }
 
-failed_checks contains "t0.c5" if {
+failed_checks contains "solo.requester_membership.sub_matches" if {
 	not allow
 	input.requesterMembership.claims.sub != input.requestVC.claims.iss
 }
 
-failed_checks contains "t0.c6" if {
+failed_checks contains "solo.requester_membership.role_matches" if {
 	not allow
 	input.requesterMembership.claims.role != "kid"
 }
 
-failed_checks contains "t0.c7" if {
+failed_checks contains "solo.arguments.amount_cents_at_most" if {
 	not allow
 	input.arguments.amountCents > 1000
 }
 
-failed_checks contains "t1.c0" if {
+failed_checks contains "full_chain.request_vc.signed_by" if {
 	not allow
 	not signed_by(input.requestVC.jws, input.trustRootJwk)
 }
 
-failed_checks contains "t1.c1" if {
+failed_checks contains "full_chain.request_vc.within_window" if {
 	not allow
 	not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)
 }
 
-failed_checks contains "t1.c2" if {
+failed_checks contains "full_chain.request_vc.action_matches" if {
 	not allow
 	input.requestVC.claims.action != input.tool
 }
 
-failed_checks contains "t1.c3" if {
+failed_checks contains "full_chain.request_vc.arguments_matches" if {
 	not allow
 	input.requestVC.claims.arguments != input.arguments
 }
 
-failed_checks contains "t1.c4" if {
+failed_checks contains "full_chain.requester_membership.member_of" if {
 	not allow
 	not member_of(input.requesterMembership, input.trustRootDID, input.now, input.trustRootJwk)
 }
 
-failed_checks contains "t1.c5" if {
+failed_checks contains "full_chain.requester_membership.sub_matches" if {
 	not allow
 	input.requesterMembership.claims.sub != input.requestVC.claims.iss
 }
 
-failed_checks contains "t1.c6" if {
+failed_checks contains "full_chain.requester_membership.role_matches" if {
 	not allow
 	input.requesterMembership.claims.role != "kid"
 }
 
-failed_checks contains "t1.c7" if {
+failed_checks contains "full_chain.arguments.amount_cents_above" if {
 	not allow
 	1000 >= input.arguments.amountCents
 }
 
-failed_checks contains "t1.c8" if {
+failed_checks contains "full_chain.arguments.amount_cents_at_most" if {
 	not allow
 	input.arguments.amountCents > 20000
 }
 
-failed_checks contains "t1.c9" if {
+failed_checks contains "full_chain.authorization_vc.signed_by" if {
 	not allow
 	not signed_by(input.authorizationVC.jws, input.trustRootJwk)
 }
 
-failed_checks contains "t1.c10" if {
+failed_checks contains "full_chain.authorization_vc.within_window" if {
 	not allow
 	not within_window(input.authorizationVC.claims.nbf, input.authorizationVC.claims.exp, input.now)
 }
 
-failed_checks contains "t1.c11" if {
+failed_checks contains "full_chain.request_vc.bound_to" if {
 	not allow
 	not bound_to(input.requestVC, input.authorizationVC)
 }
 
-failed_checks contains "t1.c12" if {
+failed_checks contains "full_chain.approver_membership.member_of" if {
 	not allow
 	not member_of(input.approverMembership, input.trustRootDID, input.now, input.trustRootJwk)
 }
 
-failed_checks contains "t1.c13" if {
+failed_checks contains "full_chain.approver_membership.sub_matches" if {
 	not allow
 	input.approverMembership.claims.sub != input.authorizationVC.claims.iss
 }
 
-failed_checks contains "t1.c14" if {
+failed_checks contains "full_chain.approver_membership.role_matches" if {
 	not allow
 	input.approverMembership.claims.role != "parent"
 }

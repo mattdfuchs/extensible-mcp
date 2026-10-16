@@ -185,8 +185,8 @@ def _write_minimal_bundle(tmp_path: Path, *, guarded: bool) -> Path:
     (d / "checks.cel.json").write_text(json.dumps({
         "engine": "cel-v1",
         "package": "policybundle.examples.minimal",
-        "tiers": [{"tier": 0, "checks": ["t0.c0"]}],
-        "checks": {"t0.c0": expr},
+        "tiers": [{"tier": 0, "checks": ["solo.approval.amount_cents_at_most"]}],
+        "checks": {"solo.approval.amount_cents_at_most": expr},
     }))
     return d
 
@@ -224,8 +224,8 @@ def test_custom_builtin_raising_host_error_fails_closed(tmp_path):
     d.mkdir()
     (d / "checks.cel.json").write_text(json.dumps({
         "engine": "cel-v1", "package": "policybundle.examples.boom",
-        "tiers": [{"tier": 0, "checks": ["t0.c0"]}],
-        "checks": {"t0.c0": "boom(input.x)"},
+        "tiers": [{"tier": 0, "checks": ["solo.input.boom"]}],
+        "checks": {"solo.input.boom": "boom(input.x)"},
     }))
     policy = CelPolicy(d / "checks.cel.json", functions={"boom": _boom})
     with pytest.raises(PolicyEvaluationError):
@@ -287,7 +287,7 @@ def test_parse_json_malformed_raises_and_fails_closed(tmp_path):
     function in isolation."""
     spec = json.loads((FIXTURE_DIR / "checks.cel.json").read_text())
     spec["checks"] = dict(spec["checks"])
-    spec["checks"]["t0.c0"] = "parse_json(input.notJson) != null"
+    spec["checks"]["solo.request_vc.signed_by"] = "parse_json(input.notJson) != null"
     checks_path = tmp_path / "checks.cel.json"
     checks_path.write_text(json.dumps(spec))
 
@@ -302,8 +302,8 @@ def _write_check(tmp_path: Path, expr: str) -> Path:
     (d / "checks.cel.json").write_text(json.dumps({
         "engine": "cel-v1",
         "package": "policybundle.examples.nonbool",
-        "tiers": [{"tier": 0, "checks": ["t0.c0"]}],
-        "checks": {"t0.c0": expr},
+        "tiers": [{"tier": 0, "checks": ["solo.check.under_test"]}],
+        "checks": {"solo.check.under_test": expr},
     }))
     return d / "checks.cel.json"
 

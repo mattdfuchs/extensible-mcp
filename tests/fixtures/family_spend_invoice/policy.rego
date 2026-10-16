@@ -38,13 +38,13 @@ invoice_dual if {
 
 signed_by_trusted_merchant(inv, merchants) if {
 	some m in merchants
-	invoice_merchant_is(inv.canonical, m.merchantId)
+	invoice_merchant_matches(inv.canonical, m.merchantId)
 	verify_ed25519_raw(inv.canonical, inv.signature, m.key)
 }
 
 invoice_binds_call if {
-	invoice_total_is(input.invoice.canonical, input.arguments.amountCents)
-	invoice_merchant_is(input.invoice.canonical, input.arguments.merchantId)
+	invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)
+	invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)
 }
 
 child_approved if {
@@ -71,11 +71,11 @@ invoice_challenge_binds(cd, canonical) if {
 	json.unmarshal(base64url.decode(cd)).challenge == base64url.encode_no_pad(crypto.sha256(canonical))
 }
 
-invoice_merchant_is(c, m) if {
+invoice_merchant_matches(c, m) if {
 	json.unmarshal(c).merchantId == m
 }
 
-invoice_total_is(c, cents) if {
+invoice_total_matches(c, cents) if {
 	json.unmarshal(c).totalCents == cents
 }
 
@@ -104,12 +104,12 @@ deny_reason contains "the invoice has expired" if {
 
 deny_reason contains "the invoice total is not the amount this call would pay" if {
 	not allow
-	not invoice_total_is(input.invoice.canonical, input.arguments.amountCents)
+	not invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)
 }
 
 deny_reason contains "the invoice is not from the merchant this call names" if {
 	not allow
-	not invoice_merchant_is(input.invoice.canonical, input.arguments.merchantId)
+	not invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)
 }
 
 deny_reason contains "the passkey assertion is invalid" if {
@@ -167,117 +167,117 @@ deny_reason contains "required: input.parentEnrollment.claims.vc.credentialSubje
 	input.parentEnrollment.claims.vc.credentialSubject.role != "parent"
 }
 
-failed_checks contains "t0.c0" if {
+failed_checks contains "solo.invoice.signed_by_trusted_merchant" if {
 	not allow
 	not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)
 }
 
-failed_checks contains "t0.c1" if {
+failed_checks contains "solo.invoice.unexpired" if {
 	not allow
 	not invoice_unexpired(input.invoice.canonical, input.now)
 }
 
-failed_checks contains "t0.c2" if {
+failed_checks contains "solo.invoice.total_matches" if {
 	not allow
-	not invoice_total_is(input.invoice.canonical, input.arguments.amountCents)
+	not invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)
 }
 
-failed_checks contains "t0.c3" if {
+failed_checks contains "solo.invoice.merchant_matches" if {
 	not allow
-	not invoice_merchant_is(input.invoice.canonical, input.arguments.merchantId)
+	not invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)
 }
 
-failed_checks contains "t0.c4" if {
+failed_checks contains "solo.child_approval.webauthn_verified" if {
 	not allow
 	not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)
 }
 
-failed_checks contains "t0.c5" if {
+failed_checks contains "solo.child_approval.invoice_challenge_binds" if {
 	not allow
 	not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
 }
 
-failed_checks contains "t0.c6" if {
+failed_checks contains "solo.child_enrollment.enrolled_as" if {
 	not allow
 	not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)
 }
 
-failed_checks contains "t0.c7" if {
+failed_checks contains "solo.child_enrollment.role_matches" if {
 	not allow
 	input.childEnrollment.claims.vc.credentialSubject.role != "child"
 }
 
-failed_checks contains "t0.c8" if {
+failed_checks contains "solo.arguments.amount_cents_at_most" if {
 	not allow
 	input.arguments.amountCents > 1000
 }
 
-failed_checks contains "t1.c0" if {
+failed_checks contains "dual.invoice.signed_by_trusted_merchant" if {
 	not allow
 	not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)
 }
 
-failed_checks contains "t1.c1" if {
+failed_checks contains "dual.invoice.unexpired" if {
 	not allow
 	not invoice_unexpired(input.invoice.canonical, input.now)
 }
 
-failed_checks contains "t1.c2" if {
+failed_checks contains "dual.invoice.total_matches" if {
 	not allow
-	not invoice_total_is(input.invoice.canonical, input.arguments.amountCents)
+	not invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)
 }
 
-failed_checks contains "t1.c3" if {
+failed_checks contains "dual.invoice.merchant_matches" if {
 	not allow
-	not invoice_merchant_is(input.invoice.canonical, input.arguments.merchantId)
+	not invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)
 }
 
-failed_checks contains "t1.c4" if {
+failed_checks contains "dual.child_approval.webauthn_verified" if {
 	not allow
 	not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)
 }
 
-failed_checks contains "t1.c5" if {
+failed_checks contains "dual.child_approval.invoice_challenge_binds" if {
 	not allow
 	not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
 }
 
-failed_checks contains "t1.c6" if {
+failed_checks contains "dual.child_enrollment.enrolled_as" if {
 	not allow
 	not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)
 }
 
-failed_checks contains "t1.c7" if {
+failed_checks contains "dual.child_enrollment.role_matches" if {
 	not allow
 	input.childEnrollment.claims.vc.credentialSubject.role != "child"
 }
 
-failed_checks contains "t1.c8" if {
+failed_checks contains "dual.arguments.amount_cents_above" if {
 	not allow
 	1000 >= input.arguments.amountCents
 }
 
-failed_checks contains "t1.c9" if {
+failed_checks contains "dual.arguments.amount_cents_at_most" if {
 	not allow
 	input.arguments.amountCents > 20000
 }
 
-failed_checks contains "t1.c10" if {
+failed_checks contains "dual.parent_approval.webauthn_verified" if {
 	not allow
 	not webauthn_verified(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)
 }
 
-failed_checks contains "t1.c11" if {
+failed_checks contains "dual.parent_approval.invoice_challenge_binds" if {
 	not allow
 	not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)
 }
 
-failed_checks contains "t1.c12" if {
+failed_checks contains "dual.parent_enrollment.enrolled_as" if {
 	not allow
 	not enrolled_as(input.parentEnrollment, input.parentApproval.credentialId, input.trustedAdminDids, input.now)
 }
 
-failed_checks contains "t1.c13" if {
+failed_checks contains "dual.parent_enrollment.role_matches" if {
 	not allow
 	input.parentEnrollment.claims.vc.credentialSubject.role != "parent"
 }

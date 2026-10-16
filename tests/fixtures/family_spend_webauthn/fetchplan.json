@@ -29,7 +29,9 @@
    "guard":
    {"required_in_tiers": [1],
     "field": "approval",
-    "deciding_checks": ["t1.c7", "t1.c8"],
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
     "always": false},
    "field": "approval"},
   {"source": {"kind": "config"},

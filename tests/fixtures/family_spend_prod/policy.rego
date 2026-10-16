@@ -146,117 +146,117 @@ deny_reason contains "required: input.approverMembership.claims.vc.credentialSub
 	input.approverMembership.claims.vc.credentialSubject.role != "parent"
 }
 
-failed_checks contains "t0.c0" if {
+failed_checks contains "solo.request_vc.signed_by_did_key" if {
 	not allow
 	not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)
 }
 
-failed_checks contains "t0.c1" if {
+failed_checks contains "solo.request_vc.within_window" if {
 	not allow
 	not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)
 }
 
-failed_checks contains "t0.c2" if {
+failed_checks contains "solo.request_vc.type_matches" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.type != input.tool
 }
 
-failed_checks contains "t0.c3" if {
+failed_checks contains "solo.request_vc.amount_cents_matches" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents
 }
 
-failed_checks contains "t0.c4" if {
+failed_checks contains "solo.request_vc.merchant_matches" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant
 }
 
-failed_checks contains "t0.c5" if {
+failed_checks contains "solo.requester_membership.member_of" if {
 	not allow
 	not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)
 }
 
-failed_checks contains "t0.c6" if {
+failed_checks contains "solo.requester_membership.role_matches" if {
 	not allow
 	input.requesterMembership.claims.vc.credentialSubject.role != "child"
 }
 
-failed_checks contains "t0.c7" if {
+failed_checks contains "solo.request_vc.amount_cents_at_most" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.amountCents > 1000
 }
 
-failed_checks contains "t1.c0" if {
+failed_checks contains "full_chain.request_vc.signed_by_did_key" if {
 	not allow
 	not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)
 }
 
-failed_checks contains "t1.c1" if {
+failed_checks contains "full_chain.request_vc.within_window" if {
 	not allow
 	not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)
 }
 
-failed_checks contains "t1.c2" if {
+failed_checks contains "full_chain.request_vc.type_matches" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.type != input.tool
 }
 
-failed_checks contains "t1.c3" if {
+failed_checks contains "full_chain.request_vc.amount_cents_matches" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents
 }
 
-failed_checks contains "t1.c4" if {
+failed_checks contains "full_chain.request_vc.merchant_matches" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant
 }
 
-failed_checks contains "t1.c5" if {
+failed_checks contains "full_chain.requester_membership.member_of" if {
 	not allow
 	not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)
 }
 
-failed_checks contains "t1.c6" if {
+failed_checks contains "full_chain.requester_membership.role_matches" if {
 	not allow
 	input.requesterMembership.claims.vc.credentialSubject.role != "child"
 }
 
-failed_checks contains "t1.c7" if {
+failed_checks contains "full_chain.request_vc.amount_cents_above" if {
 	not allow
 	1000 >= input.requestVC.claims.vc.credentialSubject.requests.amountCents
 }
 
-failed_checks contains "t1.c8" if {
+failed_checks contains "full_chain.request_vc.amount_cents_at_most" if {
 	not allow
 	input.requestVC.claims.vc.credentialSubject.requests.amountCents > 20000
 }
 
-failed_checks contains "t1.c9" if {
+failed_checks contains "full_chain.authorization_vc.signed_by_did_key" if {
 	not allow
 	not signed_by_did_key(input.authorizationVC.jws, input.authorizationVC.claims.iss)
 }
 
-failed_checks contains "t1.c10" if {
+failed_checks contains "full_chain.authorization_vc.within_window" if {
 	not allow
 	not within_window(input.authorizationVC.claims.nbf, input.authorizationVC.claims.exp, input.now)
 }
 
-failed_checks contains "t1.c11" if {
+failed_checks contains "full_chain.authorization_vc.authorizes_request_matches" if {
 	not allow
 	input.authorizationVC.claims.vc.credentialSubject.authorizes_request != input.requestVC.claims.jti
 }
 
-failed_checks contains "t1.c12" if {
+failed_checks contains "full_chain.authorization_vc.hash_binds" if {
 	not allow
 	not hash_binds(input.authorizationVC.claims.vc.credentialSubject.request_hash, input.requestVC.jws)
 }
 
-failed_checks contains "t1.c13" if {
+failed_checks contains "full_chain.approver_membership.member_of" if {
 	not allow
 	not member_of(input.approverMembership, input.authorizationVC.claims.iss, input.trustedAdminDids, input.now)
 }
 
-failed_checks contains "t1.c14" if {
+failed_checks contains "full_chain.approver_membership.role_matches" if {
 	not allow
 	input.approverMembership.claims.vc.credentialSubject.role != "parent"
 }
