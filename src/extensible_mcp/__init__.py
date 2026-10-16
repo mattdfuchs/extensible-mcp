@@ -11,7 +11,15 @@ from .didweb import (
     did_web_to_url,
     ed25519_jwk_from_document,
 )
-from .fetchplan import FetchContext, FetchError, FetchExecutor, WalletLookup
+from .fetchplan import (
+    DerivePlanError,
+    DeriveResolver,
+    FetchContext,
+    FetchError,
+    FetchExecutor,
+    WalletLookup,
+    default_primitives,
+)
 from .filters import CallFilter, ResponseFilter, ServerLoadFilter, ToolFilter
 from .guidance import render_denial
 from .replay import (
@@ -55,6 +63,8 @@ __all__ = [
     "CallFilterResult",
     "CallRequest",
     "CallResponse",
+    "DerivePlanError",
+    "DeriveResolver",
     "DidResolutionError",
     "DidWebResolver",
     "FetchContext",
@@ -84,6 +94,7 @@ __all__ = [
     "WalletLookup",
     "WasmPolicyFilter",
     "default_builtins",
+    "default_primitives",
     "did_web_to_url",
     "ed25519_jwk_from_document",
     "make_membership_lookup",
