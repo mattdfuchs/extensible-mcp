@@ -178,6 +178,10 @@ class _Connection:
         authorization server. So the check comes before the acquisition, not
         only before the presentation -- otherwise a runtime-named server
         could induce that request even though it never receives the result.
+
+        A server configured both ways is refused at config load. If an
+        embedder builds one anyway, the grant wins: of the two, the acquired
+        token is the one that expires.
         """
         if not self._tokens_allowed:
             if self._credential_provider is not None:
