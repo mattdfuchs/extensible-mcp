@@ -16,6 +16,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 import mcp.types as mcp_types
 
+from .config import read_tokens_file
 from .types import ServerConfig, ToolRecord
 
 logger = logging.getLogger(__name__)
@@ -23,25 +24,6 @@ logger = logging.getLogger(__name__)
 # How long close() waits for a connection's owner task to unwind its
 # transport before giving up on an orderly shutdown and cancelling it.
 CLOSE_TIMEOUT_SECONDS = 10.0
-
-
-def _read_tokens_file(path: Path) -> dict[str, str]:
-    """Read server_name=token pairs from a tokens property file."""
-    if not path.exists():
-        return {}
-    tokens: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        tokens[key.strip()] = value
-    return tokens
 
 
 class TokenExpiredError(Exception):
@@ -101,7 +83,7 @@ class _Connection:
         """
         if not self._tokens_file:
             return None
-        tokens = _read_tokens_file(self._tokens_file)
+        tokens = read_tokens_file(self._tokens_file)
         value = tokens.get(self.config.name)
         if value is None:
             self._last_token_value = None
@@ -124,7 +106,7 @@ class _Connection:
         operator configured.
         """
         if not self._tokens_allowed:
-            if self._tokens_file and _read_tokens_file(self._tokens_file).get(
+            if self._tokens_file and read_tokens_file(self._tokens_file).get(
                 self.config.name
             ):
                 logger.warning(
