@@ -678,6 +678,13 @@ def _add_server_command(args: argparse.Namespace) -> int:
         tokens_path = load_config(config_path).tokens_file or config_path.parent / "tokens"
         admin.write_token(tokens_path, args.name, token)
         print(f"Token for '{args.name}' written to {tokens_path} (0600).")
+        # The CLI is what creates the on-disk bearer, so it is the right
+        # place to say that there is now a better option.
+        print(
+            "Note: the tokens file is deprecated -- it keeps a long-lived "
+            "bearer on disk. A 'credentials' entry in the config lets the "
+            "proxy acquire a short-lived token by an OAuth grant instead."
+        )
 
     print(
         f"Verified {args.url}: {len(verified.tool_names)} tool(s) "
