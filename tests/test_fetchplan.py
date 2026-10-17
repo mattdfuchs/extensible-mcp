@@ -687,16 +687,22 @@ def test_load_still_accepts_every_shipped_fetch_plan():
 WA_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "family_spend_webauthn"
 WA_RP_ID = "approval.example"
 
-# The vocabulary upstream emits for family_spend_webauthn: every primitive the
-# policy reaches, whether or not the plan derives with it. Inline rather than
-# added to the fixture, which is pinned at an upstream commit predating the
-# block — so this holds before the bundles carrying it are adopted.
+# The block upstream emits for ``rego/family_spend_webauthn/fetchplan.json``:
+# every primitive the policy reaches, whether or not the plan derives with it.
+# In the toolchain's atom names, which is the vocabulary a ``derive`` entry
+# names — not the Rego built-in names the engine registry is keyed by, where
+# these are ``crypto.sha256`` / ``io.jwt.verify_eddsa`` /
+# ``base64url.encode_no_pad``. Inline rather than added to the fixture, which
+# is pinned at an upstream commit predating the block — so this holds before
+# the bundles carrying it are adopted.
 WA_DECLARED_PRIMITIVES = {
-    "sha256": {"class": "pure"},
-    "base64url_encode_no_pad": {"class": "pure"},
-    "verify_eddsa": {"class": "key-consuming"},
     "verify_webauthn": {"class": "key-consuming"},
+    "verify_eddsa": {"class": "key-consuming"},
+    "sha256": {"class": "pure"},
+    "parse_json": {"class": "pure"},
     "key_from_did_key": {"class": "key-producing"},
+    "base64url_encode_no_pad": {"class": "pure"},
+    "base64url_decode": {"class": "pure"},
 }
 
 _WEBAUTHN_FOLDED_ENTRY = {
