@@ -112,6 +112,8 @@ async def reconcile_servers(
     # it is what `add-server` does -- so the manager has to be told where it is
     # now, or the server it just wrote a token for connects without one.
     client_mgr.set_tokens_file(config.tokens_file)
+    # A reload can add a server naming a credential the manager has not seen.
+    client_mgr.set_credentials(config.credentials)
 
     known = client_mgr.server_names()
     wanted = [sc for sc in config.servers if sc.name not in known]
@@ -307,10 +309,19 @@ async def _setup(
         bundle_router=bundle_router,
     )
 
-    client_mgr = ClientManager(tokens_file=config.tokens_file)
+    client_mgr = ClientManager(
+        tokens_file=config.tokens_file, credentials=config.credentials
+    )
     logger.info(
         "Tokens file: %s",
         config.tokens_file if config.tokens_file else "(none configured)",
+    )
+    logger.info(
+        "Credentials: %s",
+        ", ".join(
+            f"{name} ({cred.grant})" for name, cred in sorted(config.credentials.items())
+        )
+        or "(none configured)",
     )
 
     servers = config.servers
