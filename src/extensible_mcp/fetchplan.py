@@ -448,15 +448,16 @@ def validate_derive_plan(
     plan: dict[str, Any], *, primitives: dict[str, Callable[..., Any]] | None = None
 ) -> None:
     """Refuse, at load, a fetch plan whose ``derive`` entries the proxy will not
-    run. Raises :class:`DerivePlanError`; a plan with no ``derive`` entry and no
-    ``primitives`` block passes untouched.
+    run. Raises :class:`DerivePlanError`; a plan with no ``derive`` entry passes,
+    whatever vocabulary it declares.
 
     What is refused, and why each is a load-time question rather than an
     evaluation-time one:
 
-    - a primitive the proxy cannot satisfy, or one used but not declared --
-      the same discipline as an unregistered host built-in, which fails when
-      the policy is loaded and not at the first call that needs it;
+    - a primitive a ``derive`` entry **invokes** that the proxy cannot
+      satisfy, or one it invokes without declaring -- the same discipline as
+      an unregistered host built-in, which fails when the policy is loaded and
+      not at the first call that needs it;
     - a **key-consuming** primitive applied bare, whatever the bundle declares
       about its class: there is no bare-boolean form of verification in this
       format at all, so a single-trust-root deployment writes a one-element
@@ -465,15 +466,22 @@ def validate_derive_plan(
       unbound from the identifier it came from;
     - ``$apply`` nested more than one level, rejected rather than supported
       speculatively.
+
+    What is **not** refused: a declared primitive no ``derive`` entry
+    references. The ``primitives`` block is a declaration of the plan's
+    vocabulary, not a request for the derive registry -- a bundle whose policy
+    calls ``verify_webauthn`` as a host built-in declares it while deriving
+    nothing, and the two engines share one ``fetchplan.json``, so the block can
+    only carry the union of what the policy reaches. Requiring every declared
+    name of the *derive* registry refused such a bundle from a deployment that
+    had configured the engine correctly. The engine asks the other question and
+    asks it first: :meth:`OpaWasmPolicy._verify_builtins_available` fails closed
+    on a built-in the policy actually calls, parsed out of the wasm, before this
+    runs. So an unimplemented declaration is logged, not raised.
     """
     declared = declared_primitives(plan)
     available = default_primitives() if primitives is None else primitives
     for prim in sorted(declared):
-        if prim not in available:
-            raise DerivePlanError(
-                f"fetch plan declares primitive {prim!r}, which the proxy has "
-                f"no implementation for; have {sorted(available)}"
-            )
         claimed = declared[prim]
         if claimed is not None:
             proxy_class = (
@@ -495,6 +503,63 @@ def validate_derive_plan(
         source = entry.get("source") or {}
         if source.get("kind") == DERIVE_KIND:
             _validate_derive_entry(entry.get("field"), source, declared)
+    referenced = _referenced_primitives(plan)
+    for prim in sorted(referenced):
+        if prim not in available:
+            raise DerivePlanError(
+                f"fetch plan derives with primitive {prim!r}, which the proxy "
+                f"has no implementation for; have {sorted(available)}"
+            )
+    for prim in sorted(set(declared) - referenced):
+        if prim not in available:
+            logger.warning(
+                "fetchplan: bundle declares primitive %r, which the proxy has "
+                "no derive implementation for; no 'derive' entry invokes it, so "
+                "the declaration states the plan's vocabulary and the load "
+                "stands. A deployment that means to derive with it is missing "
+                "configuration (e.g. a WebAuthn relying-party id); a policy "
+                "that calls it as a host built-in is refused by the engine's "
+                "own check, which runs first",
+                prim,
+            )
+
+
+def _referenced_primitives(plan: dict[str, Any]) -> set[str]:
+    """The primitives a ``derive`` entry actually invokes: a top-level ``fn``
+    or an ``$apply.fn``.
+
+    Tolerant of shapes :func:`_validate_derive_entry` has already refused (a
+    non-string ``fn``, a malformed ``$apply``) -- it reads names, it does not
+    judge them.
+    """
+    referenced: set[str] = set()
+    for entry in plan.get("entries") or []:
+        source = entry.get("source") or {}
+        if not isinstance(source, dict) or source.get("kind") != DERIVE_KIND:
+            continue
+        fn = source.get("fn")
+        if isinstance(fn, str) and fn:
+            referenced.add(fn)
+        referenced |= _applied_primitives(source.get("args"))
+    return referenced
+
+
+def _applied_primitives(args: Any) -> set[str]:
+    """The ``$apply.fn`` names among an argument list, at any nesting."""
+    referenced: set[str] = set()
+    if not isinstance(args, list):
+        return referenced
+    for arg in args:
+        if not isinstance(arg, dict):
+            continue
+        inner = arg.get("$apply")
+        if not isinstance(inner, dict):
+            continue
+        fn = inner.get("fn")
+        if isinstance(fn, str) and fn:
+            referenced.add(fn)
+        referenced |= _applied_primitives(inner.get("args"))
+    return referenced
 
 
 def _validate_derive_entry(
