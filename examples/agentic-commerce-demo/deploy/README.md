@@ -130,6 +130,13 @@ not a gate is worse than none because it stops a reader asking. The flow is a
 real one rather than a password check so that pointing the page at Entra,
 Keycloak, Okta or Auth0 is configuration instead of a rewrite.
 
+[`keycloak/`](keycloak/) is that configuration worked out for one of them: a
+committed realm with the audience, role and AMR mappers and a
+WebAuthn-passwordless browser flow, carrying no secrets of any kind. The demo
+does not start Keycloak — the realm is a recipe, not a service, and
+[`keycloak/README.md`](keycloak/README.md) says what each mapper is for and
+what silently breaks without it.
+
 **What is still open.** Three endpoints on `:7500` remain unauthenticated
 because their callers are other processes rather than humans, and giving them
 service credentials is separate work: `/trust-merchant` (configuration

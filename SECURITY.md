@@ -46,6 +46,45 @@ end of this session*. Reports that the second question is unanswered are
 accurate and already known; a design for it is being worked on. Reports that
 the first is answerable without valid evidence are very much in scope.
 
+**"Signature checks run inside the policy" is a claim about the engine, not
+about the bundle format.** It holds unconditionally for the two engines that
+ship: the Rego/wasm engine is given crypto builtins as host imports, and the
+CEL engine evaluates its checks over the same closed input, so in both cases a
+credential is verified *within* the rules that decide the call. A bundle whose
+rules are compiled to Cedar by an external policy-authoring toolchain is
+different, because Cedar has no crypto: the verifications are **hoisted** —
+performed by the host ahead of the policy, which then decides over the
+resulting witness set. For that target the sentence above is false, and this is
+the narrowing rather than a retraction.
+
+What transfers across the hoist is asymmetric, and the asymmetry is the point:
+
+- **Deny-soundness transfers unconditionally.** A denial from the Cedar target
+  is a real denial whatever witness set the host supplied.
+- **Deny-completeness does not.** It holds only under the derivation contract —
+  the obligation that the witness set the host derives is exactly the set the
+  source policy would have established. A witness set that is too *large* makes
+  a forbid fail to fire, so the Cedar target can **allow** where the source
+  policy denies. **Over-inclusion fails open.**
+
+Such a bundle is therefore *certified modulo the derivation contract*. There is
+no such thing here as a "verified Cedar policy", and a report that treats the
+certificate as covering the hoisted step is reading a conditional result as an
+unconditional one. The hoisted applications are **trusted, and a new surface**:
+this is the one place the Cedar target is weaker than the Rego and CEL engines,
+where the check runs inside the policy and there is nothing to trust ahead of
+it. A defect in a hoisted application is in scope as a finding.
+
+Two structural consequences, in scope for reports:
+
+- A Cedar bundle is **forbid-only** and emits **no entity hierarchy**, so an
+  **empty policy set allows everything**. There is no deny-by-default to fall
+  back on.
+- What stands between a failed load and a silent permit is therefore the
+  load-time check that every expected rule `@id` is present. A way to load a
+  Cedar bundle with rules missing, or to make that check pass without them, is
+  a bypass and a finding.
+
 **The proxy does not prevent a client from reaching other servers.** It governs
 what passes through it. A client that can connect elsewhere — another MCP server
 in its own configuration, a stdio server that needs no credential, or a shell —

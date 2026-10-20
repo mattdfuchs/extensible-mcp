@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from extensible_mcp.fetchplan import (
     default_primitives,
     validate_derive_plan,
 )
-from extensible_mcp.wasm_policy import OpaWasmPolicy
+from extensible_mcp.wasm_policy import OpaWasmPolicy, default_builtins
 from tests import vc_helpers as vc
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "family_spend"
@@ -666,3 +667,154 @@ def test_load_still_accepts_every_shipped_fetch_plan():
             e for e in plan["entries"] if e["source"]["kind"] == "derive"
         ], f"{path} uses derive; the migration is explicitly out of scope"
     assert PolicyBundle.load(FIXTURE_DIR).fetchplan["entries"]
+
+
+# -- the 'primitives' block declares a vocabulary, not a registry request ----- #
+#
+# ``fetchplan.json`` is byte-identical between a rego bundle and its cel
+# counterpart, so the block can only carry the union of what the policy reaches
+# across both engines — including primitives the policy invokes *inside* itself,
+# as host built-ins, with no ``derive`` entry anywhere in the plan. Requiring
+# every declared name of the **derive** registry refused such a bundle from a
+# deployment that had configured the engine correctly (#24).
+#
+# The two checks ask different questions, and the engine asks its own first:
+# ``OpaWasmPolicy._verify_builtins_available`` fails closed on a built-in the
+# policy actually calls, parsed out of the wasm, before ``validate_derive_plan``
+# runs at all. So availability is required of what a ``derive`` entry invokes,
+# and an unimplemented declaration beyond that is logged.
+
+WA_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "family_spend_webauthn"
+WA_RP_ID = "approval.example"
+
+# The block upstream emits for ``rego/family_spend_webauthn/fetchplan.json``:
+# every primitive the policy reaches, whether or not the plan derives with it.
+# In the toolchain's atom names, which is the vocabulary a ``derive`` entry
+# names — not the Rego built-in names the engine registry is keyed by, where
+# these are ``crypto.sha256`` / ``io.jwt.verify_eddsa`` /
+# ``base64url.encode_no_pad``. Inline rather than added to the fixture, which
+# is pinned at an upstream commit predating the block — so this holds before
+# the bundles carrying it are adopted.
+WA_DECLARED_PRIMITIVES = {
+    "verify_webauthn": {"class": "key-consuming"},
+    "verify_eddsa": {"class": "key-consuming"},
+    "sha256": {"class": "pure"},
+    "parse_json": {"class": "pure"},
+    "key_from_did_key": {"class": "key-producing"},
+    "base64url_encode_no_pad": {"class": "pure"},
+    "base64url_decode": {"class": "pure"},
+}
+
+_WEBAUTHN_FOLDED_ENTRY = {
+    "field": "approverDids",
+    "source": {"kind": "derive", "fn": "verify_webauthn",
+               "over": {"$input": "candidates"},
+               "args": [{"$input": "authenticatorData"},
+                        {"$input": "clientDataJSON"},
+                        {"$input": "signature"}, {"$item": "jwk"}],
+               "project": "did"},
+}
+
+
+def _webauthn_bundle_dir(tmp_path, *entries):
+    """The real family_spend_webauthn bundle with the upstream ``primitives``
+    block added, and any extra entries appended. Nothing else changes."""
+    d = tmp_path / "family_spend_webauthn"
+    shutil.copytree(WA_FIXTURE_DIR, d)
+    plan = json.loads((d / "fetchplan.json").read_text())
+    assert not [
+        e for e in plan["entries"] if e["source"]["kind"] == "derive"
+    ], "the fixture derives nothing — that is what makes this a regression"
+    plan["primitives"] = WA_DECLARED_PRIMITIVES
+    plan["entries"] = plan["entries"] + list(entries)
+    (d / "fetchplan.json").write_text(json.dumps(plan))
+    return d
+
+
+def test_load_accepts_a_declared_primitive_no_entry_derives(tmp_path, caplog):
+    """The regression: ``verify_webauthn`` is declared, the policy calls it as
+    a host built-in, and the plan has no ``derive`` entry at all. Loaded the way
+    every existing call site loads it — ``builtins`` configured, ``primitives``
+    not, which is correct, because the bundle does not derive."""
+    d = _webauthn_bundle_dir(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.fetchplan"):
+        bundle = PolicyBundle.load(
+            d, name="family_spend_webauthn",
+            builtins=default_builtins(webauthn_rp_id=WA_RP_ID),
+        )
+    assert bundle.name == "family_spend_webauthn"
+    # Logged, because a deployment that *meant* to derive with it is missing an
+    # RP id and should hear about it — but not obeyed.
+    assert "verify_webauthn" in caplog.text
+    assert "no derive implementation" in caplog.text
+
+
+def test_load_refuses_the_same_bundle_once_an_entry_derives_with_it(tmp_path):
+    """The requirement is scoped, not dropped. One folded entry invoking
+    ``verify_webauthn``, the same declaration, the same configured engine — and
+    the bundle is refused, because the *derive* registry has no relying party."""
+    d = _webauthn_bundle_dir(tmp_path, _WEBAUTHN_FOLDED_ENTRY)
+    with pytest.raises(DerivePlanError, match="no implementation for"):
+        PolicyBundle.load(
+            d, name="family_spend_webauthn",
+            builtins=default_builtins(webauthn_rp_id=WA_RP_ID),
+        )
+    bundle = PolicyBundle.load(
+        d, name="family_spend_webauthn",
+        builtins=default_builtins(webauthn_rp_id=WA_RP_ID),
+        primitives=default_primitives(webauthn_rp_id=WA_RP_ID),
+    )
+    assert bundle.fetchplan["entries"][-1]["source"]["fn"] == "verify_webauthn"
+
+
+def test_validate_refuses_an_unimplemented_primitive_inside_apply():
+    """A reference is a top-level ``fn`` *or* an ``$apply.fn``: a primitive the
+    proxy cannot satisfy is no more acceptable one level in."""
+    plan = _plan(
+        _config_entry("membershipJws"), _config_entry("candidateMemberships"),
+        {"field": "membershipSignerDids",
+         "source": {"kind": "derive", "fn": "verify_eddsa",
+                    "over": {"$input": "candidateMemberships"},
+                    "args": [{"$input": "membershipJws"},
+                             {"$apply": {"fn": "key_from_did_web",
+                                         "args": [{"$item": "did"}]}}],
+                    "project": "did"}},
+        primitives={"verify_eddsa": {"class": "key-consuming"},
+                    "key_from_did_web": {"class": "key-producing"}},
+    )
+    with pytest.raises(DerivePlanError, match="no implementation for"):
+        validate_derive_plan(plan)
+
+
+def test_validate_still_refuses_a_derive_entry_with_no_primitives_block():
+    """Deriving without declaring a vocabulary is still a load-time refusal:
+    scoping the availability requirement did not touch ``_require_declared``."""
+    plan = _plan(
+        _config_entry("jws"),
+        {"field": "digest",
+         "source": {"kind": "derive", "fn": "sha256", "args": [{"$input": "jws"}]}},
+    )
+    del plan["primitives"]
+    with pytest.raises(DerivePlanError, match="not declared"):
+        validate_derive_plan(plan)
+
+
+def test_validate_warns_rather_than_refusing_an_unimplemented_declaration(caplog):
+    plan = _plan(
+        _config_entry("jws"),
+        primitives={"verify_webauthn": {"class": "key-consuming"}},
+    )
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.fetchplan"):
+        validate_derive_plan(plan)
+    assert "no derive implementation" in caplog.text
+
+
+def test_validate_keeps_the_class_cross_check_advisory_for_an_unused_name(caplog):
+    """The cross-check reports a disagreement for *every* declared name and
+    obeys none of them — including a name nothing derives with."""
+    plan = _plan(
+        _config_entry("jws"), primitives={"verify_eddsa": {"class": "pure"}}
+    )
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.fetchplan"):
+        validate_derive_plan(plan)
+    assert "classifies it as 'key-consuming'" in caplog.text
