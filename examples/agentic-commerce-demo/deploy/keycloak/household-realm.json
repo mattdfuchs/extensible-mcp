@@ -1,0 +1,208 @@
+{
+  "realm": "household",
+  "enabled": true,
+  "displayName": "Household (extensible-mcp demo)",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "browserFlow": "webauthn-passwordless-browser",
+  "webAuthnPolicyPasswordlessRpEntityName": "extensible-mcp household demo",
+  "webAuthnPolicyPasswordlessRpId": "localhost",
+  "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256", "RS256"],
+  "webAuthnPolicyPasswordlessAttestationConveyancePreference": "none",
+  "webAuthnPolicyPasswordlessAuthenticatorAttachment": "platform",
+  "webAuthnPolicyPasswordlessRequireResidentKey": "Yes",
+  "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
+  "webAuthnPolicyPasswordlessCreateTimeout": 60,
+  "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "parent",
+        "description": "May approve a purchase, and may enrol a passkey as either role."
+      },
+      {
+        "name": "child",
+        "description": "May request a purchase and approve as the requesting party."
+      }
+    ]
+  },
+  "scopeMappings": [
+    {
+      "client": "approval-page",
+      "roles": ["parent", "child"]
+    }
+  ],
+  "users": [
+    {
+      "username": "parent",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "Parent",
+      "email": "parent@household.invalid",
+      "emailVerified": true,
+      "realmRoles": ["parent"],
+      "requiredActions": ["webauthn-register-passwordless"]
+    },
+    {
+      "username": "child",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "Child",
+      "email": "child@household.invalid",
+      "emailVerified": true,
+      "realmRoles": ["child"],
+      "requiredActions": ["webauthn-register-passwordless"]
+    }
+  ],
+  "requiredActions": [
+    {
+      "alias": "webauthn-register-passwordless",
+      "name": "Webauthn Register Passwordless",
+      "providerId": "webauthn-register-passwordless",
+      "enabled": true,
+      "defaultAction": true,
+      "priority": 80,
+      "config": {}
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "webauthn-passwordless-browser",
+      "description": "Browser flow with no password leg: cookie, or username then passkey.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "flowAlias": "webauthn-passwordless-forms",
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "webauthn-passwordless-forms",
+      "description": "Username, then the passkey that stands in for everything a password would have done.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-form",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "authenticator": "webauthn-authenticator-passwordless",
+          "authenticatorConfig": "amr-webauthn-passwordless",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "amr-webauthn-passwordless",
+      "config": {
+        "default.reference.value": "hwk",
+        "default.reference.maxAge": "900"
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "approval-page",
+      "name": "Passkey approval page",
+      "description": "The browser surface that enrols passkeys and collects approvals.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": true,
+      "rootUrl": "http://localhost:7500",
+      "baseUrl": "/",
+      "redirectUris": ["http://localhost:7500/*"],
+      "webOrigins": ["http://localhost:7500"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:7500/*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "client.use.lightweight.access.token.enabled": "false"
+      },
+      "defaultClientScopes": ["basic", "profile", "roles"],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "approval-service-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "approval-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "household-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

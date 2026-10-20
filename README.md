@@ -228,7 +228,9 @@ extensible-mcp does **not** run an OAuth flow itself. If a server uses OAuth, mi
 
 ### Filter pipelines
 
-Four independent pipelines — search, call (request), response, and server-load — each pass through an ordered chain of filters before (or in the response case, after) the operation runs. The proxy enforces one structural guarantee: **the LLM can only call tools it has previously surfaced via `search_tools`.** That gate is built into the call pipeline and cannot be bypassed.
+Four independent pipelines — search, call (request), response, and server-load — each pass through an ordered chain of filters before (or in the response case, after) the operation runs. The proxy enforces one structural guarantee: **the LLM can only call tools it has previously surfaced via `search_tools`.** That gate is built into the call pipeline, and nothing reaching a tool through `call_tool` can get around it.
+
+The qualifier carries the claim. What cannot be bypassed is the call path, not the process: a tool registered directly on the `FastMCP` object is reachable by its own name and crosses no pipeline at all — not this gate, not access control, not a policy bundle. That is why a tool the proxy itself provides is passed in as `local_tools` on `create_server` and dispatched through `call_tool` like any other, and why decorating `@server.tool()` after `create_server` returns puts the hole back. Embedding the proxy means keeping every tool on the call path.
 
 Beyond the discovery gate, the filter logic is yours to define. The filters described below ship as reference implementations and are configured via the JSON config; for anything beyond them, write your own — see [Writing a custom filter](#writing-a-custom-filter).
 
