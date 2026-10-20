@@ -280,20 +280,59 @@ def test_parse_json_and_base64url_decode_available():
     assert str(decoded) == '{"origin":"https://x"}'
 
 
-def test_parse_json_malformed_raises_and_fails_closed(tmp_path):
-    """Per the module's fail-closed rule, a malformed string during
-    evaluation aborts the whole query rather than degrading to a false
-    positive/negative — proven at the CelPolicy level, not just the
-    function in isolation."""
-    spec = json.loads((FIXTURE_DIR / "checks.cel.json").read_text())
-    spec["checks"] = dict(spec["checks"])
-    spec["checks"]["solo.request_vc.signed_by"] = "parse_json(input.notJson) != null"
-    checks_path = tmp_path / "checks.cel.json"
-    checks_path.write_text(json.dumps(spec))
+def test_parse_json_malformed_denies_without_aborting(tmp_path):
+    """Unparseable evidence fails the checks that read it and nothing else.
 
-    policy = CelPolicy(checks_path, functions=default_cel_functions())
+    ``parse_json`` returns the :func:`~extensible_mcp.cel_policy.undefined_evidence`
+    subclass, which cel-python threads through the rest of the expression as
+    a value, so the check lands as a reported failure with its authored
+    sentence intact. It used to raise, which escaped the evaluator and
+    aborted the whole query — denying as an engine fault, with no guidance
+    and no retry hint, and taking down tiers that never read the field. Rego
+    never behaved that way: ``json.unmarshal`` is an OPA native whose
+    undefined stays inside the rule body that read it.
+
+    Isolated to a single-check bundle on purpose. The earlier version of this
+    test patched one check into a full fixture and queried it with an
+    otherwise-empty input, so the ``PolicyEvaluationError`` it asserted came
+    from a *different* check reading an absent field — it passed without
+    exercising ``parse_json`` at all."""
+    policy = CelPolicy(
+        _write_check(tmp_path, 'parse_json(input.notJson) != null'),
+        functions=default_cel_functions(),
+    )
+    entry = "policybundle.examples.nonbool"
+    assert policy.query({"notJson": "not valid json"}, f"{entry}/allow") == [
+        {"result": False}
+    ]
+    assert policy.query({"notJson": "not valid json"}, f"{entry}/failed_checks") == [
+        {"result": ["solo.check.under_test"]}
+    ]
+
+
+def test_undefined_evidence_does_not_flip_under_negation(tmp_path):
+    """The CEL counterpart of Rego's ``not <undefined>`` trap, which *is*
+    true and would pass. Here the error propagates through ``!`` rather than
+    being negated, so an unparseable operand cannot turn a check into a pass
+    — the only direction that would matter."""
+    policy = CelPolicy(
+        _write_check(tmp_path, '!(parse_json(input.notJson) == "x")'),
+        functions=default_cel_functions(),
+    )
+    assert policy.query(
+        {"notJson": "not valid json"}, "policybundle.examples.nonbool/allow"
+    ) == [{"result": False}]
+
+
+def test_native_cel_error_is_still_a_fault(tmp_path):
+    """The carve-out is the ``undefined_evidence`` subclass only. A *native*
+    ``CELEvalError`` — here an absent key with no ``has()`` guard — remains a
+    fault, so the guard discipline the module docstring relies on is intact.
+    Paired with :func:`test_parse_json_malformed_denies_without_aborting`:
+    same engine, same shape of failure, deliberately different verdicts."""
+    policy = CelPolicy(_write_check(tmp_path, 'input.missing.field == "x"'))
     with pytest.raises(PolicyEvaluationError):
-        policy.query({"notJson": "not valid json"}, f"{spec['package']}/allow")
+        policy.query({}, "policybundle.examples.nonbool/allow")
 
 
 def _write_check(tmp_path: Path, expr: str) -> Path:
