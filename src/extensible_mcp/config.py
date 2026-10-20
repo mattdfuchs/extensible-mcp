@@ -10,7 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from .types import ServerConfig
+from .credentials import (
+    GRANT_CLIENT_CREDENTIALS,
+    GRANT_PRIVATE_KEY_JWT,
+    SUPPORTED_GRANTS,
+)
+from .types import CredentialConfig, ServerConfig
 
 
 @dataclass
@@ -41,6 +46,7 @@ class Config:
     servers: list[ServerConfig] = field(default_factory=list)
     filters: FiltersConfig = field(default_factory=FiltersConfig)
     tokens_file: Optional[Path] = None
+    credentials: dict[str, CredentialConfig] = field(default_factory=dict)
 
 
 def _default_config_paths() -> list[Path]:
@@ -103,6 +109,31 @@ def _load_dotenv(config_dir: Path) -> dict[str, str]:
     return values
 
 
+def read_tokens_file(path: Path) -> dict[str, str]:
+    """Read ``server_name=token`` pairs from a tokens property file.
+
+    Deprecated as a source of downstream credentials -- see
+    ``credentials.py`` -- but still read: a deployment that has not migrated
+    keeps working, and the loader needs to know which names have an entry so
+    that a server with both a token and a grant can be refused.
+    """
+    if not path.exists():
+        return {}
+    tokens: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        tokens[key.strip()] = value
+    return tokens
+
+
 def _resolve_env_values(
     env: dict[str, str] | None, dotenv: dict[str, str]
 ) -> dict[str, str] | None:
@@ -119,11 +150,136 @@ def _resolve_env_values(
     return resolved
 
 
+# Fields a credential may carry, per grant. Everything else is a typo, and a
+# typo in a credential block is a deployment that looks configured and is not.
+_COMMON_CREDENTIAL_KEYS = frozenset({"grant", "token_endpoint", "client_id"})
+_GRANT_KEYS = {
+    GRANT_PRIVATE_KEY_JWT: frozenset({"private_key_file"}),
+    GRANT_CLIENT_CREDENTIALS: frozenset({"client_secret_env"}),
+}
+
+
+def _resolve_relative(value: str, config_dir: Path) -> Path:
+    """Resolve a config-supplied path against the config file's parent.
+
+    The same rule as ``filters.rego_policy``: a config file travels with the
+    files it names.
+    """
+    resolved = Path(os.path.expanduser(value))
+    if not resolved.is_absolute():
+        resolved = config_dir / resolved
+    return resolved
+
+
+def _load_credentials(
+    raw: dict[str, Any], config_dir: Path
+) -> dict[str, CredentialConfig]:
+    """Parse the ``credentials`` block, refusing anything ambiguous.
+
+    Named credentials referenced per server, rather than an inline object,
+    because one authorization server commonly fronts several downstream
+    servers: repeating the block per server invites copy-paste divergence,
+    and two spellings would mean two code paths.
+    """
+    credentials_raw = raw.get("credentials", {})
+    if not isinstance(credentials_raw, dict):
+        raise ValueError(
+            "'credentials' must be an object mapping a credential name to its grant"
+        )
+
+    credentials: dict[str, CredentialConfig] = {}
+    for name, entry in credentials_raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"Credential '{name}' must be an object")
+        if "client_secret" in entry:
+            # Deliberately not a supported field. config.json is a file people
+            # commit and share, and the repo's secret-scanning job exists for
+            # exactly this mistake.
+            raise ValueError(
+                f"Credential '{name}' carries an inline 'client_secret'. There is "
+                "no such field: config.json is committed and shared. Put the "
+                "secret in an environment variable and name that variable with "
+                "'client_secret_env' instead."
+            )
+        grant = entry.get("grant")
+        if not grant:
+            raise ValueError(f"Credential '{name}' must have a 'grant' field")
+        if grant not in SUPPORTED_GRANTS:
+            raise ValueError(
+                f"Credential '{name}' has unsupported grant '{grant}'; this build "
+                f"implements {', '.join(SUPPORTED_GRANTS)}"
+            )
+        allowed = _COMMON_CREDENTIAL_KEYS | _GRANT_KEYS[grant]
+        unknown = sorted(set(entry) - allowed)
+        if unknown:
+            raise ValueError(
+                f"Credential '{name}' (grant '{grant}') has unexpected field(s) "
+                f"{unknown}; it takes {sorted(allowed)}"
+            )
+        token_endpoint = entry.get("token_endpoint")
+        if not token_endpoint:
+            raise ValueError(f"Credential '{name}' must have a 'token_endpoint' field")
+        client_id = entry.get("client_id")
+        if not client_id:
+            raise ValueError(f"Credential '{name}' must have a 'client_id' field")
+
+        private_key_file: Path | None = None
+        client_secret_env: str | None = None
+        if grant == GRANT_PRIVATE_KEY_JWT:
+            key_file = entry.get("private_key_file")
+            if not key_file:
+                raise ValueError(
+                    f"Credential '{name}' uses the private_key_jwt grant, so it "
+                    "must have a 'private_key_file' field"
+                )
+            private_key_file = _resolve_relative(key_file, config_dir)
+        else:
+            client_secret_env = entry.get("client_secret_env")
+            if not client_secret_env:
+                raise ValueError(
+                    f"Credential '{name}' uses the client_credentials grant, so it "
+                    "must have a 'client_secret_env' field naming the environment "
+                    "variable that holds the secret"
+                )
+
+        credentials[name] = CredentialConfig(
+            name=name,
+            grant=grant,
+            token_endpoint=token_endpoint,
+            client_id=client_id,
+            private_key_file=private_key_file,
+            client_secret_env=client_secret_env,
+        )
+    return credentials
+
+
+def _resolve_tokens_file(path: Path, dotenv: dict[str, str]) -> Optional[Path]:
+    tokens_env = os.environ.get("EXTENSIBLE_MCP_TOKENS_FILE") or dotenv.get(
+        "EXTENSIBLE_MCP_TOKENS_FILE"
+    )
+    if tokens_env:
+        tokens_path = _resolve_relative(tokens_env, path.parent)
+        if not tokens_path.exists():
+            raise FileNotFoundError(
+                "Tokens file specified via EXTENSIBLE_MCP_TOKENS_FILE not found: "
+                f"{tokens_path}"
+            )
+        return tokens_path
+    tokens_path = path.parent / "tokens"
+    return tokens_path if tokens_path.exists() else None
+
+
 def load_config(path: Path) -> Config:
     with open(path) as f:
         raw: dict[str, Any] = json.load(f)
 
     dotenv = _load_dotenv(path.parent)
+    credentials = _load_credentials(raw, path.parent)
+    tokens_file = _resolve_tokens_file(path, dotenv)
+    # Which names the deprecated tokens file holds an entry for, so that a
+    # server configured both ways is refused rather than settled by a silent
+    # precedence rule.
+    tokens_entries = read_tokens_file(tokens_file) if tokens_file else {}
 
     servers: list[ServerConfig] = []
     for name, server_def in raw.get("mcpServers", {}).items():
@@ -131,6 +287,20 @@ def load_config(path: Path) -> Config:
             raise ValueError(f"Server '{name}' must be an object")
         if "command" not in server_def and "url" not in server_def:
             raise ValueError(f"Server '{name}' must have a 'command' or 'url' field")
+        credential = server_def.get("credential")
+        if credential is not None and credential not in credentials:
+            raise ValueError(
+                f"Server '{name}' names credential '{credential}', which is not "
+                f"defined in 'credentials' (defined: {sorted(credentials) or 'none'})"
+            )
+        if credential is not None and name in tokens_entries:
+            raise ValueError(
+                f"Server '{name}' names credential '{credential}' and also has an "
+                f"entry in the tokens file {tokens_file}. Which credential to "
+                "present is ambiguous, and guessing would pick one silently: "
+                f"remove the '{name}' line from the tokens file, or remove the "
+                "'credential' field."
+            )
         servers.append(
             ServerConfig(
                 name=name,
@@ -138,6 +308,9 @@ def load_config(path: Path) -> Config:
                 args=server_def.get("args", []),
                 env=_resolve_env_values(server_def.get("env"), dotenv),
                 url=server_def.get("url"),
+                credential=credential,
+                scope=server_def.get("scope"),
+                audience=server_def.get("audience"),
             )
         )
 
@@ -173,20 +346,9 @@ def load_config(path: Path) -> Config:
     if not servers:
         raise ValueError("Config must define at least one server in 'mcpServers'")
 
-    tokens_env = os.environ.get("EXTENSIBLE_MCP_TOKENS_FILE") or dotenv.get(
-        "EXTENSIBLE_MCP_TOKENS_FILE"
+    return Config(
+        servers=servers,
+        filters=filters,
+        tokens_file=tokens_file,
+        credentials=credentials,
     )
-    if tokens_env:
-        tokens_path = Path(os.path.expanduser(tokens_env))
-        if not tokens_path.is_absolute():
-            tokens_path = path.parent / tokens_path
-        if not tokens_path.exists():
-            raise FileNotFoundError(
-                f"Tokens file specified via EXTENSIBLE_MCP_TOKENS_FILE not found: {tokens_path}"
-            )
-        tokens_file = tokens_path
-    else:
-        tokens_path = path.parent / "tokens"
-        tokens_file = tokens_path if tokens_path.exists() else None
-
-    return Config(servers=servers, filters=filters, tokens_file=tokens_file)

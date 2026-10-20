@@ -1,5 +1,43 @@
 {
+  "//credentials": [
+    "JSON has no comments, so the notes live in keys the loader ignores.",
+    "A 'credentials' entry is an OAuth client identity the proxy authenticates",
+    "itself with; a server references one by name and the proxy acquires a",
+    "short-lived token per grant instead of reading a long-lived bearer off",
+    "disk. Grant, token endpoint and client identity belong to the credential;",
+    "'scope' and 'audience' belong to the server the token is presented to,",
+    "because one client legitimately serves many resources.",
+    "private_key_jwt signs a short-lived assertion with a key the authorization",
+    "server never sees, so nothing replayable is transmitted. It needs the",
+    "'oauth' extra: pip install 'extensible-mcp[oauth]'.",
+    "client_credentials reads its secret from the environment variable named by",
+    "'client_secret_env'. There is no 'client_secret' field: a config carrying",
+    "one is refused at load, because this file gets committed and shared.",
+    "Relative paths resolve against this file's parent directory.",
+    "A credential replaces the deprecated tokens file for that server. Naming",
+    "both for the same server is refused at load."
+  ],
+  "credentials": {
+    "corp-as": {
+      "grant": "private_key_jwt",
+      "token_endpoint": "https://as.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "private_key_file": "keys/proxy-signing.pem"
+    },
+    "legacy-as": {
+      "grant": "client_credentials",
+      "token_endpoint": "https://legacy.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "client_secret_env": "LEGACY_CLIENT_SECRET"
+    }
+  },
   "mcpServers": {
+    "payments": {
+      "url": "https://payments.example.com/mcp",
+      "credential": "corp-as",
+      "scope": "payments.invoke",
+      "audience": "https://payments.example.com"
+    },
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
@@ -17,7 +55,7 @@
     "access_control": {
       "deny": ["github__delete_repo"],
       "deny_patterns": ["*__drop_*", "*__delete_*"],
-      "allow_servers": ["filesystem", "github"]
+      "allow_servers": ["filesystem", "github", "payments"]
     }
   }
 }

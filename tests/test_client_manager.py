@@ -14,8 +14,8 @@ from extensible_mcp.client_manager import (
     ClientManager,
     TokenExpiredError,
     _Connection,
-    _read_tokens_file,
 )
+from extensible_mcp.config import read_tokens_file
 from extensible_mcp.types import ServerConfig
 
 
@@ -105,58 +105,58 @@ class TestClientManager:
 
 class TestReadTokensFile:
     def test_missing_file_returns_empty(self, tmp_path):
-        assert _read_tokens_file(tmp_path / "nope") == {}
+        assert read_tokens_file(tmp_path / "nope") == {}
 
     def test_parses_simple_pairs(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("github=ghp_xxx\nnotion=secret_yyy\n")
-        assert _read_tokens_file(path) == {"github": "ghp_xxx", "notion": "secret_yyy"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx", "notion": "secret_yyy"}
 
     def test_strips_whitespace_around_key_and_value(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("  github  =  ghp_xxx  \n")
-        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx"}
 
     def test_skips_blank_lines(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("\n\ngithub=ghp_xxx\n\n")
-        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx"}
 
     def test_skips_comments(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("# this is a comment\ngithub=ghp_xxx\n# trailing comment\n")
-        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx"}
 
     def test_skips_lines_without_equals(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("garbage line\ngithub=ghp_xxx\n")
-        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx"}
 
     def test_strips_matching_double_quotes(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text('github="ghp_xxx"\n')
-        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx"}
 
     def test_strips_matching_single_quotes(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("github='ghp_xxx'\n")
-        assert _read_tokens_file(path) == {"github": "ghp_xxx"}
+        assert read_tokens_file(path) == {"github": "ghp_xxx"}
 
     def test_keeps_mismatched_quotes(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("github=\"ghp_xxx'\n")
-        assert _read_tokens_file(path) == {"github": '"ghp_xxx\''}
+        assert read_tokens_file(path) == {"github": '"ghp_xxx\''}
 
     def test_value_with_internal_equals(self, tmp_path):
         # `partition` splits on first `=`, so JWT-style values with `=` survive.
         path = tmp_path / "tokens"
         path.write_text("api=eyJhbGc=signature\n")
-        assert _read_tokens_file(path) == {"api": "eyJhbGc=signature"}
+        assert read_tokens_file(path) == {"api": "eyJhbGc=signature"}
 
     def test_later_entry_overrides_earlier(self, tmp_path):
         path = tmp_path / "tokens"
         path.write_text("github=old\ngithub=new\n")
-        assert _read_tokens_file(path) == {"github": "new"}
+        assert read_tokens_file(path) == {"github": "new"}
 
 
 def _make_conn(server_name: str = "test-server") -> _Connection:

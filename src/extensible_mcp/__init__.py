@@ -5,6 +5,16 @@
 
 from .augment import BundleAugmenter
 from .bundle import PolicyBundle
+from .credentials import (
+    PROXY_ITSELF,
+    ClientCredentialsOAuthProvider,
+    CredentialError,
+    CredentialProvider,
+    OAuthGrantAuth,
+    PrivateKeyJWTOAuthProvider,
+    ProxyItself,
+    build_provider,
+)
 from .didweb import (
     DidResolutionError,
     DidWebResolver,
@@ -40,6 +50,7 @@ from .types import (
     CallFilterResult,
     CallRequest,
     CallResponse,
+    CredentialConfig,
     LocalTool,
     ResponseFilterResult,
     SearchResult,
@@ -63,6 +74,10 @@ __all__ = [
     "CallFilterResult",
     "CallRequest",
     "CallResponse",
+    "ClientCredentialsOAuthProvider",
+    "CredentialConfig",
+    "CredentialError",
+    "CredentialProvider",
     "DerivePlanError",
     "DeriveResolver",
     "DidResolutionError",
@@ -74,9 +89,13 @@ __all__ = [
     "IssuerRegistry",
     "LayeredBundleSelector",
     "LocalTool",
+    "OAuthGrantAuth",
     "OpaWasmPolicy",
     "PolicyBundle",
     "PolicyEvaluationError",
+    "PrivateKeyJWTOAuthProvider",
+    "PROXY_ITSELF",
+    "ProxyItself",
     "RegoClassifier",
     "ResponseFilter",
     "ResponseFilterResult",
@@ -93,6 +112,7 @@ __all__ = [
     "WalletBundleError",
     "WalletLookup",
     "WasmPolicyFilter",
+    "build_provider",
     "default_builtins",
     "default_primitives",
     "did_web_to_url",

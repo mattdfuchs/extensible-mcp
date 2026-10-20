@@ -16,7 +16,15 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 import mcp.types as mcp_types
 
-from .types import ServerConfig, ToolRecord
+from .config import read_tokens_file
+from .credentials import (
+    PROXY_ITSELF,
+    CredentialError,
+    CredentialProvider,
+    OAuthGrantAuth,
+    build_provider,
+)
+from .types import CredentialConfig, ServerConfig, ToolRecord
 
 logger = logging.getLogger(__name__)
 
@@ -24,24 +32,30 @@ logger = logging.getLogger(__name__)
 # transport before giving up on an orderly shutdown and cancelling it.
 CLOSE_TIMEOUT_SECONDS = 10.0
 
+TOKENS_FILE_DEPRECATION = (
+    "The tokens file (%s) is deprecated: it keeps a long-lived bearer token on "
+    "disk, which stays valid until someone notices it has leaked. Configure a "
+    "'credentials' entry for '%s' instead and the proxy will acquire a "
+    "short-lived token by an OAuth grant. The file keeps working for now."
+)
 
-def _read_tokens_file(path: Path) -> dict[str, str]:
-    """Read server_name=token pairs from a tokens property file."""
-    if not path.exists():
-        return {}
-    tokens: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        tokens[key.strip()] = value
-    return tokens
+
+class _OnceWarning:
+    """Logs its message the first time it is asked to, and never again.
+
+    A credential is resolved per call, so warning where the deprecated file
+    is *used* would warn per call -- noise an operator learns to scroll past.
+    One warning per proxy process says the same thing once.
+    """
+
+    def __init__(self) -> None:
+        self._logged = False
+
+    def warn(self, message: str, *args: Any) -> None:
+        if self._logged:
+            return
+        self._logged = True
+        logger.warning(message, *args)
 
 
 class TokenExpiredError(Exception):
@@ -65,17 +79,21 @@ class _Connection:
         tokens_file: Path | None = None,
         *,
         tokens_allowed: bool = False,
+        credential_provider: CredentialProvider | None = None,
+        deprecation_warning: _OnceWarning | None = None,
     ) -> None:
         self.config = config
-        # Whether this connection may present a bearer token. False unless an
-        # operator configured this exact URL for this name -- see
-        # ClientManager.connect_url.
+        # Whether this connection may present a bearer token -- or acquire
+        # one. False unless an operator configured this exact URL for this
+        # name; see ClientManager.connect_url.
         self._tokens_allowed = tokens_allowed
         self.session: ClientSession | None = None
         # The task that owns the transport's context managers; see connect().
         self._owner: asyncio.Task[None] | None = None
         self._closing: asyncio.Event | None = None
         self._tokens_file = tokens_file
+        self._credential_provider = credential_provider
+        self._deprecation_warning = deprecation_warning or _OnceWarning()
         self._last_token_value: str | None = None
         self._token_set_at: float | None = None
 
@@ -90,9 +108,37 @@ class _Connection:
 
     @property
     def token_age_minutes(self) -> int:
+        if self._credential_provider is not None:
+            return getattr(self._credential_provider, "token_age_minutes", 0)
         if self._token_set_at is None:
             return 0
         return int((time.monotonic() - self._token_set_at) / 60)
+
+    @property
+    def has_credential(self) -> bool:
+        """Whether a credential of either kind is in play for this call.
+
+        Decides whether a downstream failure is worth reading as an expired
+        credential rather than as a transport error.
+        """
+        return self._credential_provider is not None or bool(self._last_token_value)
+
+    async def prefetch_credential(self) -> None:
+        """Acquire the downstream token once, at admission.
+
+        At admission we can know whether a token is obtainable at all, so
+        acquiring one is a liveness check plus a warm cache: a missing key
+        file or an unreachable token endpoint is a deployment fault, and it
+        surfaces as this server being refused rather than as a failed call
+        later. ``connect_configured`` raises, and its caller decides whether
+        one bad server is fatal.
+
+        Per-principal credentials cannot do this -- admission does not know
+        which principals will appear -- but the proxy's own credential can.
+        """
+        if self._credential_provider is None or not self._tokens_allowed:
+            return
+        await self._credential_provider.token(PROXY_ITSELF)
 
     def _resolve_token(self) -> str | None:
         """Read the current token for this server from the tokens file.
@@ -101,7 +147,7 @@ class _Connection:
         """
         if not self._tokens_file:
             return None
-        tokens = _read_tokens_file(self._tokens_file)
+        tokens = read_tokens_file(self._tokens_file)
         value = tokens.get(self.config.name)
         if value is None:
             self._last_token_value = None
@@ -110,21 +156,45 @@ class _Connection:
         if value != self._last_token_value:
             self._last_token_value = value
             self._token_set_at = time.monotonic()
+        self._deprecation_warning.warn(
+            TOKENS_FILE_DEPRECATION, self._tokens_file, self.config.name
+        )
         return value
 
     def _make_http_client(self) -> httpx.AsyncClient | None:
-        """Build an httpx client with auth headers if a token is available
-        *and* this connection is allowed to present one.
+        """Build an httpx client that authenticates this connection, if a
+        credential is available *and* this connection is allowed to use one.
 
-        A token is keyed by server name, but the URL it gets sent to is
+        A credential is keyed by server name, but the URL it reaches is
         chosen by whoever opened the connection -- and for a runtime
         ``load_mcp_server`` that is the LLM. Sending a stored bearer token to
         an arbitrary model-supplied host would hand the credential to whoever
         the model was talked into naming, so credentials go only to a URL an
         operator configured.
+
+        A grant-acquired token is no different, and differs in one way that
+        matters here: *acquiring* a token is itself a credential use, because
+        it spends the proxy's client assertion or client secret at the
+        authorization server. So the check comes before the acquisition, not
+        only before the presentation -- otherwise a runtime-named server
+        could induce that request even though it never receives the result.
+
+        A server configured both ways is refused at config load. If an
+        embedder builds one anyway, the grant wins: of the two, the acquired
+        token is the one that expires.
         """
         if not self._tokens_allowed:
-            if self._tokens_file and _read_tokens_file(self._tokens_file).get(
+            if self._credential_provider is not None:
+                logger.warning(
+                    "Not acquiring a token for %r to reach %s: a credential is "
+                    "acquired and presented only for a URL configured for that "
+                    "name in the config file, and this URL was supplied at "
+                    "runtime. Acquisition spends the proxy's client credential, "
+                    "so it is not attempted at all here.",
+                    self.config.name,
+                    self.config.url,
+                )
+            elif self._tokens_file and read_tokens_file(self._tokens_file).get(
                 self.config.name
             ):
                 logger.warning(
@@ -135,6 +205,11 @@ class _Connection:
                     self.config.url,
                 )
             return None
+        if self._credential_provider is not None:
+            # The token is resolved per request by the auth flow, not fixed
+            # into a header here, so a token acquired or re-acquired after
+            # this client was built needs no new client.
+            return httpx.AsyncClient(auth=OAuthGrantAuth(self._credential_provider))
         token = self._resolve_token()
         if not token:
             return None
@@ -271,7 +346,7 @@ class _Connection:
         except TokenExpiredError:
             raise
         except Exception as exc:
-            if self._last_token_value:
+            if self.has_credential:
                 self._check_auth_error(exc)
             raise
 
@@ -303,12 +378,23 @@ class _Connection:
 
 
 class ClientManager:
-    def __init__(self, tokens_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        tokens_file: Path | None = None,
+        *,
+        credentials: dict[str, CredentialConfig] | None = None,
+    ) -> None:
         self._connections: dict[str, _Connection] = {}
         self._tool_to_server: dict[str, str] = {}  # qualified_name -> server_name
         self._tool_original_name: dict[str, str] = {}  # qualified_name -> original name
         self._configured_urls: dict[str, str] = {}  # name -> URL from the config file
         self._tokens_file = tokens_file
+        self._credentials = dict(credentials or {})
+        # One provider per server, kept across reconnects so that the token it
+        # holds survives them. Only a server an operator configured gets an
+        # entry, which is what makes a runtime load unable to acquire.
+        self._providers: dict[str, CredentialProvider] = {}
+        self._tokens_deprecation = _OnceWarning()
         # Serializes connect_url: the name check and the registration are
         # separated by a network round-trip, so two concurrent loads of the
         # same name both passed the check.
@@ -327,7 +413,16 @@ class ClientManager:
         """
         if config.url:
             self._configured_urls[config.name] = config.url
-        conn = _Connection(config, tokens_file=self._tokens_file, tokens_allowed=True)
+        conn = _Connection(
+            config,
+            tokens_file=self._tokens_file,
+            tokens_allowed=True,
+            credential_provider=self._provider_for(config),
+            deprecation_warning=self._tokens_deprecation,
+        )
+        # Before the transport, so that a credential that cannot be acquired
+        # refuses this server rather than failing a call later.
+        await conn.prefetch_credential()
         if conn.is_url:
             tools_raw = await conn.list_tools_ephemeral()
             self._connections[config.name] = conn
@@ -356,6 +451,46 @@ class ClientManager:
     def server_names(self) -> set[str]:
         """Names of the servers currently connected."""
         return set(self._connections)
+
+    def _provider_for(self, config: ServerConfig) -> CredentialProvider | None:
+        """The credential provider for a server, built once and reused.
+
+        A ``ServerConfig`` that arrives from ``connect_url`` carries no
+        ``credential`` of its own -- the LLM supplies only a name and a URL --
+        so a provider is found here only if an operator's config already
+        created one for that name. Whether it may then be *used* is the
+        ``tokens_allowed`` question, settled per connection.
+        """
+        existing = self._providers.get(config.name)
+        if existing is not None:
+            return existing
+        if not config.credential:
+            return None
+        credential = self._credentials.get(config.credential)
+        if credential is None:
+            # load_config refuses this, so reaching it means an embedder built
+            # the ServerConfig itself. Fail closed rather than connect without
+            # a credential to a server configured to need one.
+            raise CredentialError(
+                f"Server '{config.name}' names credential '{config.credential}', "
+                "which was not supplied to the client manager"
+            )
+        provider = build_provider(
+            credential, scope=config.scope, audience=config.audience
+        )
+        self._providers[config.name] = provider
+        return provider
+
+    def set_credentials(self, credentials: dict[str, CredentialConfig]) -> None:
+        """Point at the (possibly new) credential definitions.
+
+        A reload can add a server, and that server can name a credential the
+        manager has not seen. Providers already built keep the definition they
+        were built with: re-pointing a live credential at a different
+        authorization server under a signal is the kind of substitution the
+        URL binding exists to prevent.
+        """
+        self._credentials = dict(credentials)
 
     def set_tokens_file(self, tokens_file: Path | None) -> None:
         """Point at a (possibly new) tokens file.
@@ -443,13 +578,16 @@ class ClientManager:
             raise ValueError(f"Server '{name}' is already connected")
         config = ServerConfig(name=name, url=url)
         # The name and URL both come from the caller -- the LLM, via
-        # load_mcp_server. Credentials are presented only when an operator
-        # already named this exact URL in the config file.
+        # load_mcp_server. Credentials are acquired and presented only when an
+        # operator already named this exact URL in the config file.
         conn = _Connection(
             config,
             tokens_file=self._tokens_file,
             tokens_allowed=self._configured_urls.get(name) == url,
+            credential_provider=self._provider_for(config),
+            deprecation_warning=self._tokens_deprecation,
         )
+        await conn.prefetch_credential()
         tools_raw = await conn.list_tools_ephemeral()
         self._connections[name] = conn
         tools = self._index_tools(name, tools_raw)

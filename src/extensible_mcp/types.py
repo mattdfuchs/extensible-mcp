@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -20,11 +21,37 @@ def _reject_separator(name: str, what: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class CredentialConfig:
+    """A named OAuth client identity the proxy authenticates itself with.
+
+    Grant, token endpoint and client identity belong to the credential; the
+    ``scope`` and ``audience`` of a token belong to the *server* it is
+    presented to, because one OAuth client legitimately serves many
+    resources. See ``credentials.py`` for the grants and what each keeps at
+    rest.
+
+    There is deliberately no field for an inline client secret: ``config.json``
+    is a file people commit and share, so the secret is named
+    (``client_secret_env``) rather than carried.
+    """
+
+    name: str
+    grant: str
+    token_endpoint: str
+    client_id: str
+    private_key_file: Path | None = None
+    client_secret_env: str | None = None
+
+
 @dataclass
 class ServerConfig:
     """Configuration for a downstream MCP server.
 
     Either ``command`` (stdio) or ``url`` (Streamable HTTP) must be set.
+
+    ``credential`` names an entry in the config's ``credentials`` block; the
+    token acquired with it is scoped by ``scope`` and bound to ``audience``.
     """
 
     name: str
@@ -32,12 +59,28 @@ class ServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
     url: str | None = None
+    credential: str | None = None
+    scope: str | None = None
+    audience: str | None = None
 
     def __post_init__(self) -> None:
         if not self.command and not self.url:
             raise ValueError(f"Server '{self.name}' must have either 'command' or 'url'")
         if self.command and self.url:
             raise ValueError(f"Server '{self.name}' must have 'command' or 'url', not both")
+        if self.command and (self.credential or self.scope or self.audience):
+            # A credential is presented as an Authorization header over HTTP.
+            # Accepting one on a stdio server would look configured and do
+            # nothing, which is worse than refusing it.
+            raise ValueError(
+                f"Server '{self.name}' is a stdio server, so it cannot carry "
+                "'credential', 'scope' or 'audience' -- those apply to a 'url' server"
+            )
+        if (self.scope or self.audience) and not self.credential:
+            raise ValueError(
+                f"Server '{self.name}' sets 'scope' or 'audience' but names no "
+                "'credential', so neither would be used by anything"
+            )
         _reject_separator(self.name, "Server")
 
 

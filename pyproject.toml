@@ -70,6 +70,15 @@ wasm = [
 rego = [
     "regopy>=0.4.0",
 ]
+# private_key_jwt client authentication for a downstream credential: signing
+# a client assertion needs a JOSE implementation (joserfc, matching the
+# identity layer's choices) and cryptography to read the PEM and tell which
+# key type it holds. Optional: the client_credentials grant needs neither, so
+# a deployment using only that one should not have to install them.
+oauth = [
+    "joserfc>=1.6.5",
+    "cryptography>=42.0",
+]
 # CEL policy engine: a second PolicyEngine implementation (see bundle.py /
 # cel_policy.py), proving the bundle format is engine-plural rather than
 # tied to one supplier's toolchain. Pure Python, no compiled sandbox.
@@ -81,9 +90,9 @@ cel = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
-    # The three engine extras, rather than a copy of their contents that
-    # drifts the moment either side changes.
-    "extensible-mcp[wasm,rego,cel]",
+    # The three engine extras plus oauth, rather than a copy of their
+    # contents that drifts the moment either side changes.
+    "extensible-mcp[wasm,rego,cel,oauth]",
 ]
 
 [tool.uv.workspace]

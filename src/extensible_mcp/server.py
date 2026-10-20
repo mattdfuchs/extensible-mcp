@@ -112,6 +112,8 @@ async def reconcile_servers(
     # it is what `add-server` does -- so the manager has to be told where it is
     # now, or the server it just wrote a token for connects without one.
     client_mgr.set_tokens_file(config.tokens_file)
+    # A reload can add a server naming a credential the manager has not seen.
+    client_mgr.set_credentials(config.credentials)
 
     known = client_mgr.server_names()
     wanted = [sc for sc in config.servers if sc.name not in known]
@@ -307,10 +309,19 @@ async def _setup(
         bundle_router=bundle_router,
     )
 
-    client_mgr = ClientManager(tokens_file=config.tokens_file)
+    client_mgr = ClientManager(
+        tokens_file=config.tokens_file, credentials=config.credentials
+    )
     logger.info(
         "Tokens file: %s",
         config.tokens_file if config.tokens_file else "(none configured)",
+    )
+    logger.info(
+        "Credentials: %s",
+        ", ".join(
+            f"{name} ({cred.grant})" for name, cred in sorted(config.credentials.items())
+        )
+        or "(none configured)",
     )
 
     servers = config.servers
@@ -667,6 +678,13 @@ def _add_server_command(args: argparse.Namespace) -> int:
         tokens_path = load_config(config_path).tokens_file or config_path.parent / "tokens"
         admin.write_token(tokens_path, args.name, token)
         print(f"Token for '{args.name}' written to {tokens_path} (0600).")
+        # The CLI is what creates the on-disk bearer, so it is the right
+        # place to say that there is now a better option.
+        print(
+            "Note: the tokens file is deprecated -- it keeps a long-lived "
+            "bearer on disk. A 'credentials' entry in the config lets the "
+            "proxy acquire a short-lived token by an OAuth grant instead."
+        )
 
     print(
         f"Verified {args.url}: {len(verified.tool_names)} tool(s) "
