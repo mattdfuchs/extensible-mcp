@@ -13,19 +13,29 @@ CEL sibling's simplifications exactly so the two are directly comparable.
 - Package: `policybundle.examples.family_spend` (`/` as the entrypoint
   path separator, `.` in the CEL sibling's own `package` field — cosmetic,
   same policy).
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 named check ids,
-  `solo.*` / `full_chain.*`, matching the CEL sibling's ids exactly).
-  `guidance.json` records `"id_scheme": "named-welded"`.
-- **Relabelled, not re-pinned.** The ids were positional (tier index +
-  check index) until the external toolchain's named scheme landed
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (29 named check ids,
+  tiers 10 + 19, `solo.*` / `full_chain.*`, matching the CEL sibling's ids
+  exactly). `guidance.json` records `"id_scheme": "named-split"`; it carries
+  no `guidance_digest`, because that field names a supplier artifact and
+  this bundle is not one.
+- **Relabelled, not re-pinned — twice.** The ids were positional (tier index
+  + check index) until the external toolchain's named scheme landed
   upstream; this hand-authored bundle adopted the same names so the whole
   fixture family joins on one scheme. The names are the ones the toolchain
   emits for the identical check at the identical position in its own
-  `family_spend` bundle (upstream commit `0ee19df`), taken position by
-  position with the authored sentence as the guard — so a reader comparing
-  the two sees the same id for the same condition. Nothing else moved:
-  ids are opaque join keys, nothing in `src/` parses one, and every
-  rendered denial is byte-identical. The bundle itself stays hand-authored
+  `family_spend` bundle (first `0ee19df`, then the split at `d114d32`),
+  taken position by position with the authored sentence as the guard — so
+  a reader comparing the two sees the same id for the same condition.
+  The split takes `member_of` to `iss_matches` + `within_window` +
+  `signed_by` at each of its three sites (23 → 29): the `member_of` helper
+  still decides `allow`, and the three `failed_checks`/`deny_reason` rules
+  per site report which conjunct failed. Sentences are authored here, not
+  inherited — *"the membership credential was not issued by the trust
+  root"* for `iss_matches`, where the upstream teaching bundle emits a
+  mechanical one. `signed_by` keeps the flat *"a credential signature is
+  invalid"*, because its key is the config trust root and absence there is a
+  broken deployment, not a rejected credential. Ids are opaque join keys,
+  nothing in `src/` parses one. The bundle itself stays hand-authored
   — this is **not** an adoption of the upstream artifact of the same name,
   which is a different (and differently-signed) policy with a guard-aware
   manifest and a `call_credentials` block.
