@@ -139,7 +139,14 @@ async def test_amount_binding_mismatch_denies(vc_filter, keys):
 
 
 async def test_untrusted_admin_denies(vc_filter, keys):
-    # a membership signed by an admin not in the trusted set -> no adminKey -> deny
+    """Row one of the split's ``adminKey`` finding: a membership signed by an
+    admin not in the trusted set. The resolver fetches keys only for trusted
+    issuers, so this yields ``adminKey = None`` -- and ``signed_by_key`` fails
+    *without the signature being wrong*. Two checks fail, and both sentences
+    must be true of this state: the issuer is untrusted, and the signature
+    could not be verified against a key. "The signature is invalid" would be
+    false English here, which is why that sentence was corrected upstream
+    rather than welded back."""
     call = _call(keys, amount=5.00)
     rogue = vc.new_key()
     call.arguments["requestVC"]["membership"] = vc.sign(
@@ -149,7 +156,25 @@ async def test_untrusted_admin_denies(vc_filter, keys):
     )
     result = await vc_filter.check(call)
     assert result.allowed is False
-    assert "trusted admin" in result.reason
+    assert "issuer is not a trusted admin" in result.reason
+    assert "could not be verified against its issuer's key" in result.reason
+    assert "invalid" not in result.reason
+
+
+async def test_tampered_membership_signature_denies_naming_the_signature(vc_filter, keys):
+    """Row two: a trusted issuer, a forged signature. The split is what makes
+    this denial name the right link -- before it, a membership that did not
+    chain was one welded check whatever broke. The issuer check passes, so
+    the reason must not blame the issuer; and this is the first test in the
+    suite that tampers a membership rather than a request credential, which
+    is how the sentence that moved upstream was invisible to it."""
+    call = _call(keys, amount=5.00)
+    jws = call.arguments["requestVC"]["membership"]
+    call.arguments["requestVC"]["membership"] = jws[:-6] + ("A" if jws[-1] != "A" else "B") * 6
+    result = await vc_filter.check(call)
+    assert result.allowed is False
+    assert "could not be verified against its issuer's key" in result.reason
+    assert "trusted admin" not in result.reason
 
 
 async def test_full_chain_wrong_binding_denies(vc_filter, keys):
@@ -220,7 +245,8 @@ async def test_validation_never_masks_a_policy_denial(vc_filter, keys):
     )
     result = await vc_filter.check(call)
     assert result.allowed is False
-    assert "trusted admin" in result.reason
+    assert "issuer is not a trusted admin" in result.reason
+    assert "invalid" not in result.reason
     assert "manifest validation" not in result.reason
 
 
