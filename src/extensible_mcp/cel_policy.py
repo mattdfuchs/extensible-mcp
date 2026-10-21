@@ -18,6 +18,21 @@ clean, non-exceptional boolean return is a legitimate pass/fail signal — an
 evidentiary denial must be an explicit ``false`` the bundle author wrote
 (via ``has()`` guards), never an artifact of the runtime raising.
 
+**One exception, and only one:** the ``CELEvalError`` subclass
+:func:`undefined_evidence` builds. That is not a raised
+Python exception standing in for a fault — it is CEL's own representation
+of "this expression has no value", the analogue of Rego's ``undefined``, and
+cel-python propagates it as a *value* through member access, comparison,
+function application and the logical operators before it can ever reach the
+top of an expression. Recognising a type this module itself defines and
+returns is not sniffing a third party's exception types, which is what the
+rule above forbids: a *native* ``CELEvalError`` (absent key, type mismatch)
+is still a fault and still aborts the query, so the ``has()``-guard
+discipline above is unchanged. A check yielding the subclass is recorded as
+``False`` and keeps its authored sentence. Raising instead — which the two
+parsing builtins below used to do — escapes the evaluator and aborts the
+whole query, denying tiers that never read the field at all.
+
 ``checks.cel.json`` (the bundle's CEL artifact) shape::
 
     {"engine": "cel-v1",
@@ -52,6 +67,38 @@ _MISSING_DEPS_MSG = (
     "The CEL policy engine requires 'cel-python'. "
     "Install it with: pip install 'extensible-mcp[cel]'"
 )
+
+_UNDEFINED_EVIDENCE: type | None = None
+
+
+def undefined_evidence() -> type:
+    """The ``CELEvalError`` subclass a parsing builtin returns for evidence it
+    cannot parse — Rego's ``undefined``, spelled in CEL's own error model.
+
+    A *subclass* rather than ``CELEvalError`` itself, because the two cases
+    must stay apart. Evidence the bundle could not parse is an evidentiary
+    outcome: the checks that read it fail, their authored sentences reach the
+    caller, and tiers that never touched the field are unaffected. A *native*
+    CEL error — an absent key, a type mismatch — is a bundle or deployment
+    fault and keeps aborting the query, which is what
+    :func:`CelPolicy._evaluate_all` has always done and what the
+    ``has()``-guard discipline in the module docstring depends on.
+
+    Built on first use and cached, so the class object is identical
+    everywhere, and so importing this module never requires ``celpy``.
+    cel-python propagates the instance by identity through comparison, member
+    access, function application, ``size()``, ``!`` and the logical
+    operators, so the subclass still arrives at the top of the expression."""
+    global _UNDEFINED_EVIDENCE
+    if _UNDEFINED_EVIDENCE is None:
+        from celpy import CELEvalError
+
+        class UndefinedEvidence(CELEvalError):
+            """Evidence a parsing builtin could not parse; see
+            :func:`undefined_evidence`."""
+
+        _UNDEFINED_EVIDENCE = UndefinedEvidence
+    return _UNDEFINED_EVIDENCE
 
 
 # --------------------------------------------------------------------------- #
@@ -106,14 +153,37 @@ def default_cel_functions(*, webauthn_rp_id: str | None = None) -> dict[str, Cal
         parses signed evidence (an invoice, a WebAuthn clientDataJSON)
         *inside* the policy rather than having the proxy parse it first,
         which would sever the parsed fields from the signature that covers
-        the original bytes."""
+        the original bytes.
+
+        **Undefined, not an error, on a non-JSON operand.** Rego's
+        ``json.unmarshal`` of garbage is undefined: the rule body that read
+        it does not fire, every other rule is untouched, and the call is
+        denied with the consuming check's own sentence. A raise here cannot
+        reproduce that -- it escapes the evaluator and aborts the entire
+        query, including tiers that never referenced the field. Returning
+        ``CELEvalError`` does, exactly: cel-python threads its own error
+        values through member access, comparison, function application and
+        the logical operators, so ``parse_json(garbage).challenge == x``
+        absorbs the way an absent key does."""
         import celpy
 
-        return celpy.json_to_cel(json.loads(str(_py(value))))
+        try:
+            return celpy.json_to_cel(json.loads(str(_py(value))))
+        except (TypeError, ValueError) as e:
+            return undefined_evidence()(f"parse_json: not JSON ({e})")
 
-    def base64url_decode(value: Any) -> "celtypes.StringType":
-        """CEL twin of Rego's ``base64url.decode``."""
-        return celtypes.StringType(_b64url_bytes(str(_py(value))).decode())
+    def base64url_decode(value: Any) -> Any:
+        """CEL twin of Rego's ``base64url.decode``.
+
+        Undefined-on-garbage, like its Rego counterpart: see
+        :func:`parse_json` for why that is a returned ``CELEvalError`` and
+        not a raise."""
+        import celpy
+
+        try:
+            return celtypes.StringType(_b64url_bytes(str(_py(value))).decode())
+        except (TypeError, ValueError) as e:
+            return undefined_evidence()(f"base64url_decode: not base64url ({e})")
 
     functions: dict[str, Callable[..., Any]] = {
         "verify_eddsa": verify_eddsa,
@@ -219,10 +289,22 @@ class CelPolicy:
         for check_id, program in self._programs.items():
             try:
                 result = program.evaluate(activation)
-            except Exception as e:  # noqa: BLE001 - deliberately unconditional, see docstring
+            except undefined_evidence():
+                # Evidence a parsing builtin could not parse: an evidentiary
+                # failure of the checks that read it, not a system fault.
+                # Recorded as a failed check so the denial keeps its authored
+                # sentence, and so tiers that never read the field still
+                # evaluate -- which is what Rego's ``undefined`` does.
+                out[check_id] = False
+                continue
+            except Exception as e:  # noqa: BLE001 - see docstring: unconditional
                 raise PolicyEvaluationError(
                     f"check {check_id!r} could not be evaluated (failing closed): {e}"
                 ) from e
+            if isinstance(result, undefined_evidence()):
+                # The same condition, returned rather than raised.
+                out[check_id] = False
+                continue
             # A check is a predicate. celpy hands back whatever the
             # expression evaluated to, and bool() would read a non-empty
             # string or list as a pass -- so a check that was meant to

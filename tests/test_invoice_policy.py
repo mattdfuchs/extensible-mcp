@@ -36,6 +36,28 @@ from extensible_mcp.guidance import render_denial
 from extensible_mcp.wasm_policy import default_builtins
 from tests import vc_helpers as vc
 
+_CHALLENGE_IDS = [
+    "dual.arguments.amount_cents_above",
+    "dual.child_approval.invoice_challenge_binds",
+    "dual.child_approval.webauthn_verified",
+    "solo.child_approval.invoice_challenge_binds",
+    "solo.child_approval.webauthn_verified",
+]
+_VERIFY_IDS = [
+    "dual.arguments.amount_cents_above",
+    "dual.child_approval.webauthn_verified",
+    "solo.child_approval.webauthn_verified",
+]
+# field, value, expected failed-check ids. The first three reach a *parsing*
+# primitive (so the challenge check fails too), the last two a *verifying* one.
+MALFORMED_EVIDENCE = {
+    "clientDataJSON_not_base64": ("clientDataJSON", "not-base64-!!!", _CHALLENGE_IDS),
+    "clientDataJSON_not_json": ("clientDataJSON", "bm90IGpzb24", _CHALLENGE_IDS),
+    "clientDataJSON_empty": ("clientDataJSON", "", _CHALLENGE_IDS),
+    "signature_not_base64": ("signature", "not-base64-!!!", _VERIFY_IDS),
+    "authenticatorData_not_base64": ("authenticatorData", "not-base64-!!!", _VERIFY_IDS),
+}
+
 BUNDLE_DIR = Path(__file__).parent / "fixtures" / "family_spend_invoice"
 CEL_BUNDLE_DIR = Path(__file__).parent / "fixtures" / "cel_family_spend_invoice"
 ADMIN_DID = "did:web:admin.example"
@@ -301,6 +323,65 @@ def test_child_approval_bound_to_a_different_invoice_denies(
     assert bundle.policy.query(full, bundle.allow_entrypoint) == [{"result": False}]
 
 
+@pytest.mark.parametrize("kind", list(MALFORMED_EVIDENCE))
+def test_engines_agree_on_malformed_evidence(
+    bundle, merchant_key, admin_key, child_passkey, kind
+):
+    """Garbage in a *present* credential field denies identically on both
+    engines — same verdict and the same failed-check ids, so
+    :func:`~extensible_mcp.guidance.render_denial` renders the same denial.
+
+    This is the live case the manifest cannot screen: ``clientDataJSON``,
+    ``signature`` and ``authenticatorData`` are declared as plain strings, so
+    ``"not-base64-!!!"`` validates, and the value is LLM-supplied. The
+    verifying primitives always absorbed bad bytes into ``False`` (the
+    ``DeriveResolver`` contract: a verification that does not match is not an
+    error), but the two *parsing* ones used to raise, which escaped
+    cel-python's evaluator and aborted the whole query — denying as an engine
+    fault, with no guidance and no retry hint, and on a ``<=1000`` call it
+    faulted on tier 1's checks although tier 1 could not apply. Rego never
+    did: ``json.unmarshal``/``base64url.decode`` are OPA natives whose
+    undefined stays inside the rule body that read them. ``parse_json`` and
+    ``base64url_decode`` now return ``CELEvalError`` instead, which
+    cel-python propagates as a value the same way."""
+    field, value, expected = MALFORMED_EVIDENCE[kind]
+    invoice, base = _base_input(merchant_key, total_cents=400)
+    full = _with_child(base, invoice, admin_key, child_passkey)
+    full["tool"] = "pay_invoice"
+    full["childApproval"][field] = value
+    # The manifest accepts it: these fields are declared plain strings.
+    assert bundle.validate_input({**full}) == []
+    assert bundle.policy.query(full, bundle.allow_entrypoint) == [{"result": False}]
+    failed = bundle.policy.query(full, bundle.failed_checks_entrypoint)[0]["result"]
+    assert sorted(failed) == expected
+
+
+def test_malformed_evidence_in_an_inapplicable_tier_still_allows(
+    bundle, merchant_key, admin_key, child_passkey, parent_passkey
+):
+    """A ¤4.00 call is a tier-0 call: tier 1 requires ``1000 < amountCents``,
+    so a supernumerary parent approval is evidence no satisfiable path reads.
+    Garbage in it must not change the verdict — and must not differ by engine.
+
+    The two tiers are selected by amount and are mutually exclusive, so this
+    is not a fallback to a weaker path; tier 1 was never in play. Rego gets
+    this for free (the tier-1 rule body fails at the amount bound, and the
+    answer is the same even with the parse evaluated first, since undefined
+    does not escape the body). CEL has no bodies to short-circuit —
+    ``_evaluate_all`` evaluates every check in every tier — so before the
+    parsing primitives returned ``CELEvalError`` this aborted the query and
+    turned an allowed call into a fault."""
+    invoice, base = _base_input(merchant_key, total_cents=400)
+    full = _with_parent(
+        _with_child(base, invoice, admin_key, child_passkey),
+        invoice, admin_key, parent_passkey,
+    )
+    full["tool"] = "pay_invoice"
+    full["parentApproval"]["clientDataJSON"] = "not-base64-!!!"
+    assert bundle.validate_input({**full}) == []
+    assert bundle.policy.query(full, bundle.allow_entrypoint) == [{"result": True}]
+
+
 def test_engines_diverge_on_a_genuinely_missing_required_field(
     bundle, merchant_key,
 ):
@@ -317,11 +398,17 @@ def test_engines_diverge_on_a_genuinely_missing_required_field(
     produce — and the two engines behave differently: Rego's undefined-
     propagation silently omits the ids of checks it cannot evaluate and
     returns *some* failed-checks set without raising; CEL has no such
-    graceful undefined and raises ``PolicyEvaluationError`` (which the
-    engine's own fail-closed design treats as correct — see the
-    cel_policy module docstring). Reported upstream to the policy's authors
-    rather than treated as a defect in either engine, since the input itself
-    is invalid."""
+    graceful undefined for an *absent field* and raises
+    ``PolicyEvaluationError`` (which the engine's own fail-closed design
+    treats as correct — see the cel_policy module docstring). Reported
+    upstream to the policy's authors rather than treated as a defect in
+    either engine, since the input itself is invalid.
+
+    Deliberately still a divergence. A *present* field holding unparseable
+    evidence is the in-contract case and does agree — see
+    :func:`test_engines_agree_on_malformed_evidence` — but an absent field
+    is a bundle or deployment error, and the ``has()``-guard discipline that
+    catches it depends on the fault."""
     from extensible_mcp.cel_policy import CelPolicy
     from extensible_mcp.wasm_policy import PolicyEvaluationError
 
