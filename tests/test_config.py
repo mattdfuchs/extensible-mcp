@@ -169,6 +169,334 @@ class TestTokensFileResolution:
             assert config.tokens_file == target
 
 
+class TestCredentialsBlock:
+    """The ``credentials`` block: named OAuth client identities, referenced
+    per server, with no field anywhere for a secret."""
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_tokens_file(self, monkeypatch):
+        monkeypatch.delenv("EXTENSIBLE_MCP_TOKENS_FILE", raising=False)
+
+    def test_parses_named_credentials_referenced_per_server(self, tmp_path):
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "corp-as": {
+                        "grant": "private_key_jwt",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "extensible-mcp-proxy",
+                        "private_key_file": "keys/proxy-signing.pem",
+                    },
+                    "legacy-as": {
+                        "grant": "client_credentials",
+                        "token_endpoint": "https://legacy.example.com/oauth/token",
+                        "client_id": "extensible-mcp-proxy",
+                        "client_secret_env": "LEGACY_CLIENT_SECRET",
+                    },
+                },
+                "mcpServers": {
+                    "payments": {
+                        "url": "https://payments.example.com/mcp",
+                        "credential": "corp-as",
+                        "scope": "payments.invoke",
+                        "audience": "https://payments.example.com",
+                    },
+                    "filesystem": {"command": "npx", "args": ["-y", "x"]},
+                },
+            },
+        )
+        config = load_config(path)
+
+        assert sorted(config.credentials) == ["corp-as", "legacy-as"]
+        corp = config.credentials["corp-as"]
+        assert corp.grant == "private_key_jwt"
+        assert corp.token_endpoint == "https://as.example.com/oauth/token"
+        assert corp.client_id == "extensible-mcp-proxy"
+        assert corp.client_secret_env is None
+        legacy = config.credentials["legacy-as"]
+        assert legacy.client_secret_env == "LEGACY_CLIENT_SECRET"
+        assert legacy.private_key_file is None
+
+        payments = next(s for s in config.servers if s.name == "payments")
+        assert payments.credential == "corp-as"
+        assert payments.scope == "payments.invoke"
+        assert payments.audience == "https://payments.example.com"
+        filesystem = next(s for s in config.servers if s.name == "filesystem")
+        assert filesystem.credential is None
+
+    def test_an_inline_client_secret_is_refused_at_load(self, tmp_path):
+        """config.json is committed and shared, so the secret is named, not
+        carried. The message has to say where to put it instead."""
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "legacy-as": {
+                        "grant": "client_credentials",
+                        "token_endpoint": "https://legacy.example.com/oauth/token",
+                        "client_id": "extensible-mcp-proxy",
+                        "client_secret": "hunter2",
+                    }
+                },
+                "mcpServers": {"test": {"command": "echo"}},
+            },
+        )
+        with pytest.raises(ValueError, match="client_secret_env") as info:
+            load_config(path)
+        assert "inline 'client_secret'" in str(info.value)
+
+    def test_a_relative_private_key_file_resolves_against_the_config_dir(
+        self, tmp_path
+    ):
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "corp-as": {
+                        "grant": "private_key_jwt",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "proxy",
+                        "private_key_file": "keys/proxy-signing.pem",
+                    }
+                },
+                "mcpServers": {"test": {"command": "echo"}},
+            },
+        )
+        config = load_config(path)
+        assert config.credentials["corp-as"].private_key_file == (
+            tmp_path / "keys" / "proxy-signing.pem"
+        )
+
+    def test_an_absolute_private_key_file_is_left_alone(self, tmp_path):
+        absolute = tmp_path / "elsewhere" / "signing.pem"
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "corp-as": {
+                        "grant": "private_key_jwt",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "proxy",
+                        "private_key_file": str(absolute),
+                    }
+                },
+                "mcpServers": {"test": {"command": "echo"}},
+            },
+        )
+        assert load_config(path).credentials["corp-as"].private_key_file == absolute
+
+    def test_a_server_naming_an_undefined_credential_is_refused(self, tmp_path):
+        path = _write_config(
+            str(tmp_path),
+            {
+                "mcpServers": {
+                    "payments": {
+                        "url": "https://payments.example.com/mcp",
+                        "credential": "corp-as",
+                    }
+                }
+            },
+        )
+        with pytest.raises(ValueError, match="not defined in 'credentials'"):
+            load_config(path)
+
+    def test_an_unsupported_grant_is_refused(self, tmp_path):
+        """Including a grant a later version might add: presenting the wrong
+        credential is worse than refusing to start."""
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "k8s": {
+                        "grant": "workload_identity",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "proxy",
+                    }
+                },
+                "mcpServers": {"test": {"command": "echo"}},
+            },
+        )
+        with pytest.raises(ValueError, match="unsupported grant"):
+            load_config(path)
+
+    @pytest.mark.parametrize(
+        "entry,expected",
+        [
+            (
+                {
+                    "grant": "private_key_jwt",
+                    "token_endpoint": "https://as/token",
+                    "client_id": "proxy",
+                },
+                "private_key_file",
+            ),
+            (
+                {
+                    "grant": "client_credentials",
+                    "token_endpoint": "https://as/token",
+                    "client_id": "proxy",
+                },
+                "client_secret_env",
+            ),
+            (
+                {"token_endpoint": "https://as/token", "client_id": "proxy"},
+                "'grant' field",
+            ),
+            (
+                {"grant": "client_credentials", "client_id": "proxy"},
+                "'token_endpoint' field",
+            ),
+            (
+                {
+                    "grant": "client_credentials",
+                    "token_endpoint": "https://as/token",
+                    "client_secret_env": "S",
+                },
+                "'client_id' field",
+            ),
+            (
+                {
+                    "grant": "private_key_jwt",
+                    "token_endpoint": "https://as/token",
+                    "client_id": "proxy",
+                    "private_key_file": "k.pem",
+                    "client_secret_env": "S",
+                },
+                "unexpected field",
+            ),
+        ],
+    )
+    def test_an_incomplete_or_mixed_up_credential_is_refused(
+        self, tmp_path, entry, expected
+    ):
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {"c": entry},
+                "mcpServers": {"test": {"command": "echo"}},
+            },
+        )
+        with pytest.raises(ValueError, match=expected):
+            load_config(path)
+
+    def test_a_credential_and_a_tokens_entry_for_one_server_is_refused(
+        self, tmp_path
+    ):
+        """Both configured is ambiguous, and a precedence rule would pick one
+        credential silently."""
+        (tmp_path / "tokens").write_text("payments=long-lived-bearer\n")
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "corp-as": {
+                        "grant": "client_credentials",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "proxy",
+                        "client_secret_env": "SECRET",
+                    }
+                },
+                "mcpServers": {
+                    "payments": {
+                        "url": "https://payments.example.com/mcp",
+                        "credential": "corp-as",
+                    }
+                },
+            },
+        )
+        with pytest.raises(ValueError, match="also has an entry in the tokens file"):
+            load_config(path)
+
+    def test_a_tokens_entry_for_a_different_server_is_fine(self, tmp_path):
+        """A deployment migrating one server at a time has to keep working."""
+        (tmp_path / "tokens").write_text("legacy=long-lived-bearer\n")
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "corp-as": {
+                        "grant": "client_credentials",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "proxy",
+                        "client_secret_env": "SECRET",
+                    }
+                },
+                "mcpServers": {
+                    "payments": {
+                        "url": "https://payments.example.com/mcp",
+                        "credential": "corp-as",
+                    },
+                    "legacy": {"url": "https://legacy.example.com/mcp"},
+                },
+            },
+        )
+        config = load_config(path)
+        assert config.tokens_file == tmp_path / "tokens"
+        assert {s.name: s.credential for s in config.servers} == {
+            "payments": "corp-as",
+            "legacy": None,
+        }
+
+    def test_a_credential_on_a_stdio_server_is_refused(self, tmp_path):
+        """It could never be presented, so accepting it would look configured
+        and do nothing."""
+        path = _write_config(
+            str(tmp_path),
+            {
+                "credentials": {
+                    "corp-as": {
+                        "grant": "client_credentials",
+                        "token_endpoint": "https://as.example.com/oauth/token",
+                        "client_id": "proxy",
+                        "client_secret_env": "SECRET",
+                    }
+                },
+                "mcpServers": {"local": {"command": "echo", "credential": "corp-as"}},
+            },
+        )
+        with pytest.raises(ValueError, match="stdio server"):
+            load_config(path)
+
+    def test_scope_or_audience_without_a_credential_is_refused(self, tmp_path):
+        """#25 pins the audience as a control; one that nothing uses must not
+        read as though it were in force."""
+        path = _write_config(
+            str(tmp_path),
+            {
+                "mcpServers": {
+                    "payments": {
+                        "url": "https://payments.example.com/mcp",
+                        "audience": "https://payments.example.com",
+                    }
+                }
+            },
+        )
+        with pytest.raises(ValueError, match="names no 'credential'"):
+            load_config(path)
+
+    def test_credentials_must_be_an_object(self, tmp_path):
+        path = _write_config(
+            str(tmp_path),
+            {"credentials": ["corp-as"], "mcpServers": {"test": {"command": "echo"}}},
+        )
+        with pytest.raises(ValueError, match="'credentials' must be an object"):
+            load_config(path)
+
+    def test_the_shipped_example_config_is_valid(self, tmp_path):
+        """config.example.json is what an operator copies, so it has to load."""
+        example = Path(__file__).parent.parent / "config.example.json"
+        path = tmp_path / "config.json"
+        path.write_text(example.read_text())
+
+        config = load_config(path)
+
+        assert config.credentials["corp-as"].grant == "private_key_jwt"
+        assert config.credentials["legacy-as"].grant == "client_credentials"
+        payments = next(s for s in config.servers if s.name == "payments")
+        assert payments.credential == "corp-as"
+
+
 class TestFindConfigPath:
     def test_cli_arg(self):
         with tempfile.NamedTemporaryFile(suffix=".json") as f:
