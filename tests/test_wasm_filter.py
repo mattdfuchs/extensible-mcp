@@ -6,6 +6,7 @@ split envelope, assemble, evaluate, strip credential args / deny."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -114,20 +115,44 @@ async def test_action_mismatch_denies(bundle, key):
     assert result.allowed is False
 
 
-async def test_missing_credential_fails_closed(bundle, key):
+async def test_missing_credential_fails_closed(bundle, key, caplog):
     f = _filter(bundle, key)
     call = _call(key, amount=500, with_auth=False)
     del call.arguments["requestVC"]
-    result = await f.check(call)
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
+        result = await f.check(call)
     assert result.allowed is False
     assert "could not be assembled" in result.reason
+    _assert_fault_logged_not_leaked(caplog, result, call.tool_name)
 
 
-async def test_broken_trust_root_fails_closed(bundle, key):
+async def test_broken_trust_root_fails_closed(bundle, key, caplog):
     f = _filter(bundle, key, config={"trustRootDID": vc.TRUST_DID, "trustRootJwk": "garbage"})
-    result = await f.check(_call(key, amount=500, with_auth=False))
+    call = _call(key, amount=500, with_auth=False)
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
+        result = await f.check(call)
     assert result.allowed is False
     assert "failing closed" in result.reason
+    _assert_fault_logged_not_leaked(caplog, result, call.tool_name)
+
+
+def _assert_fault_logged_not_leaked(caplog, result, tool_name):
+    """An engine fault is the one failure an LLM can trigger at will, so it
+    is logged where the operator looks -- at ``warning``, naming the tool,
+    carrying the exception -- and the exception is *not* in the reason the
+    model sees. A denial is expected traffic; a fault is a bug or an attack.
+    """
+    faults = [r for r in caplog.records
+              if r.levelno == logging.WARNING and "(failing closed)" in r.getMessage()]
+    assert len(faults) == 1, [r.getMessage() for r in caplog.records]
+    logged = faults[0].getMessage()
+    assert repr(tool_name) in logged
+    # The log line is "<stage> on call <tool> (failing closed): <exception>";
+    # the exception part is what must not reach the caller.
+    exception_text = logged.split("(failing closed): ", 1)[1]
+    assert exception_text
+    assert exception_text not in result.reason
+    assert result.reason.endswith("(failing closed; the detail is in the proxy log).")
 
 
 async def test_arguments_binding_enforced(bundle, key):
