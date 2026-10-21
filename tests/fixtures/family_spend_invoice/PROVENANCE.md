@@ -17,18 +17,44 @@ the $10 solo-approval threshold — each independently bound to
 `hash(invoice.canonical)`. No wallet-issued VC anywhere in this bundle:
 the demo's actual approval service gates both roles on WebAuthn alone.
 
-- Re-pinned to upstream commit `0ee19df` (the named-check-id
-  regeneration). `guidance.json` carries `"id_scheme": "named-welded"`.
+- Re-pinned to upstream commit `d114d32` (the check-split regeneration,
+  93 → 126 ids across the five upstream bundles). `guidance.json` carries
+  `"id_scheme": "named-split"` and `guidance_digest.value = "f2712452315e4b1f"` —
+  the digest changes exactly when any id, sentence, condition, remedy class
+  or tier structure does, so a future re-pin compares that one line rather
+  than diffing sentence text. `d114d32` is `0ecfdd2` (the settled sentence
+  fix, see below) plus the digest field; nothing else in this directory
+  changed between them.
+- **The split.** Each parameterised helper that transitively reaches a
+  crypto or codec primitive is split into its body's conjuncts, with the
+  caller's actuals substituted. Here `enrolled_as` dissolves into
+  `enrolled_by_trusted_admin`, `signed_by_key`, `sub_matches` and
+  `within_window` at each of its three sites: 23 → 32 ids, 23 authored and
+  9 mechanical. `signed_by_trusted_merchant` stays a single check — the
+  crypto application sits inside the relational join over `trustedMerchants`.
+  A denial that read *"a membership credential does not chain to a trusted
+  admin"* now names which link broke. Two shapes stay welded by rule and
+  are asserted single in `tests/test_fixture_corpus.py`: a crypto
+  application already inside a quantifier is not lifted out, and a
+  single-literal body inlines to itself.
+- **One inherited sentence was corrected upstream rather than welded back.**
+  `signed_by_key(jws, jwk)` takes a key the policy does not derive — the
+  proxy resolves it from the issuer's `did:web`, and only for issuers in the
+  trusted set — so an untrusted issuer yields no key and the leaf fails
+  *without* the signature being wrong. Its sentence is therefore *"a
+  credential's signature could not be verified against its issuer's key"*,
+  true in both states. `signed_by_did_key` keeps the flat *"signature is
+  invalid"*, because there the policy derives the key itself and absence
+  is impossible. Row one of that finding is pinned in
+  `tests/test_vc_policy.py::test_untrusted_admin_denies`.
 - Package: `policybundle.examples.family_spend_invoice` — anonymized for
   this public release (originally the supplier's own package path);
   behavior verified byte-for-byte against this repository's own test
   suite (`test_invoice_policy.py`) before and after
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 named check ids,
-  tiers 9 + 14 — `solo.*` / `dual.*`, e.g.
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (32 named check ids,
+  tiers 12 + 20 — `solo.*` / `dual.*`, e.g.
   `solo.invoice.signed_by_trusted_merchant`,
-  `dual.parent_approval.invoice_challenge_binds`). Replaces the earlier
-  positional `t0.c*` / `t1.c*` scheme; ids are opaque join keys, so the
-  authored sentences and every rendered denial are unchanged.
+  `dual.parent_approval.invoice_challenge_binds`). Ids are opaque join keys.
 - **This re-pin closes the `tool` gap.** The manifest previously declared
   no `tool` property while being `additionalProperties: false` at the root,
   so an assembled envelope — which always carries `tool` — failed

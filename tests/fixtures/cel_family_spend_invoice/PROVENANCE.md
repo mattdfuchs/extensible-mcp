@@ -16,17 +16,19 @@ This is the first CEL bundle in this repo governing a production-shaped
 (not teaching) policy — see `cel_family_spend`'s own PROVENANCE.md for the
 hand-authored teaching bundle this is not related to.
 
-- Re-pinned to upstream commit `0ee19df` (the named-check-id
-  regeneration). `guidance.json` carries `"id_scheme": "named-welded"`;
-  `checks.cel.json`'s `tiers`/`checks`/`guards` and `fetchplan.json`'s
-  `deciding_checks` all join on the same named ids, which is the
-  cross-engine agreement this fixture exists to check — the two id sets
-  come from separate expansions and neither language validates an id.
-  Replaces the earlier positional `t0.c*` / `t1.c*` scheme; ids are opaque
-  join keys, so the authored sentences and every rendered denial are
-  unchanged. This re-pin also carries the manifest's new `tool` property —
-  see the Rego twin's PROVENANCE.md for why that field is declared but not
-  read.
+- Re-pinned to upstream commit `d114d32` (the check-split regeneration).
+  `guidance.json` carries `"id_scheme": "named-split"` and
+  `guidance_digest.value = "f2712452315e4b1f"` — the same digest as the Rego
+  twin's, because `manifest.json`, `fetchplan.json` and `guidance.json` are
+  byte-identical between the two, which `tests/test_fixture_corpus.py`
+  asserts. `checks.cel.json`'s `tiers`/`checks`/`guards` and
+  `fetchplan.json`'s `deciding_checks` all join on the same named ids,
+  which is the cross-engine agreement this fixture exists to check — the two
+  id sets come from separate expansions and neither language validates an
+  id. The split takes `enrolled_as` to `enrolled_by_trusted_admin` /
+  `signed_by_key` / `sub_matches` / `within_window` at each of three sites
+  (23 → 32 checks, tiers 12 + 20); see the Rego twin's
+  PROVENANCE.md for the one sentence corrected upstream on the way.
 - Package: `policybundle.examples.family_spend_invoice` — anonymized for
   this public release, matching `family_spend_invoice`'s own package name
   (both bundles' entrypoints resolve under the same logical name; only

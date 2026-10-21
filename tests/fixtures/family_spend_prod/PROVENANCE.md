@@ -14,18 +14,41 @@ byte-for-byte against this repository's own test suite (`test_vc_policy.py`,
 `allow`/`deny_reason`/`failed_checks` are confirmed identical, not merely
 believed to be.
 
-- Re-pinned to upstream commit `0ee19df` (the named-check-id regeneration).
-  `guidance.json` carries `"id_scheme": "named-welded"` — the scheme marker
-  is emitted from a single constant upstream, so it names the artifact
-  rather than being inferred from the id count here.
+- Re-pinned to upstream commit `d114d32` (the check-split regeneration,
+  93 → 126 ids across the five upstream bundles). `guidance.json` carries
+  `"id_scheme": "named-split"` and `guidance_digest.value = "b5f8d6314061d4c3"` —
+  the digest changes exactly when any id, sentence, condition, remedy class
+  or tier structure does, so a future re-pin compares that one line rather
+  than diffing sentence text. `d114d32` is `0ecfdd2` (the settled sentence
+  fix, see below) plus the digest field; nothing else in this directory
+  changed between them.
+- **The split.** Each parameterised helper that transitively reaches a
+  crypto or codec primitive is split into its body's conjuncts, with the
+  caller's actuals substituted. Here `member_of` dissolves into
+  `issued_by_trusted_admin`, `signed_by_key`, `sub_matches` and
+  `within_window` at each of its three sites: 23 → 32 ids, 16 authored and
+  16 mechanical.
+  A denial that read *"a membership credential does not chain to a trusted
+  admin"* now names which link broke. Two shapes stay welded by rule and
+  are asserted single in `tests/test_fixture_corpus.py`: a crypto
+  application already inside a quantifier is not lifted out, and a
+  single-literal body inlines to itself.
+- **One inherited sentence was corrected upstream rather than welded back.**
+  `signed_by_key(jws, jwk)` takes a key the policy does not derive — the
+  proxy resolves it from the issuer's `did:web`, and only for issuers in the
+  trusted set — so an untrusted issuer yields no key and the leaf fails
+  *without* the signature being wrong. Its sentence is therefore *"a
+  credential's signature could not be verified against its issuer's key"*,
+  true in both states. `signed_by_did_key` keeps the flat *"signature is
+  invalid"*, because there the policy derives the key itself and absence
+  is impossible. Row one of that finding is pinned in
+  `tests/test_vc_policy.py::test_untrusted_admin_denies`.
 - Package: `policybundle.examples.family_spend_prod`
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (23 named check ids,
-  `solo.*` on the solo tier and `full_chain.*` on the full-chain tier, e.g.
-  `solo.request_vc.signed_by_did_key`,
-  `full_chain.approver_membership.member_of`). Ids are opaque join keys —
-  nothing in `src/` parses one — so the rename from the earlier positional
-  scheme (tier index + check index) is a pure relabeling: the authored
-  sentences, and so every rendered denial, are unchanged.
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (32 named check ids,
+  tiers 11 + 21 — `solo.*` on the solo tier and `full_chain.*` on the
+  full-chain tier, e.g. `solo.request_vc.signed_by_did_key`,
+  `full_chain.approver_membership.issued_by_trusted_admin`). Ids are opaque
+  join keys — nothing in `src/` parses one.
 - Uses the custom host builtin `key_from_did_key` (plus stock
   `io.jwt.verify_eddsa`, `crypto.sha256`)
 - `manifest.json`'s wallet-supplied claim-body definitions

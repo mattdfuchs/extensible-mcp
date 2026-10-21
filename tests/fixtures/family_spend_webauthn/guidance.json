@@ -29,11 +29,28 @@
      "id": "solo.request_vc.merchant_matches",
      "condition":
      "input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant"},
-    {"sentence": "a membership credential does not chain to a trusted admin",
+    {"sentence": "the membership credential's issuer is not a trusted admin",
      "remedy_class": "re-promptable",
-     "id": "solo.requester_membership.member_of",
+     "id": "solo.requester_membership.issued_by_trusted_admin",
      "condition":
-     "not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)"},
+     "not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.signed_by_key",
+     "condition":
+     "not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.sub_matches",
+     "condition":
+     "input.requesterMembership.claims.sub != input.requestVC.claims.iss"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.within_window",
+     "condition":
+     "not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)"},
     {"sentence":
      "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"",
      "remedy_class": "re-promptable",
@@ -76,11 +93,28 @@
      "id": "full_chain.request_vc.merchant_matches",
      "condition":
      "input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant"},
-    {"sentence": "a membership credential does not chain to a trusted admin",
+    {"sentence": "the membership credential's issuer is not a trusted admin",
      "remedy_class": "re-promptable",
-     "id": "full_chain.requester_membership.member_of",
+     "id": "full_chain.requester_membership.issued_by_trusted_admin",
      "condition":
-     "not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)"},
+     "not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.signed_by_key",
+     "condition":
+     "not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.sub_matches",
+     "condition":
+     "input.requesterMembership.claims.sub != input.requestVC.claims.iss"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.within_window",
+     "condition":
+     "not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)"},
     {"sentence":
      "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"",
      "remedy_class": "re-promptable",
@@ -109,18 +143,40 @@
      "id": "full_chain.approval.spend_challenge_binds",
      "condition":
      "not spend_challenge_binds(input.approval.clientDataJSON, input.tool, input.arguments.amountCents, input.arguments.merchant)"},
-    {"sentence": "the passkey is not enrolled by a trusted admin",
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
      "remedy_class": "re-promptable",
-     "id": "full_chain.approver_enrollment.enrolled_as",
+     "id": "full_chain.approver_enrollment.enrolled_by_trusted_admin",
      "condition":
-     "not enrolled_as(input.approverEnrollment, input.approval.credentialId, input.trustedAdminDids, input.now)"},
+     "not enrolled_by_trusted_admin(input.approverEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.approverEnrollment.jws, input.approverEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.approverEnrollment.claims.sub == input.approval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_enrollment.sub_matches",
+     "condition":
+     "input.approverEnrollment.claims.sub != input.approval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_enrollment.within_window",
+     "condition":
+     "not within_window(input.approverEnrollment.claims.nbf, input.approverEnrollment.claims.exp, input.now)"},
     {"sentence":
      "required: input.approverEnrollment.claims.vc.credentialSubject.role == \"parent\"",
      "remedy_class": "re-promptable",
      "id": "full_chain.approver_enrollment.role_matches",
      "condition":
      "input.approverEnrollment.claims.vc.credentialSubject.role != \"parent\""}]}],
- "id_scheme": "named-welded",
+ "id_scheme": "named-split",
+ "guidance_digest":
+ {"value": "22c0b6689dcbbc13",
+  "covers":
+  "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
+  "alg": "fnv1a64"},
  "goal": "CanSpendWa",
  "call_guards":
  [{"required_in_tiers": [0, 1],

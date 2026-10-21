@@ -1,4 +1,12 @@
-{"input": "InvoiceSpendInput",
+{"primitives":
+ {"verify_webauthn": {"class": "key-consuming"},
+  "verify_eddsa": {"class": "key-consuming"},
+  "verify_ed25519_raw": {"class": "key-consuming"},
+  "sha256": {"class": "pure"},
+  "parse_json": {"class": "pure"},
+  "base64url_encode_no_pad": {"class": "pure"},
+  "base64url_decode": {"class": "pure"}},
+ "input": "InvoiceSpendInput",
  "entries":
  [{"source": {"kind": "call"}, "schema": {"type": "string"}, "field": "tool"},
   {"source": {"kind": "call"},

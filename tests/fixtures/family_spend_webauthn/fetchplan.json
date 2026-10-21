@@ -1,4 +1,12 @@
-{"input": "WaSpendInput",
+{"primitives":
+ {"verify_webauthn": {"class": "key-consuming"},
+  "verify_eddsa": {"class": "key-consuming"},
+  "sha256": {"class": "pure"},
+  "parse_json": {"class": "pure"},
+  "key_from_did_key": {"class": "key-producing"},
+  "base64url_encode_no_pad": {"class": "pure"},
+  "base64url_decode": {"class": "pure"}},
+ "input": "WaSpendInput",
  "entries":
  [{"source": {"kind": "call"},
    "schema": {"type": "string"},

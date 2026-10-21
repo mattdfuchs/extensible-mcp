@@ -55,11 +55,15 @@ child_approved if {
 }
 
 enrolled_as(e, cred_id, trusted, now) if {
-	some d in trusted
-	e.claims.iss == d
+	enrolled_by_trusted_admin(e, trusted)
 	signed_by_key(e.jws, e.adminKey)
 	e.claims.sub == cred_id
 	within_window(e.claims.nbf, e.claims.exp, now)
+}
+
+enrolled_by_trusted_admin(e, trusted) if {
+	some d in trusted
+	e.claims.iss == d
 }
 
 within_window(nbf, exp, now) if {
@@ -122,9 +126,24 @@ deny_reason contains "the approval is not bound to this invoice" if {
 	not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
 }
 
-deny_reason contains "the passkey is not enrolled by a trusted admin" if {
+deny_reason contains "the enrollment credential's issuer is not a trusted admin" if {
 	not allow
-	not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)
+}
+
+deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
+	not allow
+	not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)
+}
+
+deny_reason contains "required: input.childEnrollment.claims.sub == input.childApproval.credentialId" if {
+	not allow
+	input.childEnrollment.claims.sub != input.childApproval.credentialId
+}
+
+deny_reason contains "a credential is outside its validity window" if {
+	not allow
+	not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)
 }
 
 deny_reason contains "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"" if {
@@ -157,9 +176,24 @@ deny_reason contains "the approval is not bound to this invoice" if {
 	not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)
 }
 
-deny_reason contains "the passkey is not enrolled by a trusted admin" if {
+deny_reason contains "the enrollment credential's issuer is not a trusted admin" if {
 	not allow
-	not enrolled_as(input.parentEnrollment, input.parentApproval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.parentEnrollment, input.trustedAdminDids)
+}
+
+deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
+	not allow
+	not signed_by_key(input.parentEnrollment.jws, input.parentEnrollment.adminKey)
+}
+
+deny_reason contains "required: input.parentEnrollment.claims.sub == input.parentApproval.credentialId" if {
+	not allow
+	input.parentEnrollment.claims.sub != input.parentApproval.credentialId
+}
+
+deny_reason contains "a credential is outside its validity window" if {
+	not allow
+	not within_window(input.parentEnrollment.claims.nbf, input.parentEnrollment.claims.exp, input.now)
 }
 
 deny_reason contains "required: input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"" if {
@@ -197,9 +231,24 @@ failed_checks contains "solo.child_approval.invoice_challenge_binds" if {
 	not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
 }
 
-failed_checks contains "solo.child_enrollment.enrolled_as" if {
+failed_checks contains "solo.child_enrollment.enrolled_by_trusted_admin" if {
 	not allow
-	not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)
+}
+
+failed_checks contains "solo.child_enrollment.signed_by_key" if {
+	not allow
+	not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)
+}
+
+failed_checks contains "solo.child_enrollment.sub_matches" if {
+	not allow
+	input.childEnrollment.claims.sub != input.childApproval.credentialId
+}
+
+failed_checks contains "solo.child_enrollment.within_window" if {
+	not allow
+	not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)
 }
 
 failed_checks contains "solo.child_enrollment.role_matches" if {
@@ -242,9 +291,24 @@ failed_checks contains "dual.child_approval.invoice_challenge_binds" if {
 	not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
 }
 
-failed_checks contains "dual.child_enrollment.enrolled_as" if {
+failed_checks contains "dual.child_enrollment.enrolled_by_trusted_admin" if {
 	not allow
-	not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)
+}
+
+failed_checks contains "dual.child_enrollment.signed_by_key" if {
+	not allow
+	not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)
+}
+
+failed_checks contains "dual.child_enrollment.sub_matches" if {
+	not allow
+	input.childEnrollment.claims.sub != input.childApproval.credentialId
+}
+
+failed_checks contains "dual.child_enrollment.within_window" if {
+	not allow
+	not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)
 }
 
 failed_checks contains "dual.child_enrollment.role_matches" if {
@@ -272,9 +336,24 @@ failed_checks contains "dual.parent_approval.invoice_challenge_binds" if {
 	not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)
 }
 
-failed_checks contains "dual.parent_enrollment.enrolled_as" if {
+failed_checks contains "dual.parent_enrollment.enrolled_by_trusted_admin" if {
 	not allow
-	not enrolled_as(input.parentEnrollment, input.parentApproval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.parentEnrollment, input.trustedAdminDids)
+}
+
+failed_checks contains "dual.parent_enrollment.signed_by_key" if {
+	not allow
+	not signed_by_key(input.parentEnrollment.jws, input.parentEnrollment.adminKey)
+}
+
+failed_checks contains "dual.parent_enrollment.sub_matches" if {
+	not allow
+	input.parentEnrollment.claims.sub != input.parentApproval.credentialId
+}
+
+failed_checks contains "dual.parent_enrollment.within_window" if {
+	not allow
+	not within_window(input.parentEnrollment.claims.nbf, input.parentEnrollment.claims.exp, input.now)
 }
 
 failed_checks contains "dual.parent_enrollment.role_matches" if {

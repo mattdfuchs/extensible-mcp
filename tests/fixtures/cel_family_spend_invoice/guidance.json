@@ -30,11 +30,28 @@
      "id": "solo.child_approval.invoice_challenge_binds",
      "condition":
      "not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)"},
-    {"sentence": "the passkey is not enrolled by a trusted admin",
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
      "remedy_class": "re-promptable",
-     "id": "solo.child_enrollment.enrolled_as",
+     "id": "solo.child_enrollment.enrolled_by_trusted_admin",
      "condition":
-     "not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)"},
+     "not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.sub == input.childApproval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.sub_matches",
+     "condition":
+     "input.childEnrollment.claims.sub != input.childApproval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.within_window",
+     "condition":
+     "not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)"},
     {"sentence":
      "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
      "remedy_class": "re-promptable",
@@ -76,11 +93,28 @@
      "id": "dual.child_approval.invoice_challenge_binds",
      "condition":
      "not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)"},
-    {"sentence": "the passkey is not enrolled by a trusted admin",
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
      "remedy_class": "re-promptable",
-     "id": "dual.child_enrollment.enrolled_as",
+     "id": "dual.child_enrollment.enrolled_by_trusted_admin",
      "condition":
-     "not enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)"},
+     "not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.sub == input.childApproval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.sub_matches",
+     "condition":
+     "input.childEnrollment.claims.sub != input.childApproval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.within_window",
+     "condition":
+     "not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)"},
     {"sentence":
      "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
      "remedy_class": "re-promptable",
@@ -105,18 +139,40 @@
      "id": "dual.parent_approval.invoice_challenge_binds",
      "condition":
      "not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)"},
-    {"sentence": "the passkey is not enrolled by a trusted admin",
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
      "remedy_class": "re-promptable",
-     "id": "dual.parent_enrollment.enrolled_as",
+     "id": "dual.parent_enrollment.enrolled_by_trusted_admin",
      "condition":
-     "not enrolled_as(input.parentEnrollment, input.parentApproval.credentialId, input.trustedAdminDids, input.now)"},
+     "not enrolled_by_trusted_admin(input.parentEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.parentEnrollment.jws, input.parentEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.parentEnrollment.claims.sub == input.parentApproval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.sub_matches",
+     "condition":
+     "input.parentEnrollment.claims.sub != input.parentApproval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.within_window",
+     "condition":
+     "not within_window(input.parentEnrollment.claims.nbf, input.parentEnrollment.claims.exp, input.now)"},
     {"sentence":
      "required: input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"",
      "remedy_class": "re-promptable",
      "id": "dual.parent_enrollment.role_matches",
      "condition":
      "input.parentEnrollment.claims.vc.credentialSubject.role != \"parent\""}]}],
- "id_scheme": "named-welded",
+ "id_scheme": "named-split",
+ "guidance_digest":
+ {"value": "f2712452315e4b1f",
+  "covers":
+  "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
+  "alg": "fnv1a64"},
  "goal": "CanSpendInvoice",
  "call_guards":
  [{"required_in_tiers": [0, 1],
