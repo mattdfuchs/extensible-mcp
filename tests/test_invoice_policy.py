@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from extensible_mcp.bundle import PolicyBundle
+from extensible_mcp.fetchplan import default_primitives
 from extensible_mcp.guidance import render_denial
 from extensible_mcp.wasm_policy import default_builtins
 from tests import vc_helpers as vc
@@ -168,6 +169,7 @@ def bundle(request):
         return PolicyBundle.load(
             BUNDLE_DIR, name="family_spend_invoice",
             builtins=default_builtins(webauthn_rp_id=RP_ID),
+            primitives=default_primitives(webauthn_rp_id=RP_ID),
         )
     return _cel_bundle_with_rp_id(CEL_BUNDLE_DIR, name="cel_family_spend_invoice", rp_id=RP_ID)
 

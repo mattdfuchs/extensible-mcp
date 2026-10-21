@@ -196,3 +196,53 @@ def test_no_supplier_namespace_leaks_into_a_public_artifact():
                 if "lego" in line.lower() and "legov1" not in line:
                     hits.append(f"{path.relative_to(FIXTURES)}:{n}")
     assert hits == []
+
+
+# -- the corpus loads quietly in its intended configuration ------------------ #
+#
+# Every adopted fetch plan declares the bundle's primitive vocabulary, and
+# three of them declare ``verify_webauthn`` without deriving anything -- the
+# correct steady state for an engine that runs crypto in-policy. The derive
+# registry has to be configured alongside the engine (``primitives=`` beside
+# ``builtins=``), or the load warns about missing configuration on a
+# deployment that has none missing. A warning that fires when all is well is
+# one people learn to ignore, so the quiet path is pinned.
+
+import logging
+
+from extensible_mcp.bundle import PolicyBundle
+from extensible_mcp.fetchplan import default_primitives
+from extensible_mcp.wasm_policy import default_builtins
+
+RP_ID = "approval.example"
+
+LOAD_CONFIG = {
+    "family_spend": {},
+    "cel_family_spend": {},
+    "family_spend_prod": {},
+    "family_spend_webauthn": {"builtins": default_builtins(webauthn_rp_id=RP_ID),
+                              "primitives": default_primitives(webauthn_rp_id=RP_ID)},
+    "family_spend_invoice": {"builtins": default_builtins(webauthn_rp_id=RP_ID),
+                             "primitives": default_primitives(webauthn_rp_id=RP_ID)},
+    "cel_family_spend_invoice": {"primitives": default_primitives(webauthn_rp_id=RP_ID)},
+}
+
+
+@pytest.mark.parametrize("bundle", sorted(LOAD_CONFIG))
+def test_bundle_loads_with_no_fetchplan_warning_in_its_intended_configuration(bundle, caplog):
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.fetchplan"):
+        PolicyBundle.load(FIXTURES / bundle, name=bundle, **LOAD_CONFIG[bundle])
+    assert [r.getMessage() for r in caplog.records
+            if r.name == "extensible_mcp.fetchplan"] == []
+
+
+def test_the_warning_still_fires_when_the_registry_is_not_configured(caplog):
+    """The quiet path above is quiet because the registry is configured, not
+    because the warning is gone: the engine alone leaves ``verify_webauthn``
+    declared and unregistered, and that is reported."""
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.fetchplan"):
+        PolicyBundle.load(FIXTURES / "family_spend_webauthn", name="w",
+                          builtins=default_builtins(webauthn_rp_id=RP_ID))
+    messages = [r.getMessage() for r in caplog.records if r.name == "extensible_mcp.fetchplan"]
+    assert len(messages) == 1
+    assert "verify_webauthn" in messages[0]

@@ -57,6 +57,7 @@ from extensible_mcp.server import create_server
 from extensible_mcp.types import CallFilterResult, CallRequest, ServerConfig
 from extensible_mcp.wasm_filter import WasmPolicyFilter
 from extensible_mcp.wasm_policy import default_builtins
+from extensible_mcp.fetchplan import default_primitives
 from extensible_mcp_vc.invoice import canonical_invoice
 from extensible_mcp_vc.meta_tools import (
     build_invoice_tools,
@@ -356,10 +357,15 @@ def build_bundle_router(
 
     # -- the invoice rail: bundle, origin/rpId, enrollment lookup ----------- #
     approval_origin = urlparse(APPROVAL_URL)
+    # The engine and the derive registry are configured together: the bundle
+    # declares verify_webauthn in its fetch plan's vocabulary, so the
+    # registry must know the name too, or the load warns about missing
+    # configuration on a deployment that has none missing.
     invoice_bundle = PolicyBundle.load(
         INVOICE_BUNDLE_DIR,
         name="family_spend_invoice",
         builtins=default_builtins(webauthn_rp_id=approval_origin.hostname),
+        primitives=default_primitives(webauthn_rp_id=approval_origin.hostname),
     )
     approval_http = approval_client
 
