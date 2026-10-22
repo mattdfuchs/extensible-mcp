@@ -10,6 +10,7 @@ authorization tier — the whole migration target running end to end."""
 
 from __future__ import annotations
 
+import logging
 import hashlib
 from pathlib import Path
 
@@ -274,7 +275,7 @@ async def test_denial_repeats_shared_failure_per_path(vc_filter, keys):
     assert "signature is invalid" in path2
 
 
-async def test_corrupted_token_denies_with_hint_not_traceback(vc_filter, keys):
+async def test_corrupted_token_denies_with_hint_not_traceback(vc_filter, keys, caplog):
     # An LLM that retypes a JWS can substitute homoglyphs (observed live:
     # Cyrillic 'Р' for Latin 'P'). Malformed evidence must be a clean denial
     # with a don't-retype hint, never an exception out of the call handler.
@@ -283,10 +284,19 @@ async def test_corrupted_token_denies_with_hint_not_traceback(vc_filter, keys):
     mid = len(payload) // 2
     corrupted = payload[:mid] + "Р" + payload[mid + 1:]
     call.arguments["requestVC"]["token"] = f"{header}.{corrupted}.{sig}"
-    result = await vc_filter.check(call)
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
+        result = await vc_filter.check(call)
     assert result.allowed is False
     assert "malformed" in result.reason
     assert "do not retype" in result.reason
+    # Logged like every other fault -- it is LLM-triggerable at will -- but
+    # the adapter's message is written for the model, so it stays in the
+    # reason rather than moving to the log alone.
+    faults = [r for r in caplog.records
+              if r.levelno == logging.WARNING and "(failing closed)" in r.getMessage()]
+    assert len(faults) == 1
+    assert repr(call.tool_name) in faults[0].getMessage()
+    assert "do not retype" in faults[0].getMessage()
 
 
 def test_undefined_reference_comparison_emits_no_failed_check_id():
