@@ -281,6 +281,17 @@ class DeriveResolver:
       ``invoiceSignatureOK: true`` has consumed both terms of, and under which
       an invoice signed by ``m1`` claiming ``m2`` is allowed.
 
+      ``over`` is a ``$input`` reference to an assembled list, or a literal
+      list whose elements may themselves carry ``$input`` references. The
+      second is the single-key verification -- one credential, one issuer,
+      one key, and so no candidate *list* anywhere to reference::
+
+        "over": [{"key": {"$input": "requesterMembership.adminKey"}}]
+
+      A one-element fold is not a boolean in disguise: it keeps *which* key
+      as a term the rule names, so a host that supplied a different key from
+      the one the rule checks against fails the relation.
+
     An argument may itself be ``{"$apply": {"fn": ..., "args": [...]}}``: one
     inner primitive, nested one level, so a key-producing primitive is hoisted
     *as a unit* with the verification that consumes its output and the witness
@@ -465,7 +476,13 @@ def validate_derive_plan(
     - a **key-producing** primitive as a top-level ``fn``: a hoisted key is
       unbound from the identifier it came from;
     - ``$apply`` nested more than one level, rejected rather than supported
-      speculatively.
+      speculatively;
+    - ``$apply`` or ``$item`` inside a literal ``over`` element. ``$item``
+      names the element being defined; ``$apply`` would be invoked per
+      candidate on a path :func:`_referenced_primitives` does not walk, so a
+      primitive with no implementation would pass validation and fail on the
+      first real call -- the load-time-versus-call-time class this check
+      exists to remove. Apply the primitive in ``args`` instead.
 
     What is **not** refused: a declared primitive no ``derive`` entry
     references. The ``primitives`` block is a declaration of the plan's
@@ -604,11 +621,49 @@ def _validate_derive_entry(
             raise DerivePlanError(
                 f"{where}: 'over' must be a '$input' reference or a literal list"
             )
+        if isinstance(over, list):
+            for candidate in over:
+                _validate_candidate(where, candidate)
     elif "project" in source:
         raise DerivePlanError(f"{where}: 'project' without 'over'")
 
     for arg in args:
         _validate_derive_arg(where, arg, declared, folded=folded, nested=False)
+
+
+def _validate_candidate(where: str, node: Any) -> None:
+    """A literal ``over`` element may carry ``$input`` leaves, at any depth,
+    and no other marker. Walks objects and lists so the shape the resolver
+    will resolve is the shape that was checked."""
+    if isinstance(node, dict):
+        markers = [k for k in node if isinstance(k, str) and k.startswith("$")]
+        if markers:
+            if len(node) > 1:
+                raise DerivePlanError(
+                    f"{where}: an 'over' element carries more than one key: "
+                    f"{sorted(node)}"
+                )
+            marker = markers[0]
+            if marker == "$input":
+                if not isinstance(node[marker], str) or not node[marker]:
+                    raise DerivePlanError(f"{where}: '$input' must be a field path")
+                return
+            if marker == "$apply":
+                raise DerivePlanError(
+                    f"{where}: '$apply' has no meaning inside an 'over' element; "
+                    "apply the primitive in 'args'"
+                )
+            if marker == "$item":
+                raise DerivePlanError(
+                    f"{where}: '$item' has no meaning inside an 'over' element "
+                    "-- it names the element being defined"
+                )
+            raise DerivePlanError(f"{where}: unknown argument marker {marker!r}")
+        for value in node.values():
+            _validate_candidate(where, value)
+    elif isinstance(node, list):
+        for value in node:
+            _validate_candidate(where, value)
 
 
 def _validate_derive_arg(
@@ -774,7 +829,8 @@ class FetchExecutor:
 
         Done here, in the param phase, so an argument reading an omitted
         optional credential raises :class:`FetchError` and the derived field is
-        omitted rather than failing the whole assembly.
+        omitted rather than failing the whole assembly. A literal ``over``
+        list is walked the same way, for the same reason.
         """
         spec: dict[str, Any] = {
             "fn": source.get("fn"),
@@ -783,14 +839,34 @@ class FetchExecutor:
             "project": source.get("project"),
         }
         if spec["folded"]:
-            over = self._resolve_arg(source["over"], assembled)
-            if "$value" not in over:
-                raise FetchError(
-                    f"derive field {name!r}: 'over' must be a '$input' "
-                    "reference or a literal list"
-                )
-            spec["over"] = over["$value"]
+            over = source["over"]
+            if isinstance(over, list):
+                # A literal candidate list. ``$input`` inside an element means
+                # what it means one key over in ``args``, so it resolves here
+                # and ``$item`` projects the resolved value -- the resolver
+                # must never see a marker where it expects a key.
+                spec["over"] = [self._resolve_candidate(c, assembled) for c in over]
+            else:
+                resolved = self._resolve_arg(over, assembled)
+                if "$value" not in resolved:
+                    raise FetchError(
+                        f"derive field {name!r}: 'over' must be a '$input' "
+                        "reference or a literal list"
+                    )
+                spec["over"] = resolved["$value"]
         return spec
+
+    def _resolve_candidate(self, node: Any, assembled: dict[str, Any]) -> Any:
+        """One literal ``over`` element with its ``$input`` leaves resolved,
+        at any depth. ``$apply`` and ``$item`` are refused at load, so a marked
+        object here is an ``$input`` reference."""
+        if isinstance(node, dict):
+            if "$input" in node:
+                return self._navigate(assembled, node["$input"])
+            return {k: self._resolve_candidate(v, assembled) for k, v in node.items()}
+        if isinstance(node, list):
+            return [self._resolve_candidate(v, assembled) for v in node]
+        return node
 
     def _resolve_arg(self, arg: Any, assembled: dict[str, Any]) -> dict[str, Any]:
         if isinstance(arg, dict):

@@ -22,6 +22,7 @@ from extensible_mcp.fetchplan import (
     FetchError,
     FetchExecutor,
     default_primitives,
+    default_resolvers,
     validate_derive_plan,
 )
 from extensible_mcp.wasm_policy import OpaWasmPolicy, default_builtins
@@ -308,6 +309,129 @@ async def test_derive_folded_over_an_empty_candidate_list_is_empty():
     assert assembled["invoiceSignerIds"] == []
 
 
+async def test_derive_over_a_literal_list_resolves_input_inside_its_elements():
+    """The single-key verification: one credential, one issuer, one key, and
+    no candidate *list* anywhere to reference -- so the plan writes a
+    one-element literal list whose element reads the key by ``$input``.
+
+    Asserts on the value the primitive *received*, not only on the witness
+    set: the defect was that a structurally plausible wrong value -- the
+    marker dict itself -- reached the primitive, not that nothing did.
+    """
+    key = _merchant_key()
+    canonical, signature = _invoice(key)
+    pub = _b64u(key.public_key().public_bytes_raw())
+    received = []
+
+    def recording_verify(c, s, raw_key):
+        received.append(raw_key)
+        return default_primitives()["verify_ed25519_raw"](c, s, raw_key)
+
+    executor = FetchExecutor(default_resolvers(
+        primitives={**default_primitives(), "verify_ed25519_raw": recording_verify}
+    ))
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        _config_entry("merchantKey"),
+        {"field": "invoiceSignerKeys",
+         "source": {"kind": "derive", "fn": "verify_ed25519_raw",
+                    "over": [{"key": {"$input": "merchantKey"}}],
+                    "args": [{"$input": "invoiceCanonical"},
+                             {"$input": "invoiceSignature"},
+                             {"$item": "key"}],
+                    "project": "key"}},
+    )
+    ctx = FetchContext(config={"invoiceCanonical": canonical,
+                               "invoiceSignature": signature,
+                               "merchantKey": pub})
+    assembled = await executor.assemble(plan, ctx)
+    assert received == [pub]
+    assert assembled["invoiceSignerKeys"] == [pub]
+
+
+async def test_derive_over_a_literal_list_keeps_the_relation_at_domain_size_one():
+    """A one-element fold is not a boolean in disguise. The host supplied a
+    stranger's key; the witness set is empty, and a rule checking that the
+    claimed key is a witness denies -- which ``signatureOK: true`` could not
+    express."""
+    key = _merchant_key()
+    canonical, signature = _invoice(key)
+    stranger = _b64u(_merchant_key().public_key().public_bytes_raw())
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        _config_entry("merchantKey"),
+        {"field": "invoiceSignerKeys",
+         "source": {"kind": "derive", "fn": "verify_ed25519_raw",
+                    "over": [{"key": {"$input": "merchantKey"}}],
+                    "args": [{"$input": "invoiceCanonical"},
+                             {"$input": "invoiceSignature"},
+                             {"$item": "key"}],
+                    "project": "key"}},
+    )
+    ctx = FetchContext(config={"invoiceCanonical": canonical,
+                               "invoiceSignature": signature,
+                               "merchantKey": stranger})
+    assembled = await FetchExecutor().assemble(plan, ctx)
+    assert assembled["invoiceSignerKeys"] == []
+
+
+async def test_derive_over_a_literal_list_with_plain_elements_still_works():
+    """A literal element with no marker is a plain value, as before."""
+    key = _merchant_key()
+    canonical, signature = _invoice(key)
+    pub = _b64u(key.public_key().public_bytes_raw())
+    stranger = _b64u(_merchant_key().public_key().public_bytes_raw())
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        {"field": "invoiceSignerIds",
+         "source": {"kind": "derive", "fn": "verify_ed25519_raw",
+                    "over": [{"merchantId": MERCHANT_ID, "key": pub},
+                             {"merchantId": OTHER_MERCHANT_ID, "key": stranger}],
+                    "args": [{"$input": "invoiceCanonical"},
+                             {"$input": "invoiceSignature"},
+                             {"$item": "key"}],
+                    "project": "merchantId"}},
+    )
+    ctx = FetchContext(config={"invoiceCanonical": canonical,
+                               "invoiceSignature": signature})
+    assembled = await FetchExecutor().assemble(plan, ctx)
+    assert assembled["invoiceSignerIds"] == [MERCHANT_ID]
+
+
+async def test_derive_over_a_literal_element_reading_an_omitted_field_omits_the_derived_field():
+    """Guard-aware in the ``over`` position too: an element whose ``$input``
+    reads an omitted optional credential omits the derived field, exactly as
+    an ``$input`` in ``args`` does. Not a raise."""
+    key = _merchant_key()
+    canonical, signature = _invoice(key)
+    pub = _b64u(key.public_key().public_bytes_raw())
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+        {"field": "approverMembership",
+         "source": {"kind": "call"},
+         "guard": {"always": False, "required_in_tiers": [1],
+                   "deciding_checks": ["t1.c7"]}},
+        {"field": "approverKeyWitnesses",
+         "source": {"kind": "derive", "fn": "verify_ed25519_raw",
+                    "over": [{"key": {"$input": "approverMembership.adminKey"}}],
+                    "args": [{"$input": "invoiceCanonical"},
+                             {"$input": "invoiceSignature"},
+                             {"$item": "key"}],
+                    "project": "key"}},
+    )
+    config = {"invoiceCanonical": canonical, "invoiceSignature": signature}
+    assembled = await FetchExecutor().assemble(
+        plan, FetchContext(config=config, envelope={})
+    )
+    assert "approverKeyWitnesses" not in assembled
+
+    assembled = await FetchExecutor().assemble(
+        plan, FetchContext(config=config,
+                           envelope={"approverMembership": {"adminKey": pub}}),
+    )
+    assert assembled["approverKeyWitnesses"] == [pub]
+
+
 def _membership_plan():
     return _plan(
         _config_entry("membershipJws"),
@@ -531,6 +655,58 @@ def test_validate_rejects_an_unknown_argument_marker():
     )
     with pytest.raises(DerivePlanError, match="unknown argument marker"):
         validate_derive_plan(plan)
+
+
+def _one_key_fold(over_element):
+    return _plan(
+        _config_entry("jws"),
+        {"field": "witnesses",
+         "source": {"kind": "derive", "fn": "verify_eddsa",
+                    "over": [over_element],
+                    "args": [{"$input": "jws"}, {"$item": "key"}],
+                    "project": "key"}},
+    )
+
+
+def test_validate_rejects_apply_inside_an_over_element():
+    """Refused for the shape, before any availability check -- which is what
+    keeps ``_referenced_primitives`` honest. It does not walk ``over``
+    elements, so an ``$apply`` there would name a primitive the availability
+    check never sees; the inner primitive here has no implementation without a
+    relying-party id, and on a resolving ``over`` it would have passed
+    validation and failed on the first real call."""
+    plan = _one_key_fold(
+        {"key": {"$apply": {"fn": "verify_webauthn", "args": []}}}
+    )
+    plan["primitives"] = {**plan["primitives"],
+                          "verify_webauthn": {"class": "key-consuming"}}
+    with pytest.raises(DerivePlanError, match="no meaning inside an 'over' element"):
+        validate_derive_plan(plan)
+
+
+def test_validate_rejects_item_inside_an_over_element():
+    plan = _one_key_fold({"key": {"$item": "key"}})
+    with pytest.raises(DerivePlanError, match="names the element being defined"):
+        validate_derive_plan(plan)
+
+
+def test_validate_rejects_an_over_element_with_an_empty_input_path():
+    plan = _one_key_fold({"key": {"$input": ""}})
+    with pytest.raises(DerivePlanError, match="must be a field path"):
+        validate_derive_plan(plan)
+
+
+def test_validate_rejects_a_marked_over_element_carrying_a_second_key():
+    plan = _one_key_fold({"$input": "trustRootJwk", "key": "AAAA"})
+    with pytest.raises(DerivePlanError, match="more than one key"):
+        validate_derive_plan(plan)
+
+
+def test_validate_accepts_input_inside_an_over_element_at_depth():
+    """The shape the resolver will walk is the shape that was checked: a
+    nested object and a list of candidates both pass."""
+    validate_derive_plan(_one_key_fold({"meta": {"key": {"$input": "root.jwk"}}}))
+    validate_derive_plan(_one_key_fold({"key": "AAAA"}))
 
 
 # -- the refusals, where they actually have to happen: PolicyBundle.load ------ #
