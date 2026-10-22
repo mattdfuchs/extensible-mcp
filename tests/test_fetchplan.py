@@ -18,6 +18,7 @@ import pytest
 from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.fetchplan import (
     DerivePlanError,
+    DeriveUndefined,
     FetchContext,
     FetchError,
     FetchExecutor,
@@ -25,6 +26,7 @@ from extensible_mcp.fetchplan import (
     default_resolvers,
     validate_derive_plan,
 )
+from extensible_mcp.cel_policy import default_cel_functions
 from extensible_mcp.wasm_policy import OpaWasmPolicy, default_builtins
 from tests import vc_helpers as vc
 
@@ -761,6 +763,112 @@ def test_validate_accepts_distinct_fields_of_the_same_shape():
         _config_entry("jwsA"), _config_entry("jwsB"),
         _derive_digest("digestA", "jwsA"), _derive_digest("digestB", "jwsB"),
     ))
+
+
+# -- undefined: a parse that cannot read its evidence omits the field (#36) -- #
+#
+# OPA's ``json.unmarshal`` and ``base64url.decode`` are *undefined* on content
+# they cannot read: the rule body that read them does not fire and every other
+# rule is untouched. The derive twins are Python reimplementations of those
+# natives, so that verdict has to be reproduced rather than inherited. ``None``
+# written into the closed input would not reproduce it -- ``null`` is a
+# defined value, truthy as a bare Rego term and present to a Cedar ``has`` --
+# so the resolver omits the field instead, the way a dependent of an absent
+# optional credential is already omitted. Measured before the change: a bare
+# parse wrote ``null``, the same parse under ``$apply`` was a type fault in
+# the consumer, and a later field reading through the ``null`` was omitted.
+
+_GARBAGE = FetchContext(envelope={"raw": "not json", "b64": "not-base64-!!!"})
+
+
+def _garbage_plan(*entries):
+    return _plan(
+        {"field": "raw", "source": {"kind": "call"}},
+        {"field": "b64", "source": {"kind": "call"}},
+        *entries,
+    )
+
+
+def _bare(field, fn, of):
+    return {"field": field, "source": {"kind": "derive", "fn": fn, "args": [{"$input": of}]}}
+
+
+async def test_bare_parse_of_garbage_omits_the_field_rather_than_writing_null():
+    assembled = await FetchExecutor().assemble(
+        _garbage_plan(_bare("parsed", "parse_json", "raw")), _GARBAGE)
+    assert "parsed" not in assembled
+    assert assembled["raw"] == "not json"
+
+
+async def test_bare_decode_of_garbage_omits_the_field_too():
+    assembled = await FetchExecutor().assemble(
+        _garbage_plan(_bare("decoded", "base64url_decode", "b64")), _GARBAGE)
+    assert "decoded" not in assembled
+
+
+async def test_undefined_under_apply_makes_the_consumer_undefined_not_a_fault():
+    """Before: ``sha256`` received ``None`` and raised a type fault, so garbage
+    in evidence reached the model as an engine error. Undefined feeds
+    undefined, as ``sha256(json.unmarshal(garbage))`` is in Rego."""
+    plan = _garbage_plan({"field": "digest", "source": {
+        "kind": "derive", "fn": "sha256",
+        "args": [{"$apply": {"fn": "parse_json", "args": [{"$input": "raw"}]}}]}})
+    assert "digest" not in await FetchExecutor().assemble(plan, _GARBAGE)
+
+
+async def test_a_field_reading_an_undefined_field_is_omitted_in_turn():
+    plan = _garbage_plan(
+        _bare("parsed", "parse_json", "raw"),
+        _bare("expDigest", "sha256", "parsed.exp"),
+    )
+    assembled = await FetchExecutor().assemble(plan, _GARBAGE)
+    assert "parsed" not in assembled and "expDigest" not in assembled
+
+
+async def test_an_undefined_candidate_is_no_witness_and_the_fold_goes_on():
+    """Inside a fold, undefined for one candidate skips that candidate --
+    the Rego comprehension's behaviour -- and the rule's membership check
+    over what was collected is what fails closed. Here the signature is
+    garbage, so decoding it is undefined for every candidate and the
+    witness list is empty rather than the assembly faulting."""
+    key = _merchant_key()
+    ctx = _invoice_ctx(key)
+    ctx.config["invoiceSignature"] = "not-base64-!!!"
+    entry = json.loads(json.dumps(_SIGNER_IDS_ENTRY))
+    entry["source"]["args"][1] = {"$apply": {"fn": "base64url_decode",
+                                             "args": [{"$input": "invoiceSignature"}]}}
+    plan = _plan(_config_entry("invoiceCanonical"), _config_entry("invoiceSignature"),
+                 _config_entry("trustedMerchants"), entry)
+    assembled = await FetchExecutor().assemble(plan, ctx)
+    assert assembled["invoiceSignerIds"] == []
+
+
+async def test_a_non_string_operand_is_still_a_fault_not_undefined():
+    """The line between evidence and fault is unchanged: a plan that hands a
+    parser the wrong *type* is broken, and fails the assembly closed."""
+    plan = _garbage_plan(_bare("parsed", "parse_json", "raw"))
+    with pytest.raises(FetchError, match="expects a string") as info:
+        await FetchExecutor().assemble(plan, FetchContext(envelope={"raw": 12, "b64": ""}))
+    assert not isinstance(info.value, DeriveUndefined)
+
+
+def test_the_registry_union_claim_is_exactly_the_five():
+    """``default_primitives`` shares five implementations with the engines by
+    construction; the two parsers are reimplementations of OPA natives the
+    Rego engine never imports. Pinned so the docstring's count stays true."""
+    derive = default_primitives()
+    rego = default_builtins()
+    shared = {"sha256": "crypto.sha256", "verify_eddsa": "io.jwt.verify_eddsa",
+              "verify_ed25519_raw": "verify_ed25519_raw",
+              "key_from_did_key": "key_from_did_key",
+              "base64url_encode_no_pad": "base64url.encode_no_pad"}
+    for atom, builtin in shared.items():
+        assert derive[atom] is rego[builtin], atom
+    assert set(derive) - set(shared) == {"parse_json", "base64url_decode"}
+    assert not {"parse_json", "base64url_decode", "json.unmarshal", "base64url.decode"} & set(rego)
+    # CEL carries all seven under the atom names -- as adapters, which is why
+    # the two parsers can answer an error value there and None here.
+    assert set(default_cel_functions()) >= set(derive)
 
 
 # -- the refusals, where they actually have to happen: PolicyBundle.load ------ #

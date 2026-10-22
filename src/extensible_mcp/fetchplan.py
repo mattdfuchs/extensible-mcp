@@ -175,6 +175,16 @@ _APPLY_KEYS = frozenset({"fn", "args"})
 _ARG_MARKERS = frozenset({"$input", "$item", "$apply"})
 
 
+class DeriveUndefined(FetchError):
+    """A ``derive`` primitive answered ``None``: its operand was evidence it
+    could not read (an unparseable invoice, a malformed base64url string), so
+    the derived value is *undefined* -- the same word, and the same effect,
+    as Rego's ``json.unmarshal`` on garbage. :meth:`FetchExecutor.assemble`
+    omits the field rather than writing ``null``, and anything reading it is
+    omitted in turn. Distinct from a :class:`FetchError` raised by a
+    primitive, which is a system fault and fails the assembly closed."""
+
+
 class DerivePlanError(ValueError):
     """A ``derive`` entry the proxy refuses to run, raised at bundle load.
 
@@ -190,9 +200,13 @@ def _parse_json(value: Any) -> Any:
 
     A non-string operand is a plan fault (``HostBuiltinError``, fail closed).
     Unparseable *content* is not: the string is LLM-relayed evidence (a
-    merchant's canonical invoice), so it yields ``None`` and the rule denies on
-    the relation it could not satisfy, with its authored sentence -- rather
-    than the whole input failing to assemble.
+    merchant's canonical invoice), so it yields ``None``, which the resolver
+    turns into :class:`DeriveUndefined` -- the field is omitted, the rule
+    denies on the relation it could not satisfy, with its authored sentence,
+    and tiers that never read the field are untouched. That is the verdict
+    OPA's ``json.unmarshal`` gives the Rego twin, reproduced rather than
+    inherited: this is a Python reimplementation of an OPA native, not the
+    engine's own code (see :func:`default_primitives`).
     """
     if not isinstance(value, str):
         raise HostBuiltinError(
@@ -207,8 +221,9 @@ def _parse_json(value: Any) -> Any:
 
 def _base64url_decode(value: Any) -> str | None:
     """``base64url_decode(string) -> string``, the derive twin of Rego's
-    ``base64url.decode``. Malformed content is evidence, so ``None``; a
-    non-string operand is a plan fault."""
+    ``base64url.decode``. Malformed content is evidence, so ``None`` and the
+    field is undefined (see :func:`_parse_json`); a non-string operand is a
+    plan fault. A reimplementation of an OPA native, as the other is."""
     if not isinstance(value, str):
         raise HostBuiltinError(
             f"base64url_decode expects a string, got {type(value).__name__}"
@@ -225,13 +240,33 @@ def default_primitives(
 ) -> dict[str, Callable[..., Any]]:
     """The primitive vocabulary a ``derive`` entry may name.
 
-    These are the *same* implementations the two policy engines run as host
-    built-ins (:func:`~extensible_mcp.wasm_policy.default_builtins`,
+    **Five of the seven are the same implementations the two policy engines
+    run as host built-ins** (:func:`~extensible_mcp.wasm_policy.default_builtins`,
     :func:`~extensible_mcp.cel_policy.default_cel_functions`) under the
-    toolchain's atom names -- one Ed25519 path, one WebAuthn path, one
-    ``did:key`` decoder, whether the check runs inside the policy or ahead of
-    it. Their contracts carry over unchanged: ``False``/``None`` for an
-    evidence problem, ``HostBuiltinError`` for a system fault.
+    toolchain's atom names -- ``sha256``, ``verify_eddsa``,
+    ``verify_ed25519_raw``, ``key_from_did_key``, ``base64url_encode_no_pad``,
+    plus ``verify_webauthn`` when configured: one Ed25519 path, one WebAuthn
+    path, one ``did:key`` decoder, whether the check runs inside the policy or
+    ahead of it. For those the contract carries over by construction:
+    ``False`` for an evidence problem, ``HostBuiltinError`` for a system fault.
+
+    **The other two are not.** ``parse_json`` and ``base64url_decode`` are
+    Python reimplementations of OPA natives (``json.unmarshal``,
+    ``base64url.decode``) that a Rego bundle compiles into its wasm and never
+    asks the host for. Their agreement with the engine is established by
+    test, not inherited, and what is matched deliberately is the *undefined*
+    domain: OPA leaves both undefined on content they cannot read, so here
+    they answer ``None`` and the resolver omits the derived field
+    (:class:`DeriveUndefined`) instead of writing ``null``.
+
+    The CEL engine's twins of those two are different again, for a reason
+    worth knowing at the seam: they return a CEL *error value*
+    (:func:`~extensible_mcp.cel_policy.undefined_evidence`) rather than
+    ``None``, because cel-python threads an error value through the
+    expression the way Rego threads undefined through a rule body, and a
+    ``None`` would not. So the three spellings of one fact -- undefined,
+    error value, omitted field -- are each what the consuming evaluator can
+    act on, and each denies through the relation that read it.
 
     ``verify_webauthn`` is registered only when a relying-party id is
     configured, so a bundle declaring it without one fails at load rather than
@@ -325,7 +360,12 @@ class DeriveResolver:
             raise FetchError(
                 f"derive field {name!r}: {fn_name!r} may not be applied bare"
             )
-        return self._call(name, fn_name, fn, [self._arg(name, a, None) for a in params["args"]])
+        value = self._call(name, fn_name, fn, [self._arg(name, a, None) for a in params["args"]])
+        if value is None:
+            raise DeriveUndefined(
+                f"derive field {name!r}: {fn_name!r} could not read its operand"
+            )
+        return value
 
     # -- the two forms ------------------------------------------------------ #
 
@@ -338,7 +378,15 @@ class DeriveResolver:
             )
         witnesses = []
         for item in candidates:
-            args = [self._arg(name, a, item) for a in params["args"]]
+            try:
+                args = [self._arg(name, a, item) for a in params["args"]]
+            except DeriveUndefined:
+                # An undefined argument for *this* candidate: it is no
+                # witness, and the fold goes on. The rule then checks
+                # membership in what was collected, so a fold that collects
+                # nothing denies -- undefined fails closed through the
+                # relation, as it does inside a Rego comprehension.
+                continue
             if self._call(name, fn_name, fn, args) is True:
                 witnesses.append(self._project(name, item, params["project"]))
         return witnesses
@@ -362,9 +410,17 @@ class DeriveResolver:
                 f"derive field {name!r}: {fn_name!r} consumes a key and may not "
                 "be nested inside '$apply'"
             )
-        return self._call(
+        value = self._call(
             name, fn_name, fn, [self._arg(name, a, item) for a in inner["args"]]
         )
+        if value is None:
+            # Undefined does not travel into another primitive as ``None``
+            # (which the outer one would refuse as a type fault); the
+            # application it feeds is undefined too.
+            raise DeriveUndefined(
+                f"derive field {name!r}: '$apply' {fn_name!r} could not read its operand"
+            )
+        return value
 
     # -- helpers ------------------------------------------------------------ #
 
@@ -378,9 +434,12 @@ class DeriveResolver:
         return fn
 
     def _call(self, name, fn_name, fn, args):
-        """Invoke a primitive. A ``False``/``None`` answer is the primitive's
-        own verdict on evidence and travels onward; anything *raised* is a
-        system fault and fails closed."""
+        """Invoke a primitive. ``False`` is a verification's verdict and
+        travels onward; ``None`` is a parse that could not read its evidence
+        and becomes :class:`DeriveUndefined` at the call site (a bare entry
+        is omitted, a ``$apply`` makes its consumer undefined, a fold skips
+        the candidate); anything *raised* is a system fault and fails
+        closed."""
         try:
             return fn(*args)
         except Exception as e:  # noqa: BLE001 - HostBuiltinError and friends
@@ -802,6 +861,15 @@ class FetchExecutor:
         omitted too. The policy then sees those fields as undefined and denies
         the paths that need them, while paths that don't (the solo tier) still
         evaluate. An absent *required* field still fails closed.
+
+        **Undefined-aware.** A ``derive`` entry whose primitive could not read
+        its evidence (:class:`DeriveUndefined`) is omitted the same way, never
+        written as ``null``: ``null`` is a *defined* value -- truthy as a bare
+        Rego term, present to a Cedar ``has`` -- and would let a check pass
+        that its Rego twin leaves undefined. Omission is what the three
+        engines agree on, including on a tier the call does not reach, where
+        garbage in an unneeded credential must not turn an allow into a
+        denial.
         """
         assembled: dict[str, Any] = {}
         omitted: set[str] = set()
@@ -833,6 +901,10 @@ class FetchExecutor:
 
             try:
                 assembled[name] = await resolver.resolve(name, params, assembled, ctx)
+            except DeriveUndefined as e:
+                logger.debug("fetchplan: omitting %r (undefined: %s)", name, e)
+                omitted.add(name)
+                continue
             except FetchError:
                 if optional:
                     logger.debug("fetchplan: omitting absent optional field %r", name)
