@@ -104,13 +104,93 @@ def test_every_check_has_a_sentence_and_none_is_the_placeholder(bundle):
             assert c.get("remedy_class"), c["id"]
 
 
+def _fnv1a64(data: bytes) -> int:
+    h = 0xCBF29CE484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def _compact(value) -> str:
+    """The supplier's compact JSON rendering of a hole's source value."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
+def _hole_source(source) -> str:
+    # A single-key object (``$input`` / ``const`` / ``unresolved``) is split
+    # into key and compact value, so the projection carries no opinion about
+    # how an object serialises.
+    if isinstance(source, dict) and len(source) == 1:
+        ((key, value),) = source.items()
+        return f"{key}\t{_compact(value)}"
+    return _compact(source)
+
+
+def _csv(items) -> str:
+    return ",".join(str(x) for x in items)
+
+
+def _digest_lines(guidance: dict) -> list[str]:
+    """The supplier's line projection of a guidance file: one tab-separated
+    record per line, in the file's own order, covering every field except
+    the digest itself. Parsed content, not bytes, so key order and
+    whitespace do not move it."""
+    lines = ["scheme\t" + guidance["id_scheme"], "goal\t" + guidance["goal"]]
+    for tier in guidance["tiers"]:
+        lines.append(f"tier\t{tier['tier']}")
+        for c in tier["checks"]:
+            lines.append(
+                f"check\t{c['id']}\t{c['sentence']}\t{c['condition']}\t{c['remedy_class']}"
+            )
+            for h in c.get("holes", []):
+                lines.append(
+                    f"hole\t{h['marker']}\t{h['param']}\t{h.get('format', '')}"
+                    f"\t{_hole_source(h['source'])}"
+                )
+    for g in guidance.get("call_guards", []):
+        always = "true" if g["always"] else "false"
+        lines.append(
+            f"guard\t{g['field']}\t{always}\t{_csv(g['required_in_tiers'])}"
+            f"\t{_csv(g['deciding_checks'])}"
+        )
+    for cred in guidance.get("call_credentials", []):
+        lines.append(
+            f"cred\t{cred['field']}\t{cred.get('issuer_role', '')}"
+            f"\t{_csv(cred['role_checks'])}"
+        )
+        for edge in cred.get("depends_on", []):
+            lines.append(
+                f"edge\t{cred['field']}\t{edge['field']}\t{_csv(edge['binding_checks'])}"
+            )
+    return lines
+
+
+def guidance_digest(guidance: dict) -> str:
+    """Recompute a guidance file's ``guidance_digest`` from its content."""
+    payload = ("\n".join(_digest_lines(guidance)) + "\n").encode("utf-8")
+    return format(_fnv1a64(payload), "016x")
+
+
 @pytest.mark.parametrize("bundle", sorted(ADOPTED))
-def test_adopted_bundle_carries_a_digest(bundle):
+def test_adopted_bundle_digest_is_recomputable(bundle):
     """The scheme tag names a scheme, not an artifact -- two commits with the
-    same tag can differ by a sentence. The digest is the line to compare."""
+    same tag can differ by a sentence. The digest is the line to compare, so
+    it has to be a fact about the content rather than a label on it: the
+    supplier publishes the projection it is taken over, and this recomputes
+    it. A re-pin that changes rendered guidance now has to change the
+    recorded value too, and one that does not reproduces it exactly."""
     d = _guidance(bundle)["guidance_digest"]
-    assert re.fullmatch(r"[0-9a-f]{16}", d["value"])
     assert d["alg"] == "fnv1a64"
+    assert re.fullmatch(r"[0-9a-f]{16}", d["value"])
+    assert guidance_digest(_guidance(bundle)) == d["value"]
+
+
+@pytest.mark.parametrize("bundle", sorted(ADOPTED))
+def test_provenance_quotes_the_recorded_digest(bundle):
+    """The provenance note is where a human compares a re-pin; it must quote
+    the same value the file carries."""
+    value = _guidance(bundle)["guidance_digest"]["value"]
+    assert value in (FIXTURES / bundle / "PROVENANCE.md").read_text()
 
 
 @pytest.mark.parametrize("bundle", sorted(TEACHING))
