@@ -26,14 +26,39 @@ have been anonymized for this public release; behavior verified byte-for-byte
 against this repository's own test suite (`test_webauthn_policy.py`) before
 and after.
 
-- Re-pinned to upstream commit `0ee19df` (the named-check-id regeneration).
-  `guidance.json` carries `"id_scheme": "named-welded"`.
+- Re-pinned to upstream commit `d114d32` (the check-split regeneration,
+  93 → 126 ids across the five upstream bundles). `guidance.json` carries
+  `"id_scheme": "named-split"` and `guidance_digest.value = "22c0b6689dcbbc13"` —
+  the digest changes exactly when any id, sentence, condition, remedy class
+  or tier structure does, so a future re-pin compares that one line rather
+  than diffing sentence text. `d114d32` is `0ecfdd2` (the settled sentence
+  fix, see below) plus the digest field; nothing else in this directory
+  changed between them.
+- **The split.** Each parameterised helper that transitively reaches a
+  crypto or codec primitive is split into its body's conjuncts, with the
+  caller's actuals substituted. Here `member_of` and `enrolled_as` each
+  dissolve into four (`issued_by_trusted_admin` / `enrolled_by_trusted_admin`,
+  `signed_by_key`, `sub_matches`, `within_window`): 21 → 30 ids, 15 authored
+  and 15 mechanical.
+  A denial that read *"a membership credential does not chain to a trusted
+  admin"* now names which link broke. Two shapes stay welded by rule and
+  are asserted single in `tests/test_fixture_corpus.py`: a crypto
+  application already inside a quantifier is not lifted out, and a
+  single-literal body inlines to itself.
+- **One inherited sentence was corrected upstream rather than welded back.**
+  `signed_by_key(jws, jwk)` takes a key the policy does not derive — the
+  proxy resolves it from the issuer's `did:web`, and only for issuers in the
+  trusted set — so an untrusted issuer yields no key and the leaf fails
+  *without* the signature being wrong. Its sentence is therefore *"a
+  credential's signature could not be verified against its issuer's key"*,
+  true in both states. `signed_by_did_key` keeps the flat *"signature is
+  invalid"*, because there the policy derives the key itself and absence
+  is impossible. Row one of that finding is pinned in
+  `tests/test_vc_policy.py::test_untrusted_admin_denies`.
 - Package: `policybundle.examples.family_spend_webauthn`
-- Entrypoints: `allow`, `deny_reason`, `failed_checks` (21 named check ids,
-  tiers 8 + 13 — `solo.*` / `full_chain.*`, e.g.
-  `full_chain.approval.spend_challenge_binds`). Replaces the earlier
-  positional `t0.c*` / `t1.c*` scheme; ids are opaque join keys, so the
-  authored sentences and every rendered denial are unchanged.
+- Entrypoints: `allow`, `deny_reason`, `failed_checks` (30 named check ids,
+  tiers 11 + 19 — `solo.*` / `full_chain.*`, e.g.
+  `full_chain.approval.spend_challenge_binds`). Ids are opaque join keys.
 - Uses the custom host builtins `verify_webauthn`, `key_from_did_key` (plus
   stock `io.jwt.verify_eddsa`, `crypto.sha256`, `base64url.encode_no_pad` —
   a standard OPA builtin the wasm target still leaves host-provided)

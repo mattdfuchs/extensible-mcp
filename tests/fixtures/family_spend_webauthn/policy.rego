@@ -45,19 +45,27 @@ within_window(nbf, exp, now) if {
 }
 
 member_of(m, signer_iss, trusted, now) if {
-	some d in trusted
-	m.claims.iss == d
+	issued_by_trusted_admin(m, trusted)
 	signed_by_key(m.jws, m.adminKey)
 	m.claims.sub == signer_iss
 	within_window(m.claims.nbf, m.claims.exp, now)
 }
 
 enrolled_as(e, cred_id, trusted, now) if {
-	some d in trusted
-	e.claims.iss == d
+	enrolled_by_trusted_admin(e, trusted)
 	signed_by_key(e.jws, e.adminKey)
 	e.claims.sub == cred_id
 	within_window(e.claims.nbf, e.claims.exp, now)
+}
+
+issued_by_trusted_admin(m, trusted) if {
+	some d in trusted
+	m.claims.iss == d
+}
+
+enrolled_by_trusted_admin(e, trusted) if {
+	some d in trusted
+	e.claims.iss == d
 }
 
 signed_by_did_key(jws, did) if {
@@ -102,9 +110,24 @@ deny_reason contains "required: input.requestVC.claims.vc.credentialSubject.requ
 	input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant
 }
 
-deny_reason contains "a membership credential does not chain to a trusted admin" if {
+deny_reason contains "the membership credential's issuer is not a trusted admin" if {
 	not allow
-	not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)
+	not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)
+}
+
+deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
+	not allow
+	not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)
+}
+
+deny_reason contains "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss" if {
+	not allow
+	input.requesterMembership.claims.sub != input.requestVC.claims.iss
+}
+
+deny_reason contains "a credential is outside its validity window" if {
+	not allow
+	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
 }
 
 deny_reason contains "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"" if {
@@ -137,9 +160,24 @@ deny_reason contains "the approval is not bound to this exact call" if {
 	not spend_challenge_binds(input.approval.clientDataJSON, input.tool, input.arguments.amountCents, input.arguments.merchant)
 }
 
-deny_reason contains "the passkey is not enrolled by a trusted admin" if {
+deny_reason contains "the enrollment credential's issuer is not a trusted admin" if {
 	not allow
-	not enrolled_as(input.approverEnrollment, input.approval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.approverEnrollment, input.trustedAdminDids)
+}
+
+deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
+	not allow
+	not signed_by_key(input.approverEnrollment.jws, input.approverEnrollment.adminKey)
+}
+
+deny_reason contains "required: input.approverEnrollment.claims.sub == input.approval.credentialId" if {
+	not allow
+	input.approverEnrollment.claims.sub != input.approval.credentialId
+}
+
+deny_reason contains "a credential is outside its validity window" if {
+	not allow
+	not within_window(input.approverEnrollment.claims.nbf, input.approverEnrollment.claims.exp, input.now)
 }
 
 deny_reason contains "required: input.approverEnrollment.claims.vc.credentialSubject.role == \"parent\"" if {
@@ -172,9 +210,24 @@ failed_checks contains "solo.request_vc.merchant_matches" if {
 	input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant
 }
 
-failed_checks contains "solo.requester_membership.member_of" if {
+failed_checks contains "solo.requester_membership.issued_by_trusted_admin" if {
 	not allow
-	not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)
+	not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)
+}
+
+failed_checks contains "solo.requester_membership.signed_by_key" if {
+	not allow
+	not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)
+}
+
+failed_checks contains "solo.requester_membership.sub_matches" if {
+	not allow
+	input.requesterMembership.claims.sub != input.requestVC.claims.iss
+}
+
+failed_checks contains "solo.requester_membership.within_window" if {
+	not allow
+	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
 }
 
 failed_checks contains "solo.requester_membership.role_matches" if {
@@ -212,9 +265,24 @@ failed_checks contains "full_chain.request_vc.merchant_matches" if {
 	input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant
 }
 
-failed_checks contains "full_chain.requester_membership.member_of" if {
+failed_checks contains "full_chain.requester_membership.issued_by_trusted_admin" if {
 	not allow
-	not member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)
+	not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)
+}
+
+failed_checks contains "full_chain.requester_membership.signed_by_key" if {
+	not allow
+	not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)
+}
+
+failed_checks contains "full_chain.requester_membership.sub_matches" if {
+	not allow
+	input.requesterMembership.claims.sub != input.requestVC.claims.iss
+}
+
+failed_checks contains "full_chain.requester_membership.within_window" if {
+	not allow
+	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
 }
 
 failed_checks contains "full_chain.requester_membership.role_matches" if {
@@ -242,9 +310,24 @@ failed_checks contains "full_chain.approval.spend_challenge_binds" if {
 	not spend_challenge_binds(input.approval.clientDataJSON, input.tool, input.arguments.amountCents, input.arguments.merchant)
 }
 
-failed_checks contains "full_chain.approver_enrollment.enrolled_as" if {
+failed_checks contains "full_chain.approver_enrollment.enrolled_by_trusted_admin" if {
 	not allow
-	not enrolled_as(input.approverEnrollment, input.approval.credentialId, input.trustedAdminDids, input.now)
+	not enrolled_by_trusted_admin(input.approverEnrollment, input.trustedAdminDids)
+}
+
+failed_checks contains "full_chain.approver_enrollment.signed_by_key" if {
+	not allow
+	not signed_by_key(input.approverEnrollment.jws, input.approverEnrollment.adminKey)
+}
+
+failed_checks contains "full_chain.approver_enrollment.sub_matches" if {
+	not allow
+	input.approverEnrollment.claims.sub != input.approval.credentialId
+}
+
+failed_checks contains "full_chain.approver_enrollment.within_window" if {
+	not allow
+	not within_window(input.approverEnrollment.claims.nbf, input.approverEnrollment.claims.exp, input.now)
 }
 
 failed_checks contains "full_chain.approver_enrollment.role_matches" if {

@@ -1,4 +1,8 @@
-{"input": "ProdSpendInput",
+{"primitives":
+ {"verify_eddsa": {"class": "key-consuming"},
+  "sha256": {"class": "pure"},
+  "key_from_did_key": {"class": "key-producing"}},
+ "input": "ProdSpendInput",
  "entries":
  [{"source": {"kind": "call"},
    "schema": {"type": "string"},

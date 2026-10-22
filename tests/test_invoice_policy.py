@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from extensible_mcp.bundle import PolicyBundle
+from extensible_mcp.fetchplan import default_primitives
 from extensible_mcp.guidance import render_denial
 from extensible_mcp.wasm_policy import default_builtins
 from tests import vc_helpers as vc
@@ -168,6 +169,7 @@ def bundle(request):
         return PolicyBundle.load(
             BUNDLE_DIR, name="family_spend_invoice",
             builtins=default_builtins(webauthn_rp_id=RP_ID),
+            primitives=default_primitives(webauthn_rp_id=RP_ID),
         )
     return _cel_bundle_with_rp_id(CEL_BUNDLE_DIR, name="cel_family_spend_invoice", rp_id=RP_ID)
 
@@ -304,6 +306,31 @@ def test_expired_invoice_denies(bundle, merchant_key, admin_key, child_passkey):
     invoice, base = _base_input(merchant_key, total_cents=400, exp=50)  # now=100, already expired
     full = _with_child(base, invoice, admin_key, child_passkey)
     assert bundle.policy.query(full, bundle.allow_entrypoint) == [{"result": False}]
+
+
+def test_tampered_enrollment_signature_denies_on_both_engines(
+    bundle, merchant_key, admin_key, child_passkey
+):
+    """The split's enrollment leg, on both engines: a forged enrollment
+    signature fails exactly ``signed_by_key`` -- the issuer is trusted, the
+    subject matches, the window holds -- and the two engines report the same
+    id. Before the split this was one welded ``enrolled_as`` whatever broke."""
+    invoice, base = _base_input(merchant_key, total_cents=400)
+    full = _with_child(base, invoice, admin_key, child_passkey)
+    full["tool"] = "pay_invoice"
+    jws = full["childEnrollment"]["jws"]
+    full["childEnrollment"]["jws"] = jws[:-6] + ("A" if jws[-1] != "A" else "B") * 6
+    assert bundle.validate_input({**full}) == []
+    assert bundle.policy.query(full, bundle.allow_entrypoint) == [{"result": False}]
+    failed = bundle.policy.query(full, bundle.failed_checks_entrypoint)[0]["result"]
+    assert sorted(failed) == [
+        "dual.arguments.amount_cents_above",       # a ¤4.00 call is not a dual-tier call
+        "dual.child_enrollment.signed_by_key",
+        "solo.child_enrollment.signed_by_key",
+    ]
+    message = render_denial(bundle.guidance, failed)
+    assert "could not be verified against its issuer's key" in message
+    assert "invalid" not in message
 
 
 def test_child_approval_bound_to_a_different_invoice_denies(

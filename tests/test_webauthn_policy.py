@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from extensible_mcp.bundle import PolicyBundle
+from extensible_mcp.fetchplan import default_primitives
 from extensible_mcp.types import CallRequest
 from extensible_mcp.wasm_filter import WasmPolicyFilter
 from extensible_mcp.wasm_policy import PolicyEvaluationError, default_builtins
@@ -91,6 +92,7 @@ def _filter(keys, passkey, *, enrollment_role="parent"):
     bundle = PolicyBundle.load(
         WA_DIR, name="family_spend_webauthn",
         builtins=default_builtins(webauthn_rp_id=RP_ID),
+        primitives=default_primitives(webauthn_rp_id=RP_ID),
     )
     wallets = {
         vc.did_key(keys["kid"]): _envelope(
@@ -218,6 +220,7 @@ def _wa_vc_filter(keys, passkey, *, with_origin=True):
     bundle = PolicyBundle.load(
         WA_DIR, name="family_spend_webauthn",
         builtins=default_builtins(webauthn_rp_id=RP_ID),
+        primitives=default_primitives(webauthn_rp_id=RP_ID),
     )
     resolver = DidWebResolver(
         [ADMIN_DID], preresolved={ADMIN_DID: keys["admin"].as_dict(private=False)}

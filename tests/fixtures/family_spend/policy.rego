@@ -81,9 +81,19 @@ deny_reason contains "required: input.requestVC.claims.arguments == input.argume
 	input.requestVC.claims.arguments != input.arguments
 }
 
-deny_reason contains "a membership credential does not chain to the trust root" if {
+deny_reason contains "the membership credential was not issued by the trust root" if {
 	not allow
-	not member_of(input.requesterMembership, input.trustRootDID, input.now, input.trustRootJwk)
+	input.requesterMembership.claims.iss != input.trustRootDID
+}
+
+deny_reason contains "a credential is outside its validity window" if {
+	not allow
+	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
+}
+
+deny_reason contains "a credential signature is invalid" if {
+	not allow
+	not signed_by(input.requesterMembership.jws, input.trustRootJwk)
 }
 
 deny_reason contains "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss" if {
@@ -126,9 +136,19 @@ deny_reason contains "the authorization is not bound to this request" if {
 	not bound_to(input.requestVC, input.authorizationVC)
 }
 
-deny_reason contains "a membership credential does not chain to the trust root" if {
+deny_reason contains "the membership credential was not issued by the trust root" if {
 	not allow
-	not member_of(input.approverMembership, input.trustRootDID, input.now, input.trustRootJwk)
+	input.approverMembership.claims.iss != input.trustRootDID
+}
+
+deny_reason contains "a credential is outside its validity window" if {
+	not allow
+	not within_window(input.approverMembership.claims.nbf, input.approverMembership.claims.exp, input.now)
+}
+
+deny_reason contains "a credential signature is invalid" if {
+	not allow
+	not signed_by(input.approverMembership.jws, input.trustRootJwk)
 }
 
 deny_reason contains "required: input.approverMembership.claims.sub == input.authorizationVC.claims.iss" if {
@@ -161,9 +181,19 @@ failed_checks contains "solo.request_vc.arguments_matches" if {
 	input.requestVC.claims.arguments != input.arguments
 }
 
-failed_checks contains "solo.requester_membership.member_of" if {
+failed_checks contains "solo.requester_membership.iss_matches" if {
 	not allow
-	not member_of(input.requesterMembership, input.trustRootDID, input.now, input.trustRootJwk)
+	input.requesterMembership.claims.iss != input.trustRootDID
+}
+
+failed_checks contains "solo.requester_membership.within_window" if {
+	not allow
+	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
+}
+
+failed_checks contains "solo.requester_membership.signed_by" if {
+	not allow
+	not signed_by(input.requesterMembership.jws, input.trustRootJwk)
 }
 
 failed_checks contains "solo.requester_membership.sub_matches" if {
@@ -201,9 +231,19 @@ failed_checks contains "full_chain.request_vc.arguments_matches" if {
 	input.requestVC.claims.arguments != input.arguments
 }
 
-failed_checks contains "full_chain.requester_membership.member_of" if {
+failed_checks contains "full_chain.requester_membership.iss_matches" if {
 	not allow
-	not member_of(input.requesterMembership, input.trustRootDID, input.now, input.trustRootJwk)
+	input.requesterMembership.claims.iss != input.trustRootDID
+}
+
+failed_checks contains "full_chain.requester_membership.within_window" if {
+	not allow
+	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
+}
+
+failed_checks contains "full_chain.requester_membership.signed_by" if {
+	not allow
+	not signed_by(input.requesterMembership.jws, input.trustRootJwk)
 }
 
 failed_checks contains "full_chain.requester_membership.sub_matches" if {
@@ -241,9 +281,19 @@ failed_checks contains "full_chain.request_vc.bound_to" if {
 	not bound_to(input.requestVC, input.authorizationVC)
 }
 
-failed_checks contains "full_chain.approver_membership.member_of" if {
+failed_checks contains "full_chain.approver_membership.iss_matches" if {
 	not allow
-	not member_of(input.approverMembership, input.trustRootDID, input.now, input.trustRootJwk)
+	input.approverMembership.claims.iss != input.trustRootDID
+}
+
+failed_checks contains "full_chain.approver_membership.within_window" if {
+	not allow
+	not within_window(input.approverMembership.claims.nbf, input.approverMembership.claims.exp, input.now)
+}
+
+failed_checks contains "full_chain.approver_membership.signed_by" if {
+	not allow
+	not signed_by(input.approverMembership.jws, input.trustRootJwk)
 }
 
 failed_checks contains "full_chain.approver_membership.sub_matches" if {
