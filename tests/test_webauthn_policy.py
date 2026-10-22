@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -279,8 +280,15 @@ async def test_vc_filter_solo_webauthn_allows_without_approval(keys, passkey):
     assert result.allowed is True
 
 
-async def test_vc_filter_missing_origin_config_fails_closed(keys, passkey):
+async def test_vc_filter_missing_origin_config_fails_closed(keys, passkey, caplog):
+    """A missing config key is a deployment fault. It fails closed, and the
+    key's name goes where the operator looks -- the warning log -- not into
+    the reason the model relays."""
     wa_filter = _wa_vc_filter(keys, passkey, with_origin=False)
-    result = await wa_filter.check(_wa_bundle_call(keys, amount_cents=500))
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
+        result = await wa_filter.check(_wa_bundle_call(keys, amount_cents=500))
     assert result.allowed is False
-    assert "webauthnOrigin" in result.reason
+    assert "failing closed" in result.reason
+    assert "webauthnOrigin" not in result.reason
+    faults = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("webauthnOrigin" in m and "(failing closed)" in m for m in faults), faults
