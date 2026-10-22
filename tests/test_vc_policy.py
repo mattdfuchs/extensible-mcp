@@ -18,6 +18,7 @@ import pytest
 
 from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.didweb import DidWebResolver
+from extensible_mcp.fetchplan import FetchContext, FetchExecutor
 from extensible_mcp.types import CallRequest
 from extensible_mcp.wallet_bundle import WalletBundleAdapter
 from extensible_mcp.wasm_filter import VCPolicyFilter
@@ -66,9 +67,11 @@ def _request_bundle(keys, *, amount, merchant="acme", kid_role="child", jti="urn
     return token, {"token": token, "membership": _membership_token(keys, "kid", kid_role)}
 
 
-def _auth_bundle(keys, request_token, *, parent_role="parent", req_jti="urn:req1"):
+def _auth_bundle(keys, request_token, *, parent_role="parent", req_jti="urn:req1",
+                 request_hash=None):
     parent_did = vc.did_key(keys["parent"])
-    request_hash = "sha256:" + hashlib.sha256(request_token.encode()).hexdigest()
+    if request_hash is None:
+        request_hash = "sha256:" + hashlib.sha256(request_token.encode()).hexdigest()
     token = vc.sign(
         {"iss": parent_did, "nbf": 0, "exp": 9999999999, "jti": "urn:auth1",
          "vc": {"credentialSubject": {
@@ -339,3 +342,54 @@ def test_undefined_reference_comparison_emits_no_failed_check_id():
     ids = set(out[0]["result"]) if out and "result" in out[0] else set()
     assert ids  # the not-form checks (signatures, chain) do fire
     assert not (ids & merchant_ids)  # the undefined comparison stays silent
+
+
+# -- the derive path's hash binding against the wasm path's (#27) ------------ #
+#
+# ``hash_binds`` compares the authorization's ``request_hash`` with
+# ``"sha256:" ++ sha256(requestVC.jws)`` computed inside the wasm. The Cedar
+# bundle derives that string ahead of the policy with ``sha256`` and the
+# ``concat`` reimplementation, as the toolchain's two emitted entries below.
+# The derived string is put into a real authorization credential and the real
+# policy decides; a tampered operand must be refused the same way.
+
+_HASH_ENTRIES = [
+    {"field": "requestVC", "source": {"kind": "call"}},
+    {"field": "requestVCJwsDigest", "source": {"kind": "derive", "fn": "sha256",
+                                               "args": [{"$input": "requestVC.jws"}]}},
+    {"field": "requestVCJwsDigestConcat", "source": {"kind": "derive", "fn": "concat",
+                                                     "args": ["", ["sha256:", {"$input": "requestVCJwsDigest"}]]}},
+]
+
+
+async def _derived_request_hash(jws: str) -> str:
+    plan = {"input": "X", "primitives": {"sha256": {"class": "pure"}, "concat": {"class": "pure"}},
+            "entries": _HASH_ENTRIES}
+    assembled = await FetchExecutor().assemble(plan, FetchContext(envelope={"requestVC": {"jws": jws}}))
+    return assembled["requestVCJwsDigestConcat"]
+
+
+async def test_the_derived_hash_binding_is_the_one_the_wasm_policy_accepts(vc_filter, keys):
+    req_token, req_bundle = _request_bundle(keys, amount=50.00)
+    call = CallRequest(
+        tool_name="payments__spend", server_name="payments",
+        arguments={"amount": 50.00, "merchant": "acme", "requestVC": req_bundle,
+                   "authorizationVC": _auth_bundle(
+                       keys, req_token, request_hash=await _derived_request_hash(req_token))},
+    )
+    result = await vc_filter.check(call)
+    assert result.allowed is True, result.reason
+
+
+async def test_a_hash_derived_over_a_tampered_request_is_denied_by_the_wasm_policy(vc_filter, keys):
+    req_token, req_bundle = _request_bundle(keys, amount=50.00)
+    other_token, _ = _request_bundle(keys, amount=50.00, jti="urn:req2")
+    call = CallRequest(
+        tool_name="payments__spend", server_name="payments",
+        arguments={"amount": 50.00, "merchant": "acme", "requestVC": req_bundle,
+                   "authorizationVC": _auth_bundle(
+                       keys, req_token, request_hash=await _derived_request_hash(other_token))},
+    )
+    result = await vc_filter.check(call)
+    assert result.allowed is False
+    assert "the authorization is not bound to this request" in result.reason
