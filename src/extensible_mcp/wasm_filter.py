@@ -7,7 +7,10 @@ For each call it: splits the arguments into the tool's native arguments and the
 LLM-supplied credential fields; assembles the policy's closed input via the
 bundle's fetch plan (resolving config / clock / wallet itself); evaluates the
 ``allow`` rule; and either passes the call through with the credential fields
-stripped, or denies with the policy's reason. Engine errors fail closed.
+stripped, or denies with the policy's reason. Engine errors fail closed, and
+they are logged: a denial is expected traffic, a fault is a bug or an attack,
+and the one failure an LLM can trigger at will must not be the one an operator
+cannot see. See :func:`_fault`.
 
 The credential→requirement *conditionality* (e.g. an authorization VC needed
 only above a threshold) is governed by the policy itself: a credential a call
@@ -41,6 +44,32 @@ from .wallet_bundle import WalletBundleAdapter, WalletBundleError, make_membersh
 from .wasm_policy import PolicyEvaluationError
 
 logger = logging.getLogger("extensible_mcp.wasm_filter")
+
+
+def _fault(tool_name: str, stage: str, exc: BaseException, *, detail: str | None = None) -> str:
+    """An engine fault: logged for the operator, and turned into the caller's
+    reason. The two texts differ on purpose.
+
+    The log carries the exception, at ``warning`` rather than ``info``,
+    because a fault is not a denial: a denial is expected traffic, a fault is
+    a bug or an attack, and it is distinguishable by message from the manifest
+    validation lines this module also writes.
+
+    The caller gets the *stage* and, by default, nothing else. The consumer of
+    a reason string is LLM-driven; a check id or a library's error text is
+    implementation detail that belongs in the log, not in the conversation.
+    What the caller must still be able to tell is that this was not a policy
+    denial, which ``failing closed`` says.
+
+    ``detail`` is the one exception: text written *for* the conversation --
+    the wallet-bundle adapter's "do not retype" hint on a homoglyph-corrupted
+    token -- stays in the reason, because that message's audience is the
+    model, not the operator.
+    """
+    logger.warning("%s on call %r (failing closed): %s", stage, tool_name, exc)
+    if detail is not None:
+        return f"{stage}: {detail}"
+    return f"{stage} (failing closed; the detail is in the proxy log)."
 
 
 def _validation_failure(errors: list[str]) -> str:
@@ -166,21 +195,21 @@ class WasmPolicyFilter:
         try:
             assembled = await self._executor.assemble(self.bundle.fetchplan, ctx)
         except FetchError as e:
-            return deny(f"Policy input could not be assembled: {e}")
+            return deny(_fault(request.tool_name, "Policy input could not be assembled", e))
 
         validation_errors = []
         if self._validate:
             try:
                 validation_errors = self.bundle.validate_input(assembled)
             except Exception as e:  # noqa: BLE001 - deployment fault, fail closed
-                return deny(f"Policy input could not be validated (failing closed): {e}")
+                return deny(_fault(request.tool_name, "Policy input could not be validated", e))
 
         try:
             result = self.bundle.policy.query(assembled, self.bundle.allow_entrypoint)
         except PolicyEvaluationError as e:
             # Engine/config fault — fail closed, surfaced as an error not a
             # silent policy "deny".
-            return deny(f"Policy could not be evaluated (failing closed): {e}")
+            return deny(_fault(request.tool_name, "Policy could not be evaluated", e))
 
         if result and result[0].get("result") is True:
             if validation_errors:
@@ -278,7 +307,10 @@ class VCPolicyFilter:
         try:
             adapted = self._adapter.adapt(request)
         except WalletBundleError as e:
-            return deny(f"A supplied credential is malformed: {e}")
+            # The adapter's message is written for the model (it carries the
+            # don't-retype hint), so it stays in the reason -- see _fault.
+            return deny(_fault(request.tool_name, "A supplied credential is malformed",
+                               e, detail=str(e)))
 
         membership_lookup = make_membership_lookup(adapted.memberships, self._resolver)
         fallback = self._wallet_fallback
@@ -299,19 +331,19 @@ class VCPolicyFilter:
         try:
             assembled = await self._executor.assemble(self.bundle.fetchplan, ctx)
         except FetchError as e:
-            return deny(f"Policy input could not be assembled: {e}")
+            return deny(_fault(request.tool_name, "Policy input could not be assembled", e))
 
         validation_errors = []
         if self._validate:
             try:
                 validation_errors = self.bundle.validate_input(assembled)
             except Exception as e:  # noqa: BLE001 - deployment fault, fail closed
-                return deny(f"Policy input could not be validated (failing closed): {e}")
+                return deny(_fault(request.tool_name, "Policy input could not be validated", e))
 
         try:
             result = self.bundle.policy.query(assembled, self.bundle.allow_entrypoint)
         except PolicyEvaluationError as e:
-            return deny(f"Policy could not be evaluated (failing closed): {e}")
+            return deny(_fault(request.tool_name, "Policy could not be evaluated", e))
 
         if result and result[0].get("result") is True:
             if validation_errors:
