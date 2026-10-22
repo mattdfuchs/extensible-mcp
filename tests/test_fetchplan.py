@@ -709,6 +709,60 @@ def test_validate_accepts_input_inside_an_over_element_at_depth():
     validate_derive_plan(_one_key_fold({"key": "AAAA"}))
 
 
+# -- two entries, one field: refused at load, whatever the kinds (#31) ------- #
+#
+# ``assemble`` walks entries in order into one map, so the second writer wins
+# and the rule reads a value computed for different arguments. Nothing raises,
+# the manifest sees one property, and the verdict answers a question nobody
+# asked -- the toolchain shipped six folds over one shared candidate domain
+# that all generated the same field name, so five leaves were checking the
+# wrong credential's signature. Their generator is fixed; this is the
+# independent guard on the consuming side, and it is kind-agnostic because a
+# ``call``/``call`` pair collapses identically.
+
+
+def _derive_digest(field, of):
+    return {"field": field,
+            "source": {"kind": "derive", "fn": "sha256", "args": [{"$input": of}]}}
+
+
+def test_validate_rejects_two_derive_entries_sharing_a_field():
+    plan = _plan(
+        _config_entry("jwsA"), _config_entry("jwsB"),
+        _derive_digest("digest", "jwsA"), _derive_digest("digest", "jwsB"),
+    )
+    with pytest.raises(DerivePlanError, match=r"'digest' twice.*'derive'.*'derive'"):
+        validate_derive_plan(plan)
+
+
+def test_validate_rejects_two_call_entries_sharing_a_field():
+    """Not confined to ``derive``: the kinds are named in the message so the
+    author sees which two entries collided."""
+    plan = _plan(
+        {"field": "requestVC", "source": {"kind": "call"}},
+        {"field": "requestVC", "source": {"kind": "call"}},
+    )
+    with pytest.raises(DerivePlanError, match=r"'requestVC' twice.*'call'.*'call'"):
+        validate_derive_plan(plan)
+
+
+def test_validate_rejects_a_call_and_a_wallet_entry_sharing_a_field():
+    plan = _plan(
+        {"field": "membership", "source": {"kind": "call"}},
+        {"field": "membership", "source": {"kind": "wallet", "params": {}}},
+    )
+    with pytest.raises(DerivePlanError, match=r"'membership' twice.*'call'.*'wallet'"):
+        validate_derive_plan(plan)
+
+
+def test_validate_accepts_distinct_fields_of_the_same_shape():
+    """The refusal is on the name, not on two entries looking alike."""
+    validate_derive_plan(_plan(
+        _config_entry("jwsA"), _config_entry("jwsB"),
+        _derive_digest("digestA", "jwsA"), _derive_digest("digestB", "jwsB"),
+    ))
+
+
 # -- the refusals, where they actually have to happen: PolicyBundle.load ------ #
 #
 # A plan whose derived fields are shaped wrong is a bundle that must never
@@ -732,6 +786,16 @@ def test_load_accepts_a_well_formed_derive_plan(tmp_path):
     )
     bundle = PolicyBundle.load(_bundle_dir(tmp_path, plan))
     assert bundle.fetchplan["entries"][-2]["source"]["fn"] == "verify_ed25519_raw"
+
+
+def test_load_refuses_two_entries_sharing_a_field(tmp_path):
+    """At load, not at assemble: a plan that cannot be right must not reach a
+    call. The bundle is otherwise loadable, so the duplicate is the reason."""
+    plan = _plan(
+        _config_entry("invoiceCanonical"), _config_entry("invoiceCanonical"),
+    )
+    with pytest.raises(DerivePlanError, match="'invoiceCanonical' twice"):
+        PolicyBundle.load(_bundle_dir(tmp_path, plan))
 
 
 def test_load_refuses_a_bare_key_consuming_primitive(tmp_path):
