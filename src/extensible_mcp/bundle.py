@@ -7,10 +7,12 @@ policy-authoring toolchain, that govern one tool.
 A bundle is a directory the proxy consumes verbatim:
 
 - the enforced rules — ``policy.wasm`` (OPA/Rego, loaded into an
-  :class:`~extensible_mcp.wasm_policy.OpaWasmPolicy`) *or* ``checks.cel.json``
-  (CEL, loaded into a :class:`~extensible_mcp.cel_policy.CelPolicy`) — the
-  bundle format is engine-plural: see :mod:`extensible_mcp.policy_engine`.
-  A conforming toolchain may target either.
+  :class:`~extensible_mcp.wasm_policy.OpaWasmPolicy`), ``checks.cel.json``
+  (CEL, loaded into a :class:`~extensible_mcp.cel_policy.CelPolicy`) *or*
+  ``policy.cedar`` with its ``expected_ids.json`` (Cedar, loaded into a
+  :class:`~extensible_mcp.cedar_policy.CedarPolicy`) — the bundle format is
+  engine-plural: see :mod:`extensible_mcp.policy_engine`. A conforming
+  toolchain may target any of them.
 - ``manifest.json``  — JSON Schema of the closed input (type defs + validation)
 - ``fetchplan.json`` — where each input field comes from (``call`` / ``config``
   / ``clock`` / ``wallet`` / ``derive``)
@@ -48,8 +50,9 @@ class PolicyBundle:
     ``policy`` is a :class:`~extensible_mcp.policy_engine.PolicyEngine` — the
     bundle format is engine-plural: :func:`load` picks the implementation by
     what the directory contains (``policy.wasm`` → OPA/Rego,
-    ``checks.cel.json`` → CEL) unless its ``engine`` argument forces one, and
-    nothing past this field knows which one it holds."""
+    ``checks.cel.json`` → CEL, ``policy.cedar`` → Cedar) unless its
+    ``engine`` argument forces one, and nothing past this field knows which
+    one it holds."""
 
     name: str
     package: str
@@ -65,7 +68,7 @@ class PolicyBundle:
         *,
         name: str | None = None,
         builtins: dict[str, Any] | None = None,
-        engine: Literal["rego", "cel"] | None = None,
+        engine: Literal["rego", "cel", "cedar"] | None = None,
         primitives: dict[str, Any] | None = None,
     ) -> "PolicyBundle":
         """Load a bundle directory. ``builtins`` overrides the default host
@@ -77,10 +80,15 @@ class PolicyBundle:
 
         ``engine`` forces which :class:`~extensible_mcp.policy_engine.PolicyEngine`
         implementation to load, overriding the default of picking by which
-        artifact is present. Raises :class:`FileNotFoundError` if the forced
-        engine's artifact is missing — a directory carrying both artifacts
-        (e.g. a shadow-comparison fixture) needs this to load the non-default
-        one; it is never inferred silently.
+        artifact is present (``checks.cel.json``, then ``policy.cedar``, then
+        ``policy.wasm``). Raises :class:`FileNotFoundError` if the forced
+        engine's artifact is missing — a directory carrying more than one
+        artifact (e.g. a shadow-comparison fixture) needs this to load a
+        non-default one; it is never inferred silently. A Cedar bundle is
+        also refused here, as :class:`~extensible_mcp.cedar_policy.CedarPolicyError`,
+        when its policy set does not carry exactly the forbids its
+        ``expected_ids.json`` lists: forbid-only means an incomplete set
+        allows what the source policy denies.
 
         ``primitives`` overrides the vocabulary a ``derive`` fetch-plan entry
         may name — ``default_primitives(webauthn_rp_id=...)`` for a deployment
@@ -93,21 +101,32 @@ class PolicyBundle:
         consume a key, whatever the bundle declares about them."""
         d = Path(directory)
         cel_path = d / "checks.cel.json"
+        cedar_path = d / "policy.cedar"
         wasm_path = d / "policy.wasm"
-        if engine == "cel" and not cel_path.exists():
+        artifacts = {"cel": cel_path, "cedar": cedar_path, "rego": wasm_path}
+        if engine is not None and not artifacts[engine].exists():
             raise FileNotFoundError(
-                f"engine='cel' requested but {cel_path} does not exist"
+                f"engine={engine!r} requested but {artifacts[engine]} does not exist"
             )
-        if engine == "rego" and not wasm_path.exists():
-            raise FileNotFoundError(
-                f"engine='rego' requested but {wasm_path} does not exist"
+        if engine is None:
+            engine = (
+                "cel" if cel_path.exists()
+                else "cedar" if cedar_path.exists()
+                else "rego"
             )
-        use_cel = cel_path.exists() if engine is None else engine == "cel"
-        if use_cel:
+        if engine == "cel":
             from .cel_policy import CelPolicy
 
             policy: PolicyEngine = CelPolicy(cel_path)
             package = json.loads(cel_path.read_text())["package"]
+        elif engine == "cedar":
+            from .cedar_policy import CedarPolicy
+
+            # Cedar has no package construct and the bundle declares none; the
+            # directory name labels the entrypoints, which is all a package
+            # does for a bundle whose denials render through guidance.
+            policy = CedarPolicy(cedar_path, package=d.name)
+            package = d.name
         else:
             policy = OpaWasmPolicy(wasm_path, builtins=builtins)
             package = _derive_package(policy)
