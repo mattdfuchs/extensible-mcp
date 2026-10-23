@@ -175,6 +175,16 @@ _APPLY_KEYS = frozenset({"fn", "args"})
 _ARG_MARKERS = frozenset({"$input", "$item", "$apply"})
 
 
+class DeriveUndefined(FetchError):
+    """A ``derive`` primitive answered ``None``: its operand was evidence it
+    could not read (an unparseable invoice, a malformed base64url string), so
+    the derived value is *undefined* -- the same word, and the same effect,
+    as Rego's ``json.unmarshal`` on garbage. :meth:`FetchExecutor.assemble`
+    omits the field rather than writing ``null``, and anything reading it is
+    omitted in turn. Distinct from a :class:`FetchError` raised by a
+    primitive, which is a system fault and fails the assembly closed."""
+
+
 class DerivePlanError(ValueError):
     """A ``derive`` entry the proxy refuses to run, raised at bundle load.
 
@@ -190,9 +200,13 @@ def _parse_json(value: Any) -> Any:
 
     A non-string operand is a plan fault (``HostBuiltinError``, fail closed).
     Unparseable *content* is not: the string is LLM-relayed evidence (a
-    merchant's canonical invoice), so it yields ``None`` and the rule denies on
-    the relation it could not satisfy, with its authored sentence -- rather
-    than the whole input failing to assemble.
+    merchant's canonical invoice), so it yields ``None``, which the resolver
+    turns into :class:`DeriveUndefined` -- the field is omitted, the rule
+    denies on the relation it could not satisfy, with its authored sentence,
+    and tiers that never read the field are untouched. That is the verdict
+    OPA's ``json.unmarshal`` gives the Rego twin, reproduced rather than
+    inherited: this is a Python reimplementation of an OPA native, not the
+    engine's own code (see :func:`default_primitives`).
     """
     if not isinstance(value, str):
         raise HostBuiltinError(
@@ -207,8 +221,9 @@ def _parse_json(value: Any) -> Any:
 
 def _base64url_decode(value: Any) -> str | None:
     """``base64url_decode(string) -> string``, the derive twin of Rego's
-    ``base64url.decode``. Malformed content is evidence, so ``None``; a
-    non-string operand is a plan fault."""
+    ``base64url.decode``. Malformed content is evidence, so ``None`` and the
+    field is undefined (see :func:`_parse_json`); a non-string operand is a
+    plan fault. A reimplementation of an OPA native, as the other is."""
     if not isinstance(value, str):
         raise HostBuiltinError(
             f"base64url_decode expects a string, got {type(value).__name__}"
@@ -220,18 +235,114 @@ def _base64url_decode(value: Any) -> str | None:
         return None
 
 
+FORMAT_INT_BASES = frozenset({2, 8, 10, 16})
+"""The bases OPA's ``format_int`` supports; any other base is *undefined*."""
+
+
+def _concat(delimiter: Any, parts: Any) -> str:
+    """``concat(delimiter, array) -> string``, a reimplementation of the OPA
+    native (not a host import: a Rego bundle compiles it into its wasm). Its
+    signature is Rego's -- an array, not variadic.
+
+    Measured against OPA 1.17.1: a non-string delimiter, a non-array second
+    operand, or a non-string element is a ``rego_type_error``, so each is a
+    type fault here; OPA never coerces, and the drift a reimplementation
+    would introduce is a helpful ``str(x)``. OPA also accepts a *set* and
+    joins it sorted; that is outside the pinned grammar (a plan cannot spell
+    a set), and a future widening must not inherit list order for it.
+    """
+    if not isinstance(delimiter, str):
+        raise HostBuiltinError(
+            f"concat expects a string delimiter, got {type(delimiter).__name__}"
+        )
+    if not isinstance(parts, list):
+        raise HostBuiltinError(
+            f"concat expects an array, got {type(parts).__name__}"
+        )
+    for i, part in enumerate(parts):
+        if not isinstance(part, str):
+            raise HostBuiltinError(
+                f"concat expects string elements, got {type(part).__name__} at {i}"
+            )
+    return delimiter.join(parts)
+
+
+def _format_int(value: Any, base: Any) -> str | None:
+    """``format_int(number, base) -> string``, a reimplementation of the OPA
+    native, over the one domain where a reimplementation can agree with it.
+
+    OPA parses a JSON number as an arbitrary-precision decimal and truncates
+    toward zero: ``format_int(1.9999999999999999, 10)`` is ``"1"`` and
+    ``format_int(1e23, 10)`` is ``"100000000000000000000000"``. This function
+    receives the number after Python's JSON parser has made it a ``float``,
+    and neither value survives that: the first is ``2.0`` and the second is
+    off by 8388608. No formatting rule can recover what the transport
+    dropped, so **a ``float`` operand is refused as a fault** (an integral
+    float included -- ``12.0`` is exactly where ``1.9999999999999999`` hides)
+    rather than formatted into a silently different digest. An ``int`` is
+    exact in both runtimes and formats identically: lower-case digits,
+    sign-magnitude for negatives.
+
+    The base: 2, 8, 10 and 16 are OPA's; any other *number* leaves the
+    result **undefined** (measured: no error, no value -- ``10.0`` included),
+    so ``None``; a non-number base is a type error there and a fault here.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HostBuiltinError(
+            f"format_int expects a number, got {type(value).__name__}"
+        )
+    if isinstance(base, bool) or not isinstance(base, (int, float)):
+        raise HostBuiltinError(
+            f"format_int expects a numeric base, got {type(base).__name__}"
+        )
+    if isinstance(base, float) or base not in FORMAT_INT_BASES:
+        logger.debug("fetchplan: format_int base %r is unsupported (undefined)", base)
+        return None
+    if isinstance(value, float):
+        raise HostBuiltinError(
+            f"format_int received {value!r} as a float; the exact JSON number "
+            "did not survive parsing, so its digits cannot be reproduced -- "
+            "send an integer"
+        )
+    return format(value, {2: "b", 8: "o", 10: "d", 16: "x"}[base])
+
+
 def default_primitives(
     *, webauthn_rp_id: str | None = None
 ) -> dict[str, Callable[..., Any]]:
     """The primitive vocabulary a ``derive`` entry may name.
 
-    These are the *same* implementations the two policy engines run as host
-    built-ins (:func:`~extensible_mcp.wasm_policy.default_builtins`,
+    **Five of the nine are the same implementations the two policy engines
+    run as host built-ins** (:func:`~extensible_mcp.wasm_policy.default_builtins`,
     :func:`~extensible_mcp.cel_policy.default_cel_functions`) under the
-    toolchain's atom names -- one Ed25519 path, one WebAuthn path, one
-    ``did:key`` decoder, whether the check runs inside the policy or ahead of
-    it. Their contracts carry over unchanged: ``False``/``None`` for an
-    evidence problem, ``HostBuiltinError`` for a system fault.
+    toolchain's atom names -- ``sha256``, ``verify_eddsa``,
+    ``verify_ed25519_raw``, ``key_from_did_key``, ``base64url_encode_no_pad``,
+    plus ``verify_webauthn`` when configured: one Ed25519 path, one WebAuthn
+    path, one ``did:key`` decoder, whether the check runs inside the policy or
+    ahead of it. For those the contract carries over by construction:
+    ``False`` for an evidence problem, ``HostBuiltinError`` for a system fault.
+
+    **The other four are not.** ``parse_json``, ``base64url_decode``,
+    ``concat`` and ``format_int`` are Python reimplementations of OPA natives
+    (``json.unmarshal``, ``base64url.decode``, ``concat``, ``format_int``)
+    that a Rego bundle compiles into its wasm and never asks the host for.
+    Their agreement with the engine is established by test, not inherited.
+    For the two parsers what is matched deliberately is the *undefined*
+    domain: OPA leaves both undefined on content they cannot read, so here
+    they answer ``None`` and the resolver omits the derived field
+    (:class:`DeriveUndefined`) instead of writing ``null``. ``format_int``
+    answers ``None`` the same way on a base OPA does not support, and both
+    string primitives are held to OPA's type errors as faults; see each
+    function's own docstring for the domain it refuses.
+
+    The CEL engine's twins of those two are different again, for a reason
+    worth knowing at the seam: they return a CEL *error value*
+    (:func:`~extensible_mcp.cel_policy.undefined_evidence`) rather than
+    ``None``, because cel-python threads an error value through the
+    expression the way Rego threads undefined through a rule body, and a
+    ``None`` would not. So the three spellings of one fact -- undefined,
+    error value, omitted field -- are each what the consuming evaluator can
+    act on, and each denies through the relation that read it.
 
     ``verify_webauthn`` is registered only when a relying-party id is
     configured, so a bundle declaring it without one fails at load rather than
@@ -245,6 +356,8 @@ def default_primitives(
         "verify_eddsa": _verify_eddsa,
         "verify_ed25519_raw": _verify_ed25519_raw,
         "key_from_did_key": _key_from_did_key,
+        "concat": _concat,
+        "format_int": _format_int,
     }
     if webauthn_rp_id is not None:
         primitives["verify_webauthn"] = make_verify_webauthn(webauthn_rp_id)
@@ -325,7 +438,12 @@ class DeriveResolver:
             raise FetchError(
                 f"derive field {name!r}: {fn_name!r} may not be applied bare"
             )
-        return self._call(name, fn_name, fn, [self._arg(name, a, None) for a in params["args"]])
+        value = self._call(name, fn_name, fn, [self._arg(name, a, None) for a in params["args"]])
+        if value is None:
+            raise DeriveUndefined(
+                f"derive field {name!r}: {fn_name!r} could not read its operand"
+            )
+        return value
 
     # -- the two forms ------------------------------------------------------ #
 
@@ -338,16 +456,28 @@ class DeriveResolver:
             )
         witnesses = []
         for item in candidates:
-            args = [self._arg(name, a, item) for a in params["args"]]
+            try:
+                args = [self._arg(name, a, item) for a in params["args"]]
+            except DeriveUndefined:
+                # An undefined argument for *this* candidate: it is no
+                # witness, and the fold goes on. The rule then checks
+                # membership in what was collected, so a fold that collects
+                # nothing denies -- undefined fails closed through the
+                # relation, as it does inside a Rego comprehension.
+                continue
             if self._call(name, fn_name, fn, args) is True:
                 witnesses.append(self._project(name, item, params["project"]))
         return witnesses
 
     def _arg(self, name, spec, item):
-        """One resolved argument: a value, the current element's field, or the
-        result of the nested ``$apply`` primitive."""
+        """One resolved argument: a value, the current element's field, the
+        result of the nested ``$apply`` primitive, or a list of those --
+        ``concat``'s array operand is a literal list whose elements may be
+        any of the first three."""
         if "$value" in spec:
             return spec["$value"]
+        if "$list" in spec:
+            return [self._arg(name, element, item) for element in spec["$list"]]
         if "$item" in spec:
             if item is None:
                 raise FetchError(
@@ -362,9 +492,17 @@ class DeriveResolver:
                 f"derive field {name!r}: {fn_name!r} consumes a key and may not "
                 "be nested inside '$apply'"
             )
-        return self._call(
+        value = self._call(
             name, fn_name, fn, [self._arg(name, a, item) for a in inner["args"]]
         )
+        if value is None:
+            # Undefined does not travel into another primitive as ``None``
+            # (which the outer one would refuse as a type fault); the
+            # application it feeds is undefined too.
+            raise DeriveUndefined(
+                f"derive field {name!r}: '$apply' {fn_name!r} could not read its operand"
+            )
+        return value
 
     # -- helpers ------------------------------------------------------------ #
 
@@ -378,9 +516,12 @@ class DeriveResolver:
         return fn
 
     def _call(self, name, fn_name, fn, args):
-        """Invoke a primitive. A ``False``/``None`` answer is the primitive's
-        own verdict on evidence and travels onward; anything *raised* is a
-        system fault and fails closed."""
+        """Invoke a primitive. ``False`` is a verification's verdict and
+        travels onward; ``None`` is a parse that could not read its evidence
+        and becomes :class:`DeriveUndefined` at the call site (a bare entry
+        is omitted, a ``$apply`` makes its consumer undefined, a fold skips
+        the candidate); anything *raised* is a system fault and fails
+        closed."""
         try:
             return fn(*args)
         except Exception as e:  # noqa: BLE001 - HostBuiltinError and friends
@@ -455,16 +596,47 @@ def declared_primitives(plan: dict[str, Any]) -> dict[str, str | None]:
     )
 
 
+def _validate_unique_fields(plan: dict[str, Any]) -> None:
+    """Refuse a plan in which two entries name the same ``field``, naming the
+    field and both source kinds. Kind-agnostic on purpose: a ``call``/``call``
+    pair collapses in ``assemble`` exactly as a ``derive``/``derive`` pair
+    does; ``derive`` merely makes the collision easy to generate, because its
+    field names are computed rather than written."""
+    seen: dict[str, str] = {}
+    for entry in plan.get("entries") or []:
+        field = entry.get("field")
+        kind = (entry.get("source") or {}).get("kind")
+        if not isinstance(field, str):
+            continue
+        if field in seen:
+            raise DerivePlanError(
+                f"fetch plan names field {field!r} twice (a {seen[field]!r} "
+                f"entry and a {kind!r} entry); the later one would silently "
+                f"overwrite the earlier in the assembled input"
+            )
+        seen[field] = str(kind)
+
+
 def validate_derive_plan(
     plan: dict[str, Any], *, primitives: dict[str, Callable[..., Any]] | None = None
 ) -> None:
-    """Refuse, at load, a fetch plan whose ``derive`` entries the proxy will not
-    run. Raises :class:`DerivePlanError`; a plan with no ``derive`` entry passes,
-    whatever vocabulary it declares.
+    """Refuse, at load, a fetch plan the proxy must not assemble from. Raises
+    :class:`DerivePlanError`. The first check is kind-agnostic; the rest
+    concern ``derive`` entries, and a plan with none passes them whatever
+    vocabulary it declares.
 
     What is refused, and why each is a load-time question rather than an
     evaluation-time one:
 
+    - two entries that name the same ``field``, of any source kinds.
+      :meth:`FetchExecutor.assemble` walks entries in order into one map, so
+      the last writer wins and the rule reads a value computed for different
+      arguments -- the plan validates, the manifest accepts one property, the
+      policy evaluates cleanly, and the verdict answers a question nobody
+      asked. The toolchain shipped exactly this (six folds over one shared
+      candidate domain all named ``trustRootJwkKeyWitnesses``, so five
+      leaves checked the wrong credential's signature) and fixed its
+      generator; this is the independent guard on the consuming side;
     - a primitive a ``derive`` entry **invokes** that the proxy cannot
       satisfy, or one it invokes without declaring -- the same discipline as
       an unregistered host built-in, which fails when the policy is loaded and
@@ -496,6 +668,7 @@ def validate_derive_plan(
     on a built-in the policy actually calls, parsed out of the wasm, before this
     runs. So an unimplemented declaration is logged, not raised.
     """
+    _validate_unique_fields(plan)
     declared = declared_primitives(plan)
     available = default_primitives() if primitives is None else primitives
     for prim in sorted(declared):
@@ -567,6 +740,9 @@ def _applied_primitives(args: Any) -> set[str]:
     if not isinstance(args, list):
         return referenced
     for arg in args:
+        if isinstance(arg, list):
+            referenced |= _applied_primitives(arg)
+            continue
         if not isinstance(arg, dict):
             continue
         inner = arg.get("$apply")
@@ -627,8 +803,51 @@ def _validate_derive_entry(
     elif "project" in source:
         raise DerivePlanError(f"{where}: 'project' without 'over'")
 
+    _validate_primitive_shape(where, fn, args)
     for arg in args:
         _validate_derive_arg(where, arg, declared, folded=folded, nested=False)
+
+
+def _validate_primitive_shape(where: str, fn: str, args: list[Any]) -> None:
+    """Refuse, at load, a ``concat`` or ``format_int`` application whose
+    arguments are not Rego's signature. These two are reimplementations of
+    OPA natives on the path that computes a digest the rule then compares,
+    where a disagreement does not fail loudly -- it produces a different
+    hash and a denial nobody can read. So the signature is held exactly:
+    ``concat(delimiter, array)`` with a literal array, never variadic;
+    ``format_int(number, base)`` with a literal base OPA supports, since a
+    base it does not support is undefined on every call and a plan that
+    cannot be right should not reach one.
+    """
+    if fn == "concat":
+        if len(args) != 2:
+            raise DerivePlanError(
+                f"{where}: 'concat' takes (delimiter, array), got {len(args)} argument(s)"
+            )
+        if isinstance(args[0], list) or (
+            isinstance(args[0], dict) and not any(k.startswith("$") for k in args[0])
+        ):
+            raise DerivePlanError(f"{where}: 'concat' delimiter must be a string")
+        if not isinstance(args[1], list):
+            raise DerivePlanError(
+                f"{where}: 'concat' takes an array as its second argument, "
+                "not a variadic list of strings"
+            )
+    elif fn == "format_int":
+        if len(args) != 2:
+            raise DerivePlanError(
+                f"{where}: 'format_int' takes (number, base), got {len(args)} argument(s)"
+            )
+        base = args[1]
+        if isinstance(base, bool) or not isinstance(base, int):
+            raise DerivePlanError(
+                f"{where}: 'format_int' base must be a literal integer"
+            )
+        if base not in FORMAT_INT_BASES:
+            raise DerivePlanError(
+                f"{where}: 'format_int' base {base} is not one OPA supports "
+                f"({sorted(FORMAT_INT_BASES)}); the result would be undefined on every call"
+            )
 
 
 def _validate_candidate(where: str, node: Any) -> None:
@@ -674,6 +893,10 @@ def _validate_derive_arg(
     folded: bool,
     nested: bool,
 ) -> None:
+    if isinstance(arg, list):
+        for element in arg:
+            _validate_derive_arg(where, element, declared, folded=folded, nested=nested)
+        return
     if not isinstance(arg, dict):
         return  # a literal
     markers = [k for k in arg if isinstance(k, str) and k.startswith("$")]
@@ -721,6 +944,7 @@ def _validate_derive_arg(
     inner_args = inner.get("args", [])
     if not isinstance(inner_args, list):
         raise DerivePlanError(f"{where}: '$apply' 'args' must be a list")
+    _validate_primitive_shape(where, inner_fn, inner_args)
     for inner_arg in inner_args:
         _validate_derive_arg(where, inner_arg, declared, folded=folded, nested=True)
 
@@ -770,6 +994,15 @@ class FetchExecutor:
         omitted too. The policy then sees those fields as undefined and denies
         the paths that need them, while paths that don't (the solo tier) still
         evaluate. An absent *required* field still fails closed.
+
+        **Undefined-aware.** A ``derive`` entry whose primitive could not read
+        its evidence (:class:`DeriveUndefined`) is omitted the same way, never
+        written as ``null``: ``null`` is a *defined* value -- truthy as a bare
+        Rego term, present to a Cedar ``has`` -- and would let a check pass
+        that its Rego twin leaves undefined. Omission is what the three
+        engines agree on, including on a tier the call does not reach, where
+        garbage in an unneeded credential must not turn an allow into a
+        denial.
         """
         assembled: dict[str, Any] = {}
         omitted: set[str] = set()
@@ -801,6 +1034,10 @@ class FetchExecutor:
 
             try:
                 assembled[name] = await resolver.resolve(name, params, assembled, ctx)
+            except DeriveUndefined as e:
+                logger.debug("fetchplan: omitting %r (undefined: %s)", name, e)
+                omitted.add(name)
+                continue
             except FetchError:
                 if optional:
                     logger.debug("fetchplan: omitting absent optional field %r", name)
@@ -869,6 +1106,10 @@ class FetchExecutor:
         return node
 
     def _resolve_arg(self, arg: Any, assembled: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(arg, list):
+            # A literal list operand (``concat``'s array): each element is an
+            # argument in its own right, resolved the same three ways.
+            return {"$list": [self._resolve_arg(a, assembled) for a in arg]}
         if isinstance(arg, dict):
             if "$input" in arg:
                 return {"$value": self._navigate(assembled, arg["$input"])}
