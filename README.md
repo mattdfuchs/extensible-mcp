@@ -295,11 +295,11 @@ Without `load_control`, an LLM could be prompt-injected into connecting to a mal
 | `manifest.json` | JSON Schema for the policy's whole input object. Names the input contract, declares which fields are required, and closes it with `additionalProperties: false`. |
 | `fetchplan.json` | Where each input field comes from. One entry per field, with `source.kind` of `call` (from the tool call), `config` (from deployment config), `clock` (current time), `wallet` (fetched by a lookup you supply, parameterized by other input fields), or `derive` (computed from earlier fields by one primitive, for a policy language that cannot evaluate the primitive itself). A `derive` entry that verifies a signature may only be *folded* over candidate keys and *project* a witness — never applied bare to yield a verdict, because a verdict no longer carries the relation the rule has to keep. |
 | `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. |
-| `policy.wasm` *or* `checks.cel.json` | The rules themselves, in whichever engine you prefer. |
+| `policy.wasm`, `checks.cel.json` *or* `policy.cedar` + `expected_ids.json` | The rules themselves, in whichever engine you prefer. A Cedar bundle also lists the policy ids its loader must find, because a forbid-only policy set that half-loads allows everything. |
 
-Both engines are optional extras, because each pulls dependencies not every deployment wants: `pip install "extensible-mcp[wasm]"` for the OPA/WASM one, `[cel]` for CEL. They are imported lazily, so `PolicyBundle.load` is where a base install discovers it is missing one.
+All three engines are optional extras, because each pulls dependencies not every deployment wants: `pip install "extensible-mcp[wasm]"` for the OPA/WASM one, `[cel]` for CEL, `[cedar]` for Cedar. They are imported lazily, so `PolicyBundle.load` is where a base install discovers it is missing one.
 
-The two engines are interchangeable over the same other three files. A Rego policy is compiled to WASM:
+The engines are interchangeable over the same guidance. Rego and CEL also share the manifest and fetch plan byte for byte; a Cedar bundle's differ only where Cedar forces it, described below. A Rego policy is compiled to WASM:
 
 ```bash
 opa build -t wasm -e mypolicy/allow -e mypolicy/failed_checks \
@@ -310,9 +310,11 @@ opa build -t wasm -e mypolicy/allow -e mypolicy/failed_checks \
 
 A CEL policy skips the compile step: `checks.cel.json` carries the expressions directly.
 
-Either artifact can be hand-authored — several bundles under [`tests/fixtures/`](tests/fixtures/) are. The certified ones are instead **generated from a common core**, so the Rego and CEL twins agree by construction rather than by someone keeping two files in sync. Running both against the same inputs then tests what generation can't guarantee on its own: that two quite different runtimes — a WASM module under wasmtime, and CEL expressions evaluated in-process — reach the same decision through the same host builtins.
+A Cedar policy is interpreted too, but Cedar has no host-function extension point — by design, since one would destroy the decidability that makes Cedar analysable — so a signature check cannot run *inside* the policy. Each cryptographic leaf instead becomes a `derive` entry in the fetch plan, a witness set the rule tests a relation over, which is why a Cedar bundle's manifest and fetch plan carry fields the Rego and CEL twins never need. The policy set is forbid-only: one `forbid` per failable condition, annotated `@id` with the guidance's check id, plus one `@assembly` forbid per tier for its own incompleteness, over a base `permit`. `expected_ids.json` lists what the loader must find, and a bundle that carries fewer is refused rather than loaded as a permit. The proxy's half of that bargain is the derivation contract: the fold collects exactly the candidates the primitive verified, because a witness set that is too large makes a forbid fail to fire. A Cedar bundle is therefore *certified modulo its derivation contract*, which is a weaker claim than the other two engines can make, and the bundle's own `contract.json` says so.
 
-One consequence worth knowing when reading a bundle: the internal identifiers threading a denial back to the specific condition that produced it are an artifact of that generation. They're positional, and meaningful only within a single emitted bundle. Render denials through `guidance.json`; don't build against the identifiers themselves.
+Any artifact can be hand-authored — several bundles under [`tests/fixtures/`](tests/fixtures/) are. The certified ones are instead **generated from a common core**, so the Rego, CEL and Cedar twins agree by construction rather than by someone keeping three files in sync. Running all three against the same inputs then tests what generation can't guarantee on its own: that three quite different runtimes — a WASM module under wasmtime, CEL expressions evaluated in-process, and Cedar's engine over host-derived witness sets — reach the same decision, and report the same failed checks, from the same signed evidence.
+
+One consequence worth knowing when reading a bundle: the check identifiers threading a denial back to the condition that produced it are opaque join keys between the rules and `guidance.json`, and nothing in the proxy parses one. They are named, but they are still an artifact of generation. Render denials through `guidance.json`; don't build against the identifiers themselves.
 
 Attach a loaded bundle as a call filter:
 
@@ -341,7 +343,7 @@ guarded = SingleUseEvidenceFilter(policy_filter, credential_fields=("requestVC",
 
 The `jti` sits inside the signed payload, so a caller cannot vary it without invalidating the signature — which is what makes it usable as a replay key, and what a challenge derived purely from the terms lacks. It wraps rather than follows the policy filter for two reasons: the policy filter strips credential fields from the arguments it passes on, so a later filter never sees them; and evidence must be spent only when the call was actually authorized, or a call the policy refuses would burn the human's approval. The store is in memory and per process — a deployment needing replay protection across restarts or several proxies should supply its own.
 
-Seven worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: six call-gate policies across both engines, from a two-credential spend policy up to an invoice-settlement one, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. [`project-overview.md`](project-overview.md) covers the modules involved.
+Eight worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: seven call-gate policies across the three engines, from a two-credential spend policy up to an invoice-settlement one, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. [`project-overview.md`](project-overview.md) covers the modules involved.
 
 ### Writing a custom filter
 
