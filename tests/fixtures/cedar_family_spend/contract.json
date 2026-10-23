@@ -1,0 +1,75 @@
+{"status":
+ "CERTIFIED MODULO THIS CONTRACT — and the bridge theorem is not generated yet, so today: NOT FAITHFUL. Each obligation below is the host's. `denySound` transfers whatever these sets contain, because a forbid that fires is a leaf that evaluated false; `denyComplete` does not — a witness set that is too LARGE makes a forbid fail to fire and Cedar allows where the source policy denies. Over-inclusion fails open. Each obligation carries the three clauses the bridge step needs (`clauses`); `claim` is the first of them, kept as the headline.",
+ "obligations":
+ [{"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "requestVCJwsTrustRootJwkKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.requestVCJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.requestVC.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.trustRootJwk, the very term the rule reads, so the projection offers it by construction (the supplier's covers-of-singleton lemma)",
+    "applies":
+    "verify_eddsa(input.requestVC.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (the supplier's fold-applies lemma)"},
+   "class": "key-consuming",
+   "claim":
+   "context.requestVCJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.requestVC.jws, x.key) holds} — every such x, and no other value",
+   "checks": ["solo.request_vc.signed_by", "full_chain.request_vc.signed_by"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "requesterMembershipJwsTrustRootJwkKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.requesterMembershipJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.requesterMembership.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.trustRootJwk, the very term the rule reads, so the projection offers it by construction (the supplier's covers-of-singleton lemma)",
+    "applies":
+    "verify_eddsa(input.requesterMembership.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (the supplier's fold-applies lemma)"},
+   "class": "key-consuming",
+   "claim":
+   "context.requesterMembershipJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.requesterMembership.jws, x.key) holds} — every such x, and no other value",
+   "checks":
+   ["solo.requester_membership.signed_by",
+    "full_chain.requester_membership.signed_by"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "authorizationVCJwsTrustRootJwkKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.authorizationVCJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.authorizationVC.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.trustRootJwk, the very term the rule reads, so the projection offers it by construction (the supplier's covers-of-singleton lemma)",
+    "applies":
+    "verify_eddsa(input.authorizationVC.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (the supplier's fold-applies lemma)"},
+   "class": "key-consuming",
+   "claim":
+   "context.authorizationVCJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.authorizationVC.jws, x.key) holds} — every such x, and no other value",
+   "checks": ["full_chain.authorization_vc.signed_by"]},
+  {"kind": "bare",
+   "fn": "sha256",
+   "field": "requestVCJwsDigest",
+   "clauses":
+   {"exact":
+    "context.requestVCJwsDigest is exactly sha256(input.requestVC.jws)",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "sha256(input.requestVC.jws) is the value the checks below read — the right primitive, to the right arguments (the supplier's fold-applies lemma)"},
+   "class": "pure",
+   "claim": "context.requestVCJwsDigest is exactly sha256(input.requestVC.jws)",
+   "checks": ["full_chain.request_vc.bound_to"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "approverMembershipJwsTrustRootJwkKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.approverMembershipJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.approverMembership.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.trustRootJwk, the very term the rule reads, so the projection offers it by construction (the supplier's covers-of-singleton lemma)",
+    "applies":
+    "verify_eddsa(input.approverMembership.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (the supplier's fold-applies lemma)"},
+   "class": "key-consuming",
+   "claim":
+   "context.approverMembershipJwsTrustRootJwkKeyWitnesses is exactly {x.key | x ∈ [{key: input.trustRootJwk}], verify_eddsa(input.approverMembership.jws, x.key) holds} — every such x, and no other value",
+   "checks": ["full_chain.approver_membership.signed_by"]}],
+ "goal": "policybundle.examples.family_spend"}

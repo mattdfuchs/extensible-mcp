@@ -45,10 +45,13 @@ EXPECTED_COUNTS = {
     "cel_family_spend_invoice": (32, 23, 9),
     "family_spend": (29, 16, 13),
     "cel_family_spend": (29, 16, 13),
+    "cedar_family_spend": (29, 16, 13),
 }
 ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
            "cel_family_spend_invoice"}
-TEACHING = {"family_spend", "cel_family_spend"}
+# cedar_family_spend's rules are supplied, but its guidance is this repo's
+# own teaching file, so it carries no digest either.
+TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend"}
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
                 "family_spend_invoice"}
 CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_invoice"}
@@ -255,6 +258,62 @@ def test_cel_twin_is_the_same_bundle_in_another_notation(rego):
         assert (FIXTURES / rego / name).read_bytes() == (FIXTURES / cel / name).read_bytes(), name
 
 
+# Rego bundle -> its Cedar twin, or the reason it has none. A Cedar bundle's
+# manifest and fetch plan cannot be byte-identical to the Rego bundle's —
+# every hoisted crypto leaf reads a derived field no other engine needs — so
+# the pairing asserts the differences are exactly the ones Cedar forces.
+CEDAR_TWIN = {
+    "family_spend": "cedar_family_spend",
+    "family_spend_prod": None,      # ships upstream; needs #27's `concat` as a derive primitive
+    "family_spend_webauthn": None,  # ships upstream; needs #27 and `verify_webauthn` registered
+    "family_spend_invoice": None,   # ships upstream; needs `verify_webauthn` registered
+}
+
+
+@pytest.mark.parametrize("rego", sorted(CEDAR_TWIN))
+def test_cedar_twin_differs_from_the_rego_bundle_only_where_cedar_forces_it(rego):
+    cedar = CEDAR_TWIN[rego]
+    if cedar is None:
+        assert not (FIXTURES / f"cedar_{rego}").exists(), (
+            f"cedar_{rego} exists on disk but is listed as having no twin"
+        )
+        return
+    r, c = FIXTURES / rego, FIXTURES / cedar
+    # Guidance is the one artifact that crosses the hoist untouched.
+    assert (r / "guidance.json").read_bytes() == (c / "guidance.json").read_bytes()
+
+    rm = json.loads((r / "manifest.json").read_text())
+    cm = json.loads((c / "manifest.json").read_text())
+    derived = cm["derived_fields"]
+    assert set(cm["properties"]) == set(rm["properties"]) | set(derived)
+    for name in rm["properties"]:
+        assert cm["properties"][name] == rm["properties"][name], name
+    assert not set(derived) & set(cm["required"]), (
+        "a derived field is absent when its primitive matched nothing; never required"
+    )
+    assert set(cm["required"]) <= set(rm["required"])
+    assert set(cm["definitions"]) == set(rm["definitions"])
+
+    rp = json.loads((r / "fetchplan.json").read_text())
+    cp = json.loads((c / "fetchplan.json").read_text())
+    shared = len(rp["entries"])
+    assert cp["entries"][:shared] == rp["entries"], "the shared plan, verbatim, first"
+    appended = cp["entries"][shared:]
+    assert all(e["source"]["kind"] == "derive" for e in appended)
+    assert {e["field"] for e in appended} == set(derived)
+    assert set(cp["primitives"]) == {e["source"]["fn"] for e in appended}, (
+        "a Cedar plan declares exactly what it derives"
+    )
+
+    # expected_ids.json names the guidance's ids, tier by tier, and no others.
+    expected = json.loads((c / "expected_ids.json").read_text())
+    g = _guidance(cedar)
+    assert set(expected["ids"]) == set(_ids(g))
+    assert [set(t["ids"]) for t in expected["tiers"]] == [
+        {ch["id"] for ch in t["checks"]} for t in g["tiers"]
+    ]
+
+
 def test_every_bundle_on_disk_is_accounted_for():
     """A fixture directory nobody listed is a fixture nobody is checking: every
     directory with a ``guidance.json`` is a bundle and must be in the table,
@@ -299,6 +358,7 @@ RP_ID = "approval.example"
 LOAD_CONFIG = {
     "family_spend": {},
     "cel_family_spend": {},
+    "cedar_family_spend": {},
     "family_spend_prod": {},
     "family_spend_webauthn": {"builtins": default_builtins(webauthn_rp_id=RP_ID),
                               "primitives": default_primitives(webauthn_rp_id=RP_ID)},
