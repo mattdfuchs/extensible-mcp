@@ -171,6 +171,18 @@ def guidance_digest(guidance: dict) -> str:
     return format(_fnv1a64(payload), "016x")
 
 
+@pytest.mark.parametrize("bundle", sorted(EXPECTED_COUNTS))
+def test_fetch_plan_names_each_field_once(bundle):
+    """Two entries naming one field collapse in ``assemble`` to the last
+    writer, and the load now refuses that (#31). Pinned on the corpus as well
+    as on synthetic plans, since the one time it shipped it was generated."""
+    plan = json.loads((FIXTURES / bundle / "fetchplan.json").read_text())
+    fields = [e["field"] for e in plan["entries"]]
+    assert len(fields) == len(set(fields)), sorted(
+        f for f in set(fields) if fields.count(f) > 1
+    )
+
+
 @pytest.mark.parametrize("bundle", sorted(ADOPTED))
 def test_adopted_bundle_digest_is_recomputable(bundle):
     """The scheme tag names a scheme, not an artifact -- two commits with the

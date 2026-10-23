@@ -455,16 +455,47 @@ def declared_primitives(plan: dict[str, Any]) -> dict[str, str | None]:
     )
 
 
+def _validate_unique_fields(plan: dict[str, Any]) -> None:
+    """Refuse a plan in which two entries name the same ``field``, naming the
+    field and both source kinds. Kind-agnostic on purpose: a ``call``/``call``
+    pair collapses in ``assemble`` exactly as a ``derive``/``derive`` pair
+    does; ``derive`` merely makes the collision easy to generate, because its
+    field names are computed rather than written."""
+    seen: dict[str, str] = {}
+    for entry in plan.get("entries") or []:
+        field = entry.get("field")
+        kind = (entry.get("source") or {}).get("kind")
+        if not isinstance(field, str):
+            continue
+        if field in seen:
+            raise DerivePlanError(
+                f"fetch plan names field {field!r} twice (a {seen[field]!r} "
+                f"entry and a {kind!r} entry); the later one would silently "
+                f"overwrite the earlier in the assembled input"
+            )
+        seen[field] = str(kind)
+
+
 def validate_derive_plan(
     plan: dict[str, Any], *, primitives: dict[str, Callable[..., Any]] | None = None
 ) -> None:
-    """Refuse, at load, a fetch plan whose ``derive`` entries the proxy will not
-    run. Raises :class:`DerivePlanError`; a plan with no ``derive`` entry passes,
-    whatever vocabulary it declares.
+    """Refuse, at load, a fetch plan the proxy must not assemble from. Raises
+    :class:`DerivePlanError`. The first check is kind-agnostic; the rest
+    concern ``derive`` entries, and a plan with none passes them whatever
+    vocabulary it declares.
 
     What is refused, and why each is a load-time question rather than an
     evaluation-time one:
 
+    - two entries that name the same ``field``, of any source kinds.
+      :meth:`FetchExecutor.assemble` walks entries in order into one map, so
+      the last writer wins and the rule reads a value computed for different
+      arguments -- the plan validates, the manifest accepts one property, the
+      policy evaluates cleanly, and the verdict answers a question nobody
+      asked. The toolchain shipped exactly this (six folds over one shared
+      candidate domain all named ``trustRootJwkKeyWitnesses``, so five
+      leaves checked the wrong credential's signature) and fixed its
+      generator; this is the independent guard on the consuming side;
     - a primitive a ``derive`` entry **invokes** that the proxy cannot
       satisfy, or one it invokes without declaring -- the same discipline as
       an unregistered host built-in, which fails when the policy is loaded and
@@ -496,6 +527,7 @@ def validate_derive_plan(
     on a built-in the policy actually calls, parsed out of the wasm, before this
     runs. So an unimplemented declaration is logged, not raised.
     """
+    _validate_unique_fields(plan)
     declared = declared_primitives(plan)
     available = default_primitives() if primitives is None else primitives
     for prim in sorted(declared):
