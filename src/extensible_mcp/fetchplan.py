@@ -235,12 +235,84 @@ def _base64url_decode(value: Any) -> str | None:
         return None
 
 
+FORMAT_INT_BASES = frozenset({2, 8, 10, 16})
+"""The bases OPA's ``format_int`` supports; any other base is *undefined*."""
+
+
+def _concat(delimiter: Any, parts: Any) -> str:
+    """``concat(delimiter, array) -> string``, a reimplementation of the OPA
+    native (not a host import: a Rego bundle compiles it into its wasm). Its
+    signature is Rego's -- an array, not variadic.
+
+    Measured against OPA 1.17.1: a non-string delimiter, a non-array second
+    operand, or a non-string element is a ``rego_type_error``, so each is a
+    type fault here; OPA never coerces, and the drift a reimplementation
+    would introduce is a helpful ``str(x)``. OPA also accepts a *set* and
+    joins it sorted; that is outside the pinned grammar (a plan cannot spell
+    a set), and a future widening must not inherit list order for it.
+    """
+    if not isinstance(delimiter, str):
+        raise HostBuiltinError(
+            f"concat expects a string delimiter, got {type(delimiter).__name__}"
+        )
+    if not isinstance(parts, list):
+        raise HostBuiltinError(
+            f"concat expects an array, got {type(parts).__name__}"
+        )
+    for i, part in enumerate(parts):
+        if not isinstance(part, str):
+            raise HostBuiltinError(
+                f"concat expects string elements, got {type(part).__name__} at {i}"
+            )
+    return delimiter.join(parts)
+
+
+def _format_int(value: Any, base: Any) -> str | None:
+    """``format_int(number, base) -> string``, a reimplementation of the OPA
+    native, over the one domain where a reimplementation can agree with it.
+
+    OPA parses a JSON number as an arbitrary-precision decimal and truncates
+    toward zero: ``format_int(1.9999999999999999, 10)`` is ``"1"`` and
+    ``format_int(1e23, 10)`` is ``"100000000000000000000000"``. This function
+    receives the number after Python's JSON parser has made it a ``float``,
+    and neither value survives that: the first is ``2.0`` and the second is
+    off by 8388608. No formatting rule can recover what the transport
+    dropped, so **a ``float`` operand is refused as a fault** (an integral
+    float included -- ``12.0`` is exactly where ``1.9999999999999999`` hides)
+    rather than formatted into a silently different digest. An ``int`` is
+    exact in both runtimes and formats identically: lower-case digits,
+    sign-magnitude for negatives.
+
+    The base: 2, 8, 10 and 16 are OPA's; any other *number* leaves the
+    result **undefined** (measured: no error, no value -- ``10.0`` included),
+    so ``None``; a non-number base is a type error there and a fault here.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HostBuiltinError(
+            f"format_int expects a number, got {type(value).__name__}"
+        )
+    if isinstance(base, bool) or not isinstance(base, (int, float)):
+        raise HostBuiltinError(
+            f"format_int expects a numeric base, got {type(base).__name__}"
+        )
+    if isinstance(base, float) or base not in FORMAT_INT_BASES:
+        logger.debug("fetchplan: format_int base %r is unsupported (undefined)", base)
+        return None
+    if isinstance(value, float):
+        raise HostBuiltinError(
+            f"format_int received {value!r} as a float; the exact JSON number "
+            "did not survive parsing, so its digits cannot be reproduced -- "
+            "send an integer"
+        )
+    return format(value, {2: "b", 8: "o", 10: "d", 16: "x"}[base])
+
+
 def default_primitives(
     *, webauthn_rp_id: str | None = None
 ) -> dict[str, Callable[..., Any]]:
     """The primitive vocabulary a ``derive`` entry may name.
 
-    **Five of the seven are the same implementations the two policy engines
+    **Five of the nine are the same implementations the two policy engines
     run as host built-ins** (:func:`~extensible_mcp.wasm_policy.default_builtins`,
     :func:`~extensible_mcp.cel_policy.default_cel_functions`) under the
     toolchain's atom names -- ``sha256``, ``verify_eddsa``,
@@ -250,14 +322,18 @@ def default_primitives(
     ahead of it. For those the contract carries over by construction:
     ``False`` for an evidence problem, ``HostBuiltinError`` for a system fault.
 
-    **The other two are not.** ``parse_json`` and ``base64url_decode`` are
-    Python reimplementations of OPA natives (``json.unmarshal``,
-    ``base64url.decode``) that a Rego bundle compiles into its wasm and never
-    asks the host for. Their agreement with the engine is established by
-    test, not inherited, and what is matched deliberately is the *undefined*
+    **The other four are not.** ``parse_json``, ``base64url_decode``,
+    ``concat`` and ``format_int`` are Python reimplementations of OPA natives
+    (``json.unmarshal``, ``base64url.decode``, ``concat``, ``format_int``)
+    that a Rego bundle compiles into its wasm and never asks the host for.
+    Their agreement with the engine is established by test, not inherited.
+    For the two parsers what is matched deliberately is the *undefined*
     domain: OPA leaves both undefined on content they cannot read, so here
     they answer ``None`` and the resolver omits the derived field
-    (:class:`DeriveUndefined`) instead of writing ``null``.
+    (:class:`DeriveUndefined`) instead of writing ``null``. ``format_int``
+    answers ``None`` the same way on a base OPA does not support, and both
+    string primitives are held to OPA's type errors as faults; see each
+    function's own docstring for the domain it refuses.
 
     The CEL engine's twins of those two are different again, for a reason
     worth knowing at the seam: they return a CEL *error value*
@@ -280,6 +356,8 @@ def default_primitives(
         "verify_eddsa": _verify_eddsa,
         "verify_ed25519_raw": _verify_ed25519_raw,
         "key_from_did_key": _key_from_did_key,
+        "concat": _concat,
+        "format_int": _format_int,
     }
     if webauthn_rp_id is not None:
         primitives["verify_webauthn"] = make_verify_webauthn(webauthn_rp_id)
@@ -392,10 +470,14 @@ class DeriveResolver:
         return witnesses
 
     def _arg(self, name, spec, item):
-        """One resolved argument: a value, the current element's field, or the
-        result of the nested ``$apply`` primitive."""
+        """One resolved argument: a value, the current element's field, the
+        result of the nested ``$apply`` primitive, or a list of those --
+        ``concat``'s array operand is a literal list whose elements may be
+        any of the first three."""
         if "$value" in spec:
             return spec["$value"]
+        if "$list" in spec:
+            return [self._arg(name, element, item) for element in spec["$list"]]
         if "$item" in spec:
             if item is None:
                 raise FetchError(
@@ -658,6 +740,9 @@ def _applied_primitives(args: Any) -> set[str]:
     if not isinstance(args, list):
         return referenced
     for arg in args:
+        if isinstance(arg, list):
+            referenced |= _applied_primitives(arg)
+            continue
         if not isinstance(arg, dict):
             continue
         inner = arg.get("$apply")
@@ -718,8 +803,51 @@ def _validate_derive_entry(
     elif "project" in source:
         raise DerivePlanError(f"{where}: 'project' without 'over'")
 
+    _validate_primitive_shape(where, fn, args)
     for arg in args:
         _validate_derive_arg(where, arg, declared, folded=folded, nested=False)
+
+
+def _validate_primitive_shape(where: str, fn: str, args: list[Any]) -> None:
+    """Refuse, at load, a ``concat`` or ``format_int`` application whose
+    arguments are not Rego's signature. These two are reimplementations of
+    OPA natives on the path that computes a digest the rule then compares,
+    where a disagreement does not fail loudly -- it produces a different
+    hash and a denial nobody can read. So the signature is held exactly:
+    ``concat(delimiter, array)`` with a literal array, never variadic;
+    ``format_int(number, base)`` with a literal base OPA supports, since a
+    base it does not support is undefined on every call and a plan that
+    cannot be right should not reach one.
+    """
+    if fn == "concat":
+        if len(args) != 2:
+            raise DerivePlanError(
+                f"{where}: 'concat' takes (delimiter, array), got {len(args)} argument(s)"
+            )
+        if isinstance(args[0], list) or (
+            isinstance(args[0], dict) and not any(k.startswith("$") for k in args[0])
+        ):
+            raise DerivePlanError(f"{where}: 'concat' delimiter must be a string")
+        if not isinstance(args[1], list):
+            raise DerivePlanError(
+                f"{where}: 'concat' takes an array as its second argument, "
+                "not a variadic list of strings"
+            )
+    elif fn == "format_int":
+        if len(args) != 2:
+            raise DerivePlanError(
+                f"{where}: 'format_int' takes (number, base), got {len(args)} argument(s)"
+            )
+        base = args[1]
+        if isinstance(base, bool) or not isinstance(base, int):
+            raise DerivePlanError(
+                f"{where}: 'format_int' base must be a literal integer"
+            )
+        if base not in FORMAT_INT_BASES:
+            raise DerivePlanError(
+                f"{where}: 'format_int' base {base} is not one OPA supports "
+                f"({sorted(FORMAT_INT_BASES)}); the result would be undefined on every call"
+            )
 
 
 def _validate_candidate(where: str, node: Any) -> None:
@@ -765,6 +893,10 @@ def _validate_derive_arg(
     folded: bool,
     nested: bool,
 ) -> None:
+    if isinstance(arg, list):
+        for element in arg:
+            _validate_derive_arg(where, element, declared, folded=folded, nested=nested)
+        return
     if not isinstance(arg, dict):
         return  # a literal
     markers = [k for k in arg if isinstance(k, str) and k.startswith("$")]
@@ -812,6 +944,7 @@ def _validate_derive_arg(
     inner_args = inner.get("args", [])
     if not isinstance(inner_args, list):
         raise DerivePlanError(f"{where}: '$apply' 'args' must be a list")
+    _validate_primitive_shape(where, inner_fn, inner_args)
     for inner_arg in inner_args:
         _validate_derive_arg(where, inner_arg, declared, folded=folded, nested=True)
 
@@ -973,6 +1106,10 @@ class FetchExecutor:
         return node
 
     def _resolve_arg(self, arg: Any, assembled: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(arg, list):
+            # A literal list operand (``concat``'s array): each element is an
+            # argument in its own right, resolved the same three ways.
+            return {"$list": [self._resolve_arg(a, assembled) for a in arg]}
         if isinstance(arg, dict):
             if "$input" in arg:
                 return {"$value": self._navigate(assembled, arg["$input"])}

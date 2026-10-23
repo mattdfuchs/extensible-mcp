@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from extensible_mcp.bundle import PolicyBundle
-from extensible_mcp.fetchplan import default_primitives
+from extensible_mcp.fetchplan import FetchContext, FetchExecutor, default_primitives
 from extensible_mcp.types import CallRequest
 from extensible_mcp.wasm_filter import WasmPolicyFilter
 from extensible_mcp.wasm_policy import PolicyEvaluationError, default_builtins
@@ -57,12 +57,15 @@ def _passkey_jwk(passkey) -> str:
     )
 
 
-def _approval(passkey, *, amount_cents, merchant="acme", tool="spend"):
-    """A synthetic passkey assertion over the canonical action."""
+def _approval(passkey, *, amount_cents, merchant="acme", tool="spend", challenge=None):
+    """A synthetic passkey assertion over the canonical action. ``challenge``
+    overrides the computed one, so a challenge derived elsewhere can be put
+    in front of the real policy."""
     canonical = f"legov1|spend|{tool}|{amount_cents}|{merchant}".encode()
-    challenge = hashlib.sha256(canonical).hexdigest().encode()
+    if challenge is None:
+        challenge = _b64u(hashlib.sha256(canonical).hexdigest().encode())
     cd = json.dumps(
-        {"type": "webauthn.get", "challenge": _b64u(challenge), "origin": ORIGIN}
+        {"type": "webauthn.get", "challenge": challenge, "origin": ORIGIN}
     ).encode()
     ad = hashlib.sha256(RP_ID.encode()).digest() + bytes([0x05]) + (0).to_bytes(4, "big")
     sig = passkey.sign(ad + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
@@ -295,3 +298,57 @@ async def test_vc_filter_missing_origin_config_fails_closed(keys, passkey, caplo
     assert "webauthnOrigin" not in result.reason
     faults = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("webauthnOrigin" in m and "(failing closed)" in m for m in faults), faults
+
+
+# -- the derive path's challenge against the wasm path's (#27) --------------- #
+#
+# ``concat`` and ``format_int`` are reimplementations of OPA natives: the Rego
+# bundle computes the challenge pre-image inside the wasm, and a Cedar bundle
+# computes it ahead of the policy with the derive copies. A disagreement
+# between the two would not fail loudly -- the hash would differ and the
+# approval would be denied for a reason nobody can read. So the differential
+# is run against the real bundle: the challenge derived by the toolchain's
+# three emitted entries, placed in a passkey assertion, must be the one the
+# wasm policy accepts, and a tampered operand must not be.
+
+_CHALLENGE_ENTRIES = [
+    {"field": "tool", "source": {"kind": "call"}},
+    {"field": "arguments", "source": {"kind": "call"}},
+    {"field": "toolFormattedConcat", "source": {"kind": "derive", "fn": "concat", "args": [
+        "|", ["legov1", "spend", {"$input": "tool"},
+              {"$apply": {"fn": "format_int", "args": [{"$input": "arguments.amountCents"}, 10]}},
+              {"$input": "arguments.merchant"}]]}},
+    {"field": "toolFormattedConcatDigest", "source": {"kind": "derive", "fn": "sha256",
+                                                      "args": [{"$input": "toolFormattedConcat"}]}},
+    {"field": "toolFormattedConcatDigestEncoded", "source": {
+        "kind": "derive", "fn": "base64url_encode_no_pad",
+        "args": [{"$input": "toolFormattedConcatDigest"}]}},
+]
+
+
+async def _derived_challenge(*, amount_cents, merchant="acme"):
+    plan = {"input": "X", "primitives": {"concat": {"class": "pure"}, "format_int": {"class": "pure"},
+                                         "sha256": {"class": "pure"}, "base64url_encode_no_pad": {"class": "pure"}},
+            "entries": _CHALLENGE_ENTRIES}
+    ctx = FetchContext(envelope={"tool": "spend", "arguments": {"amountCents": amount_cents, "merchant": merchant}})
+    assembled = await FetchExecutor().assemble(plan, ctx)
+    assert assembled["toolFormattedConcat"] == f"legov1|spend|spend|{amount_cents}|{merchant}"
+    return assembled["toolFormattedConcatDigestEncoded"]
+
+
+async def test_the_derived_challenge_is_the_one_the_wasm_policy_accepts(keys, passkey):
+    challenge = await _derived_challenge(amount_cents=5000)
+    approval = _approval(passkey, amount_cents=5000, challenge=challenge)
+    result = await _filter(keys, passkey).check(_call(keys, amount_cents=5000, approval=approval))
+    assert result.allowed is True, result.reason
+
+
+async def test_a_challenge_derived_over_a_tampered_operand_is_denied_by_the_wasm_policy(keys, passkey):
+    """Both directions: the derive path agreeing with OPA on the right operands
+    is only meaningful if it also produces something OPA rejects on the wrong
+    ones. One cent off in the derived pre-image, same assertion otherwise."""
+    challenge = await _derived_challenge(amount_cents=5001)
+    approval = _approval(passkey, amount_cents=5000, challenge=challenge)
+    result = await _filter(keys, passkey).check(_call(keys, amount_cents=5000, approval=approval))
+    assert result.allowed is False
+    assert "the approval is not bound to this exact call" in result.reason

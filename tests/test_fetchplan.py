@@ -22,6 +22,7 @@ from extensible_mcp.fetchplan import (
     FetchContext,
     FetchError,
     FetchExecutor,
+    HostBuiltinError,
     default_primitives,
     default_resolvers,
     validate_derive_plan,
@@ -163,6 +164,8 @@ _PRIMITIVE_CLASSES = {
     "verify_ed25519_raw": {"class": "key-consuming"},
     "verify_eddsa": {"class": "key-consuming"},
     "key_from_did_key": {"class": "key-producing"},
+    "concat": {"class": "pure"},
+    "format_int": {"class": "pure"},
 }
 
 
@@ -854,7 +857,7 @@ async def test_a_non_string_operand_is_still_a_fault_not_undefined():
 
 def test_the_registry_union_claim_is_exactly_the_five():
     """``default_primitives`` shares five implementations with the engines by
-    construction; the two parsers are reimplementations of OPA natives the
+    construction; the other four are reimplementations of OPA natives the
     Rego engine never imports. Pinned so the docstring's count stays true."""
     derive = default_primitives()
     rego = default_builtins()
@@ -864,11 +867,174 @@ def test_the_registry_union_claim_is_exactly_the_five():
               "base64url_encode_no_pad": "base64url.encode_no_pad"}
     for atom, builtin in shared.items():
         assert derive[atom] is rego[builtin], atom
-    assert set(derive) - set(shared) == {"parse_json", "base64url_decode"}
-    assert not {"parse_json", "base64url_decode", "json.unmarshal", "base64url.decode"} & set(rego)
-    # CEL carries all seven under the atom names -- as adapters, which is why
-    # the two parsers can answer an error value there and None here.
-    assert set(default_cel_functions()) >= set(derive)
+    reimplemented = {"parse_json", "base64url_decode", "concat", "format_int"}
+    assert set(derive) - set(shared) == reimplemented
+    assert not (reimplemented | {"json.unmarshal", "base64url.decode"}) & set(rego)
+    # CEL carries the five plus the two parsers under the atom names -- as
+    # adapters, which is why the parsers can answer an error value there and
+    # None here. `concat` and `format_int` have no CEL twin: CEL concatenates
+    # with `+` natively and formats nothing, so there is no function to adapt.
+    assert set(default_cel_functions()) >= set(derive) - {"concat", "format_int"}
+    assert not {"concat", "format_int"} & set(default_cel_functions())
+
+
+
+
+# -- concat and format_int: reimplemented OPA natives, held to OPA (#27) ----- #
+#
+# Neither is a host import: a Rego bundle compiles both into its wasm, so the
+# Python copies exist only for the derive path and their agreement with OPA
+# has to be established by test. They sit on the path that computes a digest
+# the rule compares, where a disagreement does not fail loudly -- it produces
+# a different hash and a denial nobody can read. Every row below was measured
+# against OPA 1.17.1 with ``opa eval``; the wasm-path differential lives in
+# test_webauthn_policy.py and test_vc_policy.py, against the real bundles.
+
+_CONCAT = default_primitives()["concat"]
+_FORMAT_INT = default_primitives()["format_int"]
+
+
+@pytest.mark.parametrize("delim, parts, expected", [
+    ("|", ["a", "b", "c"], "a|b|c"),
+    ("", ["sha256:", "dead"], "sha256:dead"),
+    ("|", [], ""),
+    ("|", ["a"], "a"),
+    ("", [], ""),
+])
+def test_concat_agrees_with_opa(delim, parts, expected):
+    assert _CONCAT(delim, parts) == expected
+
+
+@pytest.mark.parametrize("delim, parts", [
+    ("|", ["a", 12]),          # rego_type_error: OPA does not coerce
+    ("|", ["a", None]),
+    ("|", ["a", True]),
+    ("|", ["a", ["b"]]),
+    (12, ["a", "b"]),
+    ("|", "ab"),               # a string is not an array
+])
+def test_concat_refuses_what_opa_refuses(delim, parts):
+    """The drift a reimplementation would introduce is a helpful ``str(x)``;
+    this is the guard against helpfulness."""
+    with pytest.raises(HostBuiltinError, match="concat expects"):
+        _CONCAT(delim, parts)
+
+
+@pytest.mark.parametrize("value, base, expected", [
+    (12, 10, "12"),
+    (0, 10, "0"),
+    (255, 16, "ff"),           # lowercase
+    (-5, 16, "-5"),            # sign-magnitude, not two's complement
+    (12, 2, "1100"),
+    (12, 8, "14"),
+    (9007199254740993, 10, "9007199254740993"),   # beyond 2**53, exact as an int
+    (10 ** 23, 10, "100000000000000000000000"),
+])
+def test_format_int_agrees_with_opa_on_integers(value, base, expected):
+    assert _FORMAT_INT(value, base) == expected
+
+
+@pytest.mark.parametrize("base", [7, 1, 0, 10.0])
+def test_format_int_unsupported_base_is_undefined_not_a_fault(base):
+    """Measured: ``format_int(12, 7)`` is undefined in OPA -- no error, no
+    value -- and so is a non-integer base. A raise here would turn a quiet
+    undefined into a loud, misattributed "could not be assembled"."""
+    assert _FORMAT_INT(12, base) is None
+
+
+@pytest.mark.parametrize("value, base", [("12", 10), (True, 10), (None, 10), (12, "10"), (12, None)])
+def test_format_int_type_errors_are_faults(value, base):
+    with pytest.raises(HostBuiltinError, match="format_int expects"):
+        _FORMAT_INT(value, base)
+
+
+@pytest.mark.parametrize("value", [1.9999999999999999, 1e23, 12.0, 12.5, -0.5])
+def test_format_int_refuses_a_float_because_the_exact_number_is_gone(value):
+    """OPA formats ``1.9999999999999999`` as ``"1"`` and ``1e23`` as
+    ``"100000000000000000000000"``, from the decimal literal. By the time a
+    number reaches this function it is a float64: ``2.0`` and
+    ``99999999999999991611392``. ``12.0`` is refused with them, because an
+    integral float is exactly where the first case hides, and the manifest's
+    ``integer`` accepts it. A fault, not undefined: the evidence was fine,
+    the transport dropped the digits."""
+    with pytest.raises(HostBuiltinError, match="as a float"):
+        _FORMAT_INT(value, 10)
+
+
+async def test_concat_takes_a_literal_array_whose_elements_resolve_three_ways():
+    """The toolchain's WebAuthn challenge pre-image, as it emits it: literal
+    strings, ``$input`` references and a nested ``$apply`` inside one array."""
+    plan = _plan(
+        {"field": "tool", "source": {"kind": "call"}},
+        {"field": "arguments", "source": {"kind": "call"}},
+        {"field": "preimage", "source": {"kind": "derive", "fn": "concat", "args": [
+            "|", ["legov1", "spend", {"$input": "tool"},
+                  {"$apply": {"fn": "format_int", "args": [{"$input": "arguments.amountCents"}, 10]}},
+                  {"$input": "arguments.merchant"}]]}},
+    )
+    ctx = FetchContext(envelope={"tool": "spend", "arguments": {"amountCents": 5000, "merchant": "acme"}})
+    assembled = await FetchExecutor().assemble(plan, ctx)
+    assert assembled["preimage"] == "legov1|spend|spend|5000|acme"
+
+
+def test_format_int_inside_an_array_counts_as_referenced():
+    """A primitive applied inside a list operand is still an invocation: the
+    availability check must see it, or an unimplemented one would pass load."""
+    from extensible_mcp.fetchplan import _referenced_primitives
+    plan = _plan({"field": "x", "source": {"kind": "derive", "fn": "concat", "args": [
+        "|", [{"$apply": {"fn": "format_int", "args": [{"$input": "n"}, 10]}}]]}})
+    assert _referenced_primitives(plan) == {"concat", "format_int"}
+
+
+@pytest.mark.parametrize("args, match", [
+    (["|", "a", "b"], "got 3 argument"),                       # variadic spelling
+    (["|"], "got 1 argument"),
+    (["|", "ab"], "takes an array"),
+    ([["|"], ["a"]], "delimiter must be a string"),
+])
+def test_load_refuses_a_concat_that_is_not_regos_signature(args, match):
+    plan = _plan({"field": "x", "source": {"kind": "derive", "fn": "concat", "args": args}})
+    with pytest.raises(DerivePlanError, match=match):
+        validate_derive_plan(plan)
+
+
+@pytest.mark.parametrize("args, match", [
+    ([{"$input": "n"}], "got 1 argument"),                      # base omitted
+    ([{"$input": "n"}, 10, 2], "got 3 argument"),
+    ([{"$input": "n"}, "10"], "literal integer"),
+    ([{"$input": "n"}, 10.0], "literal integer"),
+    ([{"$input": "n"}, True], "literal integer"),
+    ([{"$input": "n"}, 7], "not one OPA supports"),
+])
+def test_load_refuses_a_format_int_that_is_not_regos_signature(args, match):
+    plan = _plan({"field": "x", "source": {"kind": "derive", "fn": "format_int", "args": args}})
+    with pytest.raises(DerivePlanError, match=match):
+        validate_derive_plan(plan)
+
+
+def test_load_refuses_the_same_shapes_under_apply():
+    plan = _plan({"field": "x", "source": {"kind": "derive", "fn": "sha256", "args": [
+        {"$apply": {"fn": "format_int", "args": [{"$input": "n"}]}}]}})
+    with pytest.raises(DerivePlanError, match="got 1 argument"):
+        validate_derive_plan(plan)
+    plan = _plan({"field": "x", "source": {"kind": "derive", "fn": "sha256", "args": [
+        {"$apply": {"fn": "concat", "args": ["|", "a", "b"]}}]}})
+    with pytest.raises(DerivePlanError, match="got 3 argument"):
+        validate_derive_plan(plan)
+
+
+def test_load_accepts_the_toolchains_two_emitted_shapes():
+    """The two call sites upstream emits, verbatim."""
+    validate_derive_plan(_plan(
+        {"field": "requestVCJwsDigest", "source": {"kind": "derive", "fn": "sha256",
+                                                   "args": [{"$input": "requestVC.jws"}]}},
+        {"field": "requestVCJwsDigestConcat", "source": {"kind": "derive", "fn": "concat",
+            "args": ["", ["sha256:", {"$input": "requestVCJwsDigest"}]]}},
+        {"field": "toolFormattedConcat", "source": {"kind": "derive", "fn": "concat",
+            "args": ["|", ["legov1", "spend", {"$input": "tool"},
+                           {"$apply": {"fn": "format_int", "args": [{"$input": "arguments.amountCents"}, 10]}},
+                           {"$input": "arguments.merchant"}]]}},
+    ))
 
 
 # -- the refusals, where they actually have to happen: PolicyBundle.load ------ #
