@@ -85,7 +85,7 @@ Four independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ResponseFil
 
 ### Policy bundles
 
-A bundle is a directory of four files: `manifest.json` (JSON Schema for the policy's whole closed input), `fetchplan.json` (where each input field comes from — `call`, `config`, `clock`, or a `wallet` lookup you supply), `guidance.json` (a sentence per failable condition, so a denial renders as an explanation), and the rules as either `policy.wasm` (Rego compiled by `opa build -t wasm`) or `checks.cel.json`. The first three are engine-independent; the two engines are interchangeable over them. Seven worked bundles live in `tests/fixtures/`, each with a `PROVENANCE.md`.
+A bundle is a directory of four files: `manifest.json` (JSON Schema for the policy's whole closed input), `fetchplan.json` (where each input field comes from — `call`, `config`, `clock`, or a `wallet` lookup you supply), `guidance.json` (a sentence per failable condition, so a denial renders as an explanation), and the rules as `policy.wasm` (Rego compiled by `opa build -t wasm`), `checks.cel.json`, or `policy.cedar` with its `expected_ids.json`. `guidance.json` is engine-independent across all three; Rego and CEL also share the manifest and fetch plan, while a Cedar bundle's carry one `derive` entry and one derived field per cryptographic leaf, because Cedar cannot call a host function. Eight worked bundles live in `tests/fixtures/`, each with a `PROVENANCE.md`.
 
 Enforcement is a `CallFilter`. `bundle_router` on `create_server` maps each downstream server to the bundle governing it, decided at admission time from proxy-controlled provenance facts — never from tool-supplied metadata — and fails closed on a server it cannot place.
 
@@ -103,7 +103,8 @@ Core proxy:
 Policy-bundle engine:
 
 - **`bundle.py` / `fetchplan.py`** — loads a bundle and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers.
-- **`policy_engine.py`** — the `PolicyEngine` Protocol both engines implement; the bundle format is engine-plural by design.
+- **`cedar_policy.py`** — the third engine, via `cedarpy`. Forbid-only policies over a base permit; the loader refuses a policy set that does not carry exactly the `@id` forbids and `@assembly` tiers `expected_ids.json` lists, because an empty forbid-only set allows everything. Any evaluation diagnostic is a fault, never a denial: Cedar skips a policy whose condition raises, and a skipped forbid is a permit. Crypto never runs inside a Cedar policy; the fetch plan derives witness sets and the rule tests a relation over them.
+- **`policy_engine.py`** — the `PolicyEngine` Protocol all three engines implement; the bundle format is engine-plural by design.
 - **`wasm_policy.py`** — OPA-compiled Rego evaluated in-process via wasmtime, with the crypto builtins a credential policy needs supplied from Python as host imports, so signature checks run *inside* the policy. The OPA heap is a bump allocator: the heap pointer is captured after instantiation and rewound per query.
 - **`cel_policy.py`** — the second engine over the same bundle format, via `cel-python`. A check that does not evaluate to a CEL bool fails closed.
 - **`wasm_filter.py`** — the call filters that enforce a bundle: generic `WasmPolicyFilter` and the production `VCPolicyFilter`.

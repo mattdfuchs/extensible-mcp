@@ -85,14 +85,23 @@ oauth = [
 cel = [
     "cel-python>=0.5.0",
 ]
+# Cedar policy engine: the third PolicyEngine (cedar_policy.py). cedarpy is a
+# community binding to the Rust Cedar engine, not an AWS package; it ships
+# wheels for cp311-313 on macOS, manylinux and Windows, so unlike regopy it
+# never builds from source. Pinned exactly: the engine reads the diagnostics
+# shape (reasons, `@id` annotations by reason, errors), which is not a
+# stable API across releases.
+cedar = [
+    "cedarpy==4.12.1",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
-    # The three engine extras plus oauth, rather than a copy of their
-    # contents that drifts the moment either side changes.
-    "extensible-mcp[wasm,rego,cel,oauth]",
+    # The engine extras plus oauth, rather than a copy of their contents
+    # that drifts the moment either side changes.
+    "extensible-mcp[wasm,rego,cel,cedar,oauth]",
 ]
 
 [tool.uv.workspace]

@@ -11,16 +11,34 @@ from pathlib import Path
 import pytest
 
 from extensible_mcp.bundle import PolicyBundle
+from extensible_mcp.cedar_policy import CedarPolicy
 from extensible_mcp.cel_policy import CelPolicy
 from extensible_mcp.wasm_policy import OpaWasmPolicy
 
 REGO_DIR = Path(__file__).parent / "fixtures" / "family_spend"
 CEL_DIR = Path(__file__).parent / "fixtures" / "cel_family_spend"
+CEDAR_DIR = Path(__file__).parent / "fixtures" / "cedar_family_spend"
 
 
 def test_engine_none_infers_from_artifact_presence():
     assert isinstance(PolicyBundle.load(REGO_DIR).policy, OpaWasmPolicy)
     assert isinstance(PolicyBundle.load(CEL_DIR).policy, CelPolicy)
+    assert isinstance(PolicyBundle.load(CEDAR_DIR).policy, CedarPolicy)
+
+
+def test_engine_cedar_forces_cedar_policy():
+    bundle = PolicyBundle.load(CEDAR_DIR, engine="cedar")
+    assert isinstance(bundle.policy, CedarPolicy)
+
+
+def test_engine_cedar_without_artifact_raises():
+    with pytest.raises(FileNotFoundError, match="policy.cedar"):
+        PolicyBundle.load(REGO_DIR, engine="cedar")
+
+
+def test_engine_rego_on_a_cedar_bundle_raises():
+    with pytest.raises(FileNotFoundError, match="policy.wasm"):
+        PolicyBundle.load(CEDAR_DIR, engine="rego")
 
 
 def test_engine_rego_forces_wasm_policy():

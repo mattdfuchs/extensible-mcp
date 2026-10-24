@@ -1170,16 +1170,20 @@ def test_load_refuses_a_declared_primitive_the_proxy_cannot_satisfy(tmp_path):
 
 
 def test_load_still_accepts_every_shipped_fetch_plan():
-    """The source kind is purely additive: the rego and cel bundles keep their
-    crypto builtins, declare no primitive vocabulary, and must keep loading."""
+    """The source kind is additive for the engines that run crypto in-policy:
+    the rego and cel bundles keep their host builtins and never derive. Only
+    a Cedar bundle derives, because Cedar cannot call a host function — and
+    every Cedar bundle must, or its crypto leaves would be unstated."""
     plans = sorted((Path(__file__).parent / "fixtures").glob("*/fetchplan.json"))
     assert plans  # the corpus is the point of the assertion
     for path in plans:
         plan = json.loads(path.read_text())
         validate_derive_plan(plan)
-        assert not [
-            e for e in plan["entries"] if e["source"]["kind"] == "derive"
-        ], f"{path} uses derive; the migration is explicitly out of scope"
+        derives = [e for e in plan["entries"] if e["source"]["kind"] == "derive"]
+        if (path.parent / "policy.cedar").exists():
+            assert derives, f"{path} is a Cedar plan that hoists nothing"
+        else:
+            assert not derives, f"{path} uses derive; the migration is explicitly out of scope"
     assert PolicyBundle.load(FIXTURE_DIR).fetchplan["entries"]
 
 

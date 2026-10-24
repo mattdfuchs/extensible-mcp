@@ -1,0 +1,106 @@
+{"type": "object",
+ "title": "SpendInput",
+ "required":
+ ["tool",
+  "arguments",
+  "requestVC",
+  "requesterMembership",
+  "trustRootDID",
+  "trustRootJwk",
+  "now"],
+ "properties":
+ {"trustRootJwk": {"type": "string"},
+  "trustRootDID": {"$ref": "#/definitions/DID"},
+  "tool": {"type": "string"},
+  "requesterMembershipJwsTrustRootJwkKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "requesterMembership": {"$ref": "#/definitions/Membership"},
+  "requestVCJwsTrustRootJwkKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "requestVCJwsDigest": {"type": "string"},
+  "requestVC": {"$ref": "#/definitions/RequestVC"},
+  "now": {"$ref": "#/definitions/Timestamp"},
+  "authorizationVCJwsTrustRootJwkKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "authorizationVC": {"$ref": "#/definitions/AuthorizationVC"},
+  "arguments": {"$ref": "#/definitions/SpendRequest"},
+  "approverMembershipJwsTrustRootJwkKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "approverMembership": {"$ref": "#/definitions/Membership"}},
+ "description":
+ "Input to the family-spend policy. Cedar bundle: the fields named in `derived_fields` are computed by the fetch plan's `derive` entries rather than supplied by a caller, and are absent when their primitive matched nothing — so they are in `properties` and never in `required`.",
+ "derived_fields":
+ ["requestVCJwsTrustRootJwkKeyWitnesses",
+  "requesterMembershipJwsTrustRootJwkKeyWitnesses",
+  "authorizationVCJwsTrustRootJwkKeyWitnesses",
+  "requestVCJwsDigest",
+  "approverMembershipJwsTrustRootJwkKeyWitnesses"],
+ "definitions":
+ {"Timestamp": {"type": "integer", "minimum": 0},
+  "SpendRequest":
+  {"type": "object",
+   "required": ["amountCents", "merchant"],
+   "properties":
+   {"merchant": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": false},
+  "Role": {"type": "string", "enum": ["kid", "parent"]},
+  "RequestVCClaims":
+  {"type": "object",
+   "required": ["jti", "iss", "action", "arguments", "nbf", "exp"],
+   "properties":
+   {"nbf": {"$ref": "#/definitions/Timestamp"},
+    "jti": {"type": "string"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"},
+    "arguments": {"$ref": "#/definitions/SpendRequest"},
+    "action": {"type": "string"}},
+   "additionalProperties": true},
+  "RequestVC":
+  {"type": "object",
+   "required": ["claims", "jws"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/RequestVCClaims"}},
+   "additionalProperties": false},
+  "MembershipClaims":
+  {"type": "object",
+   "required": ["iss", "sub", "role", "nbf", "exp"],
+   "properties":
+   {"sub": {"$ref": "#/definitions/DID"},
+    "role": {"$ref": "#/definitions/Role"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "Membership":
+  {"type": "object",
+   "required": ["claims", "jws"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/MembershipClaims"}},
+   "additionalProperties": false},
+  "JWS":
+  {"type": "string",
+   "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"},
+  "Hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"},
+  "AuthorizationVCClaims":
+  {"type": "object",
+   "required": ["jti", "iss", "requestHash", "nbf", "exp"],
+   "properties":
+   {"requestHash": {"$ref": "#/definitions/Hash"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "jti": {"type": "string"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "AuthorizationVC":
+  {"type": "object",
+   "required": ["claims", "jws"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/AuthorizationVCClaims"}},
+   "additionalProperties": false}},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}
