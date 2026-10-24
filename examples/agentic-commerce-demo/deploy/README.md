@@ -127,15 +127,11 @@ stream begins at the current end of the log, so it never replays a line printed
 before you opened it.) They are random on purpose: a fixed pair would be a speed bump
 rather than a control, guessable in two tries, and a visible login that is
 not a gate is worse than none because it stops a reader asking. The flow is a
-real one rather than a password check so that pointing the page at Entra,
-Keycloak, Okta or Auth0 is configuration instead of a rewrite.
-
-[`keycloak/`](keycloak/) is that configuration worked out for one of them: a
-committed realm with the audience, role and AMR mappers and a
-WebAuthn-passwordless browser flow, carrying no secrets of any kind. The demo
-does not start Keycloak — the realm is a recipe, not a service, and
-[`keycloak/README.md`](keycloak/README.md) says what each mapper is for and
-what silently breaks without it.
+real one rather than a password check because authorization code + PKCE is the
+shape an external identity provider speaks, which keeps a later swap to one a
+bounded change to the approval service rather than a redesign of the page. It
+is a change, not a configuration step: today the service verifies only tokens
+it minted itself, and no external provider is required or supported.
 
 **What is still open.** Three endpoints on `:7500` remain unauthenticated
 because their callers are other processes rather than humans, and giving them
