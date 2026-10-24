@@ -837,9 +837,10 @@ boot(); setInterval(poll,1500); poll();
 
 # -- OAuth 2.0: authorization code + PKCE ---------------------------------- #
 #
-# The demo is its own authorization server. That is the point: the page speaks
-# the flow a real IdP speaks, so pointing it at Entra, Keycloak, Okta or Auth0
-# replaces these three endpoints with configuration instead of a rewrite.
+# The demo is its own authorization server, and today the only one it accepts:
+# `verify_token` trusts no external issuer. The page speaks the flow a real IdP
+# speaks so that a later swap to Entra, Keycloak, Okta or Auth0 replaces these
+# three endpoints and the verifier, not the page (issue #47).
 
 
 @app.get("/authorize")

@@ -12,8 +12,10 @@ from who you are rather than taken from the request body.
 
 **Why a real flow and not a password check.** Authorization code + PKCE is
 what an external identity provider speaks. Building the demo against that
-shape means replacing this module with Entra, Keycloak, Okta or Auth0 is a
-matter of pointing at a different issuer, not a rewrite. The resource-owner
+shape keeps a later swap to Entra, Keycloak, Okta or Auth0 a bounded change
+to this module rather than a redesign of the page. It is a change, not a
+configuration step: `verify_token` accepts only tokens this server minted,
+and no external issuer is supported today (see issue #47). The resource-owner
 password grant would have been a third of the code and is deprecated in
 OAuth 2.1 — and choosing it would have thrown away the one property that
 makes this worth doing.
