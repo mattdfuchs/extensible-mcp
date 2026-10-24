@@ -86,7 +86,7 @@ Policy-bundle enforcement:
 - **`cel_policy.py`** — A second engine for the same bundle format: CEL-authored policies (`checks.cel.json`) evaluated via `cel-python`. Reuses the same crypto builtins as thin adapters. Any exception during evaluation — a structural CEL fault or a builtin error — fails closed, with no attempt to distinguish by exception type (CEL doesn't reliably preserve it).
 - **`cedar_policy.py`** — The third engine: Cedar policies (`policy.cedar` + `expected_ids.json`) evaluated via `cedarpy`. Cedar has no host-function extension point, so every cryptographic leaf is hoisted into a `derive` fetch-plan entry and the rule tests a relation over the witness set. The policy set is forbid-only over a base permit, which makes an empty set a permit; the loader refuses one that does not carry exactly the forbids `expected_ids.json` lists. An evaluation diagnostic is a fault (a skipped forbid is a permit), and an `@assembly` forbid's reason is dropped rather than rendered as a positional id.
 - **`policy_engine.py`** — The `PolicyEngine` Protocol all three engines implement (`entrypoints()` / `query()`, OPA's own result shape); the bundle format is engine-plural by design, and a conforming toolchain may target any of them.
-- **`bundle.py` / `fetchplan.py`** — Loads a policy bundle (the enforced rules, in either engine's shape, + `manifest.json` + `fetchplan.json` + optional `guidance.json`) and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers (`call` / `config` / `clock` / `wallet` / `derive`). `derive` is the one kind that computes rather than fetches — a hash, or a signature check folded over candidate keys projecting the ones that verified — and the shapes it refuses at load are what keep a hoisted primitive from booleanizing the check.
+- **`bundle.py` / `fetchplan.py`** — Loads a policy bundle (the enforced rules, in any engine's shape, + `manifest.json` + `fetchplan.json` + optional `guidance.json`) and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers (`call` / `config` / `clock` / `wallet` / `derive`). `derive` is the one kind that computes rather than fetches — a hash, or a signature check folded over candidate keys projecting the ones that verified — and the shapes it refuses at load are what keep a hoisted primitive from booleanizing the check.
 - **`wasm_filter.py`** — Call filters that enforce a bundle: the generic `WasmPolicyFilter`, and the production `VCPolicyFilter` (two-VC chain: signed request + conditional authorization, memberships chained to a did:web admin).
 - **`selection.py` / `routing.py`** — Which bundle governs a server: operator literal-map overrides layered over an optional Rego classifier, decided from proxy-controlled provenance facts at admission time (never from tool-supplied metadata), then routed per call. Unplaceable servers are refused.
 - **`guidance.py`** — Renders a denial from the bundle's guidance layer: a policy's failed check ids become an explanation of which conditions failed and what evidence is still missing. `render_denial` is exported for embedders.
@@ -112,11 +112,12 @@ All four pipelines are extensible — add any filter implementing the protocol.
 
 - Working proxy with semantic search, call proxying, and dynamic server loading
 - Dual-path access control (search + call) with deny lists, glob patterns, server allowlists; response and server-load pipelines under the same pluggable protocols
-- In-process policy engine (OPA-WASM, or CEL) enforcing supplied policy bundles on the call path, signature verification included
+- In-process policy engines (OPA-WASM, CEL, or Cedar) enforcing supplied policy bundles on the call path, signature verification included — inside the policy for Rego and CEL, hoisted into the fetch plan for Cedar
 - Production Verifiable-Credential enforcement end-to-end: request VC + conditional authorization VC, memberships verified against did:web admin keys, the signed request bound field-by-field to the actual call, credentials stripped before the downstream call
 - Per-server bundle selection at admission time, fail closed — a server the proxy cannot positively place is not connected
 - Search-side guidance: governed tools surface their credential parameters and when each is required
-- 369 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on both engines); the two `examples/` workspace packages add 133 and 51
+- Downstream credentials acquired by OAuth grant (`private_key_jwt` or `client_credentials`), short-lived and held in memory; the on-disk tokens file is deprecated but still read
+- 710 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 133 and 51
 - Example configs for Claude Desktop and OpenClaw, targeting GitHub's MCP server
 
 ## ABAC with signed claims
@@ -134,11 +135,11 @@ Still open: wiring the issuer registry into credential acquisition, and broader 
 ## Technical details
 
 - Python 3.11+, built with FastMCP and the MCP SDK
-- WASM policy enforcement via wasmtime + joserfc, packaged as an optional extra (`extensible-mcp[wasm]`)
+- Policy engines packaged as optional extras: `extensible-mcp[wasm]` (wasmtime + joserfc), `[cel]` (cel-python), `[cedar]` (cedarpy); `[rego]` serves the single-file `rego_policy` filter, and `[oauth]` the `private_key_jwt` downstream credential
 - Embeddings: all-MiniLM-L6-v2 (~22M parameters) via FastEmbed/ONNX, runs on CPU. No PyTorch dependency.
 - Config format compatible with Claude Desktop's `mcpServers` format
 - Runs as a stdio MCP server; any MCP client can connect to it
-- Packaged with hatchling, ready for PyPI publishing via `uv build` / `uv publish`
+- Packaged with hatchling; published to PyPI on a version tag by a trusted-publishing workflow (`.github/workflows/release.yml`)
 
 ## Repository
 

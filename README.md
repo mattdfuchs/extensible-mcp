@@ -10,7 +10,7 @@ extensible-mcp is built as that enforcement point. Every operation between the L
 
 ### The Order Pizza demo: Zero Trust, fully elaborated
 
-Two things in this repo carry that idea. A [**policy bundle**](#policy-bundles) is how a policy over signed evidence is written and attached to the filter pipeline — a manifest, a fetch plan, human-facing guidance, and the rules themselves in either Rego-compiled-to-WASM or CEL. The **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)) is that machinery worked all the way through: a full elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
+Two things in this repo carry that idea. A [**policy bundle**](#policy-bundles) is how a policy over signed evidence is written and attached to the filter pipeline — a manifest, a fetch plan, human-facing guidance, and the rules themselves in Rego compiled to WASM, in CEL, or in Cedar. The **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)) is that machinery worked all the way through: a full elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
 
 Our Zero Trust posture assumes any statement an agent makes about a user's intent — an agent that is subject to hallucination and prompt injection — is hearsay. User intent can only be asserted, in a non-repudiable way, by a signed statement the LLM could not have produced itself. We get that from the W3C's **Verifiable Credentials** framework: a statement wrapped in a signed envelope, where the signature is the signer vouching for it.
 
@@ -60,11 +60,11 @@ Retrieval is model-driven: the LLM decides when to search and crafts its own que
 
 ## Status
 
-The base proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and downstream authentication (the `tokens` file, kept out of the LLM's context) all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. The example configs work against the official GitHub MCP server.
+The base proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and downstream authentication (credentials the proxy acquires by OAuth grant, or a legacy tokens file, either way kept out of the LLM's context) all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. The example configs work against the official GitHub MCP server.
 
-Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
+Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, authored directly in CEL, or emitted as Cedar) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and Rego, CEL and Cedar backends ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 369 tests; the two example packages add 133 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 710 tests; the two example packages add 133 and 51.
 
 ## Threat Model
 
@@ -78,7 +78,7 @@ The pipeline allows for control at all points of contact between the LLM and the
 - At call time, further policies can prevent illegitimate use of an allowed tool. In the sample code we prevent the closing of an issue, but allow other uses of the same tool to allow updating issues.
 - At response time, filters can inspect or rewrite tool results on their way back to the LLM — useful for redacting secrets that leak back from a buggy server, flagging or scrubbing prompt-injection content in scraped pages or email bodies, truncating large responses, or audit logging. Tool results are an injection surface every bit as real as tool descriptions; the response pipeline is where you handle it.
 - The LLM cannot call any tools it didn't find during search. This ensures the LLM calls only tools in the protected set and is not vulnerable to attempts to call outside the protected envelope.
-- We do not pass secrets (in particular, security tokens) to the LLM. Tokens to be used in HTTP Authorization headers are kept in a separate file. The LLM can prompt the user to update a token when it appears to have expired, but it never sees the tokens themselves.
+- We do not pass secrets (in particular, downstream credentials) to the LLM. The proxy holds them itself — acquired by an OAuth grant, or read from a file the model cannot see — and presents them in HTTP Authorization headers. The LLM can prompt the user to fix a credential when it appears to have expired, but it never sees one.
 
 The discovery rule is scoped per MCP session: what one conversation surfaced is not callable by another. On a transport without sessions (stdio) a process serves a single client, so the scope is the process. This was not always so — until 0.3.2 the set was process-wide, which on an HTTP transport meant a tool surfaced by any session was callable by every session. It was reported as a bypass and it was one.
 
@@ -141,7 +141,7 @@ cp config.example.json config.json
 | Command | Adds |
 |---|---|
 | `uv sync` | the proxy itself |
-| `uv sync --group dev` | pytest, plus all three engine extras (`wasm`, `rego`, `cel`) |
+| `uv sync --group dev` | pytest, plus the engine extras (`wasm`, `rego`, `cel`, `cedar`) and `oauth` |
 | `uv sync --all-packages --all-extras --group dev` | the `examples/` workspace members and their extras too |
 
 Use the middle one to work on the proxy, the last one to run every suite in the repo. To install a single engine without the rest, name its extra: `uv sync --extra wasm`.
@@ -297,7 +297,7 @@ The policy receives this input on every `call_tool` invocation:
 
 The policy must define `allow` (boolean). Optionally define `deny_reason` (string) for a custom error message. See [`examples/deny_dangerous.rego`](examples/deny_dangerous.rego) for a working example. Relative paths in the config are resolved relative to the config file's directory.
 
-Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which ships as the `rego` extra: `pip install "extensible-mcp[rego]"`, or `uv sync --extra rego` in a checkout. The policy-bundle engines are extras too — `wasm` for OPA-compiled policies and `cel` for CEL ones — since both pull compiled dependencies not everyone needs. A checkout's `--group dev` installs all three.
+Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which ships as the `rego` extra: `pip install "extensible-mcp[rego]"`, or `uv sync --extra rego` in a checkout. The policy-bundle engines are extras too — `wasm` for OPA-compiled policies, `cel` for CEL, `cedar` for Cedar — since each pulls dependencies not everyone needs. A checkout's `--group dev` installs all of them.
 
 **Response filters** — applied to tool results on their way back from the downstream server, before the LLM sees them. No reference filters ship by default; the pipeline is empty unless you wire in your own. Useful for redacting secrets that leak back from a buggy server, scrubbing or flagging prompt-injection patterns in scraped content, truncating large responses, or audit logging. See [Writing a custom filter](#writing-a-custom-filter) for the Protocol shape.
 
@@ -499,7 +499,7 @@ class AuditLogFilter:
         )
 ```
 
-Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, and `extra_load_filters`, plus `bundle_router` (per-server policy bundles, see Status) and `local_tools` (below):
+Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, and `extra_load_filters`, plus `bundle_router` (per-server policy bundles, see [Policy bundles](#policy-bundles)) and `local_tools` (below):
 
 ```python
 from extensible_mcp.config import find_config_path, load_config

@@ -24,8 +24,8 @@ flowchart TB
 
     subgraph provenance["Policy provenance (build time)"]
         direction LR
-        spec["Policy spec<br/>family_spend"] -->|"authoring toolchain"| rego["Rego or CEL"]
-        rego -->|"opa build / checks.cel.json"| wasm[("policy bundle<br/>manifest · fetchplan · guidance")]
+        spec["Policy spec<br/>family_spend"] -->|"authoring toolchain"| rego["Rego, CEL or Cedar"]
+        rego -->|"opa build / checks.cel.json / policy.cedar"| wasm[("policy bundle<br/>manifest · fetchplan · guidance")]
     end
 
     subgraph identity["Identity — VC issuance"]

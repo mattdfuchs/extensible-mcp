@@ -15,7 +15,7 @@ I will acknowledge receipt within a few days and follow up with a triage assessm
 In scope:
 
 - Vulnerabilities in the proxy itself: filter bypasses, secret leakage into the LLM's context, ways to call tools that should have been blocked, ways to load servers that `load_control` should have rejected.
-- Token-handling regressions: tokens appearing in logs, in chat transcripts, or in error messages surfaced to the LLM.
+- Credential-handling regressions: tokens, client secrets or signing keys appearing in logs, in chat transcripts, or in error messages surfaced to the LLM.
 - Bypasses of the structurally-enforced "the LLM can only call tools it has surfaced via `search_tools`" property. The set is scoped per MCP session; on a transport without sessions (stdio) a process serves one client and the scope is the process.
 - Denial-of-service issues that an attacker (e.g., via a prompt-injected tool description) can trigger against the proxy itself.
 
@@ -47,12 +47,12 @@ accurate and already known; a design for it is being worked on. Reports that
 the first is answerable without valid evidence are very much in scope.
 
 **"Signature checks run inside the policy" is a claim about the engine, not
-about the bundle format.** It holds unconditionally for the two engines that
-ship: the Rego/wasm engine is given crypto builtins as host imports, and the
-CEL engine evaluates its checks over the same closed input, so in both cases a
-credential is verified *within* the rules that decide the call. A bundle whose
-rules are compiled to Cedar by an external policy-authoring toolchain is
-different, because Cedar has no crypto: the verifications are **hoisted** —
+about the bundle format.** It holds unconditionally for two of the three
+engines that ship: the Rego/wasm engine is given crypto builtins as host
+imports, and the CEL engine evaluates its checks over the same closed input, so
+in both cases a credential is verified *within* the rules that decide the call.
+The third, Cedar — whose bundles an external policy-authoring toolchain emits —
+is different, because Cedar has no crypto: the verifications are **hoisted** —
 performed by the host ahead of the policy, which then decides over the
 resulting witness set. For that target the sentence above is false, and this is
 the narrowing rather than a retraction.

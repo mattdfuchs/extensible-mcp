@@ -24,7 +24,7 @@ Each has its own `tests/` and its own README. The root `uv sync` installs *only*
 # Everything, including both example packages and all extras
 uv sync --all-packages --all-extras --group dev
 
-# Just the proxy plus pytest and the three engine extras (wasm, rego, cel)
+# Just the proxy plus pytest, the engine extras (wasm, rego, cel, cedar) and oauth
 uv sync --group dev
 
 # The three test suites
@@ -103,10 +103,10 @@ Core proxy:
 Policy-bundle engine:
 
 - **`bundle.py` / `fetchplan.py`** — loads a bundle and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers.
-- **`cedar_policy.py`** — the third engine, via `cedarpy`. Forbid-only policies over a base permit; the loader refuses a policy set that does not carry exactly the `@id` forbids and `@assembly` tiers `expected_ids.json` lists, because an empty forbid-only set allows everything. Any evaluation diagnostic is a fault, never a denial: Cedar skips a policy whose condition raises, and a skipped forbid is a permit. Crypto never runs inside a Cedar policy; the fetch plan derives witness sets and the rule tests a relation over them.
 - **`policy_engine.py`** — the `PolicyEngine` Protocol all three engines implement; the bundle format is engine-plural by design.
 - **`wasm_policy.py`** — OPA-compiled Rego evaluated in-process via wasmtime, with the crypto builtins a credential policy needs supplied from Python as host imports, so signature checks run *inside* the policy. The OPA heap is a bump allocator: the heap pointer is captured after instantiation and rewound per query.
 - **`cel_policy.py`** — the second engine over the same bundle format, via `cel-python`. A check that does not evaluate to a CEL bool fails closed.
+- **`cedar_policy.py`** — the third engine, via `cedarpy`. Forbid-only policies over a base permit; the loader refuses a policy set that does not carry exactly the `@id` forbids and `@assembly` tiers `expected_ids.json` lists, because an empty forbid-only set allows everything. Any evaluation diagnostic is a fault, never a denial: Cedar skips a policy whose condition raises, and a skipped forbid is a permit. Crypto never runs inside a Cedar policy; the fetch plan derives witness sets and the rule tests a relation over them.
 - **`wasm_filter.py`** — the call filters that enforce a bundle: generic `WasmPolicyFilter` and the production `VCPolicyFilter`.
 - **`guidance.py`** — renders a denial from the bundle's guidance layer (`render_denial`, exported).
 - **`selection.py` / `routing.py`** — which bundle governs a server, and per-call routing.
@@ -117,6 +117,6 @@ Engine faults always fail closed and stay distinct from policy denials. When a f
 
 ### Testing
 
-Tests use `pytest` with `pytest-asyncio` (auto mode). The mock MCP server in `tests/mock_server.py` provides fake tool definitions for integration tests without real downstream servers. Credential tests build real signed artifacts via `tests/vc_helpers.py` and evaluate them against the actual compiled policy fixtures, on both engines — so a change to the evidence path is tested against the real bundles, not mocks.
+Tests use `pytest` with `pytest-asyncio` (auto mode). The mock MCP server in `tests/mock_server.py` provides fake tool definitions for integration tests without real downstream servers. Credential tests build real signed artifacts via `tests/vc_helpers.py` and evaluate them against the actual compiled policy fixtures, on all three engines — so a change to the evidence path is tested against the real bundles, not mocks.
 
 CI runs all three suites on 3.11/3.12/3.13.
