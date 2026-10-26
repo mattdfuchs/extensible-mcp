@@ -185,6 +185,29 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
 }
 ```
 
+**Attaching a policy bundle from the config file.** A [policy bundle](#policy-bundles) — rules over signed evidence, in Rego, CEL or Cedar — is attached to a server by name under `filters.policy_bundles`, with the deployment facts its fetch plan reads from `config`:
+
+```json
+{
+  "mcpServers": {
+    "payments": {"url": "https://payments.example.com/mcp"}
+  },
+  "filters": {
+    "policy_bundles": {
+      "payments": {
+        "path": "policies/spend",
+        "config": {"requesterJwk": "{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"...\"}"},
+        "single_use": ["requestVC"]
+      }
+    }
+  }
+}
+```
+
+`path` is relative to the config file. `config` is the object the plan's `config` entries read from, verbatim. `engine` forces `rego`, `cel` or `cedar` where a directory carries more than one artifact; otherwise the engine is inferred from the artifact present. `single_use` names the credential fields to spend per call (see [Evidence is single-use](#policy-bundles)). The bundle's call filter runs on that server's tools and no other, and the governed tools are surfaced with their credential parameters added, so the LLM is told what evidence to supply. A bundle that cannot be loaded, or one declared for a server that is not in `mcpServers`, stops the proxy from starting with the loader's own message; there is no running proxy with a gate missing.
+
+Two things this form cannot do, and says so at startup. A fetch plan with a `wallet` source needs a lookup — code that fetches a credential from somewhere the deployment knows about — so such a bundle is attached from an entry point instead, as shown under Policy bundles. And a bundle that verifies passkeys needs `default_builtins(webauthn_rp_id=...)`, a deployment fact only an embedder can supply. Selecting a bundle per server from provenance facts rather than by name is `bundle_router`, also an embedder feature.
+
 ### Authentication
 
 Many MCP servers require credentials. How the proxy supplies one depends on how the downstream server is reached, and in every case the credential stays out of the LLM's context: the model never sees a token, a client secret or a key, and the proxy's system instructions tell it never to ask for one in the conversation.
@@ -314,7 +337,7 @@ Without `load_control`, an LLM could be prompt-injected into connecting to a mal
 
 ### Policy bundles
 
-`rego_policy` above decides on the raw arguments alone. When the decision has to rest on signed evidence instead — a Verifiable Credential, a passkey assertion — use a **policy bundle**: a directory of four files, three of which are engine-independent.
+`rego_policy` above decides on the raw arguments alone. When the decision has to rest on signed evidence instead — a Verifiable Credential, a passkey assertion — use a **policy bundle**: a directory of four files, three of which are engine-independent. A bundle is attached either by name in the config file (`filters.policy_bundles`, see [Configuration](#configuration)) or in code by an embedder; the rest of this section is the same either way.
 
 | File | What it is |
 |---|---|
@@ -352,7 +375,7 @@ Any artifact can be hand-authored — several bundles under [`tests/fixtures/`](
 
 One consequence worth knowing when reading a bundle: the check identifiers threading a denial back to the condition that produced it are opaque join keys between the rules and `guidance.json`, and nothing in the proxy parses one. They are named, but they are still an artifact of generation. Render denials through `guidance.json`; don't build against the identifiers themselves.
 
-Attach a loaded bundle as a call filter:
+The config-file form covers a plan whose sources are `call`, `config`, `clock` and `derive`. An embedder attaches a bundle in code instead when the plan has a `wallet` source, when a non-default builtin registry is needed, or when the bundle should be selected per server rather than declared — loading it and wiring the filter by hand:
 
 ```python
 from extensible_mcp import PolicyBundle, WasmPolicyFilter
