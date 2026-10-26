@@ -507,10 +507,13 @@ def test_a_forbid_without_its_guard_is_a_fault_in_the_decision_pass(tmp_path):
     """cedarpy's policy JSON carries no conditions, so the guard cannot be
     checked at load. It is checked at the first call that would have let the
     unguarded forbid decide: a denial with reasons in the decision pass."""
-    text = _minimal_policy().replace(
-        '@id("solo.arguments.amount_cents_at_most")\nforbid (principal, action, resource)\nwhen {\n  context has probe &&\n',
-        '@id("solo.arguments.amount_cents_at_most")\nforbid (principal, action, resource)\nwhen {\n', 1)
-    assert text != _minimal_policy()
+    # The forbid's annotations (@id, and @sentence since the inline form) sit
+    # between the id and the keyword, so the guard is located by pattern.
+    text, n = re.subn(
+        r'(@id\("solo\.arguments\.amount_cents_at_most"\)\n(?:@\w+\([^)]*\)\n)*'
+        r'forbid \(principal, action, resource\)\nwhen \{\n)  context has probe &&\n',
+        r"\1", _minimal_policy(), count=1)
+    assert n == 1
     policy = CedarPolicy(_minimal_variant(tmp_path, policy=text) / "policy.cedar")
     with pytest.raises(PolicyEvaluationError, match=r"fired without a `context has probe` guard"):
         policy.query({"arguments": {"amountCents": 5000}}, MINIMAL_ALLOW)

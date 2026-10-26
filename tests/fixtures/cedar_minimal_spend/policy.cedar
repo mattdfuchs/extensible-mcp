@@ -36,8 +36,11 @@ when {
 };
 
 // The explanations: one forbid per condition, its own condition and nothing
-// else, each carrying the guidance id it reports under. Inert without `probe`.
+// else, each carrying the guidance id it reports under and, as @sentence, the
+// text a denial renders -- the inline form a hand author uses instead of a
+// guidance.json; with one present it wins. Inert without `probe`.
 @id("solo.request_vc.signed_by")
+@sentence("a credential signature is invalid")
 forbid (principal, action, resource)
 when {
   context has probe &&
@@ -47,6 +50,7 @@ when {
 };
 
 @id("solo.request_vc.within_window")
+@sentence("a credential is outside its validity window")
 forbid (principal, action, resource)
 when {
   context has probe &&
@@ -57,6 +61,7 @@ when {
 };
 
 @id("solo.request_vc.action_matches")
+@sentence("required: input.requestVC.claims.action == input.tool")
 forbid (principal, action, resource)
 when {
   context has probe &&
@@ -66,6 +71,7 @@ when {
 };
 
 @id("solo.request_vc.arguments_matches")
+@sentence("required: input.requestVC.claims.arguments == input.arguments")
 forbid (principal, action, resource)
 when {
   context has probe &&
@@ -75,6 +81,7 @@ when {
 };
 
 @id("solo.arguments.amount_cents_at_most")
+@sentence("required: input.arguments.amountCents <= 1000")
 forbid (principal, action, resource)
 when {
   context has probe &&
