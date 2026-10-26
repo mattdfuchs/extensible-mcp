@@ -14,10 +14,25 @@
     }
   ],
   "checks": {
-    "solo.request_vc.signed_by": "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
-    "solo.request_vc.within_window": "input.requestVC.claims.nbf <= input.now && input.now <= input.requestVC.claims.exp",
-    "solo.request_vc.action_matches": "input.requestVC.claims.action == input.tool",
-    "solo.request_vc.arguments_matches": "input.requestVC.claims.arguments == input.arguments",
-    "solo.arguments.amount_cents_at_most": "input.arguments.amountCents <= 1000"
+    "solo.request_vc.signed_by": {
+      "expr": "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
+      "sentence": "a credential signature is invalid"
+    },
+    "solo.request_vc.within_window": {
+      "expr": "input.requestVC.claims.nbf <= input.now && input.now <= input.requestVC.claims.exp",
+      "sentence": "a credential is outside its validity window"
+    },
+    "solo.request_vc.action_matches": {
+      "expr": "input.requestVC.claims.action == input.tool",
+      "sentence": "required: input.requestVC.claims.action == input.tool"
+    },
+    "solo.request_vc.arguments_matches": {
+      "expr": "input.requestVC.claims.arguments == input.arguments",
+      "sentence": "required: input.requestVC.claims.arguments == input.arguments"
+    },
+    "solo.arguments.amount_cents_at_most": {
+      "expr": "input.arguments.amountCents <= 1000",
+      "sentence": "required: input.arguments.amountCents <= 1000"
+    }
   }
 }

@@ -3,7 +3,11 @@
 Not derived from any external toolchain. Hand-authored directly for this
 repository: the same five conditions as `../minimal_spend`, written as CEL
 expressions in `checks.cel.json` — a map from check id to one expression,
-plus the tier each id belongs to. `manifest.json` / `fetchplan.json` /
+plus the tier each id belongs to. Each check is written in the object form,
+`{"expr", "sentence"}`, so the file carries its own denial text: the inline
+form a hand author uses instead of a `guidance.json`. The sentences are the
+same five as the guidance file's, and `tests/test_fixture_corpus.py` holds
+them identical; with the guidance present they are not read. `manifest.json` / `fetchplan.json` /
 `guidance.json` are byte-identical to the Rego twin's; the one engine-
 specific file is the only one that differs.
 

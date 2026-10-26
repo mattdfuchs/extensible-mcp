@@ -16,8 +16,10 @@ A bundle is a directory the proxy consumes verbatim:
 - ``manifest.json``  — JSON Schema of the closed input (type defs + validation)
 - ``fetchplan.json`` — where each input field comes from (``call`` / ``config``
   / ``clock`` / ``wallet`` / ``derive``)
-- ``guidance.json``  — the human/LLM-facing layer (optional; a toolchain that
-  doesn't emit it is loaded and used with plainer denial messages)
+- ``guidance.json``  — the human/LLM-facing layer (optional; a bundle that
+  doesn't ship it renders from sentences written in the policy file —
+  CEL ``{"expr", "sentence"}``, Cedar ``@sentence``, Rego ``deny_reason`` —
+  or, failing those, with a plain denial message)
 
 This module is the runtime view of a bundle. The ``allow`` / ``deny_reason``
 entrypoints and the call-field partition are derived from the artifacts, so the
@@ -33,7 +35,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .fetchplan import validate_derive_plan
-from .policy_engine import PolicyEngine
+from .policy_engine import PolicyEngine, inline_guidance
 from .wasm_policy import OpaWasmPolicy
 
 # Reserved call-field names that are not LLM-supplied *credentials*: the action
@@ -143,6 +145,8 @@ class PolicyBundle:
         guidance = (
             json.loads(guidance_path.read_text()) if guidance_path.exists() else None
         )
+        if guidance is None:
+            guidance = _synthesize_guidance(policy, fetchplan)
         return cls(
             name=name or d.name,
             package=package,
@@ -324,6 +328,32 @@ class PolicyBundle:
 
 
 _TOOL_FIELD_KIND = "call"
+
+#: The guard keys a shipped ``guidance.json`` carries per call field; copied
+#: from the fetch plan when guidance is synthesised, so the renderer can still
+#: name an absent credential by tier.
+_GUARD_KEYS = ("field", "always", "required_in_tiers", "deciding_checks")
+
+
+def _synthesize_guidance(
+    policy: PolicyEngine, fetchplan: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Guidance for a bundle that ships none, from the sentences its policy
+    file carries — the hand-author's form. The engine supplies the tiers and
+    sentences (:func:`~extensible_mcp.policy_engine.inline_guidance`); the
+    call guards come from the fetch plan's ``call`` entries, which is where a
+    shipped guidance file's ``call_guards`` originate too. ``None`` when the
+    engine offers nothing, and the denial falls back to the policy's own
+    ``deny_reason`` strings or the bare message, as before."""
+    inline = inline_guidance(policy)
+    if not inline:
+        return None
+    guards = []
+    for e in fetchplan.get("entries") or []:
+        guard = e.get("guard")
+        if e.get("source", {}).get("kind") == _TOOL_FIELD_KIND and isinstance(guard, dict):
+            guards.append({"field": e["field"], **{k: guard[k] for k in _GUARD_KEYS[1:] if k in guard}})
+    return {**inline, "call_guards": guards, "synthesized_from": "inline"}
 
 
 def _derive_package(policy: OpaWasmPolicy) -> str:

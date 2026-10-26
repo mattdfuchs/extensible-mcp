@@ -28,6 +28,12 @@ What Cedar forces, and nothing else, is different here:
   permit; the guards it checks on every call. The forbid-only shape the
   external toolchain emits is the other one the loader accepts;
   `../cedar_family_spend` is in it.
+- **The text travels inline too.** Each `@id` forbid carries a
+  `@sentence("...")` annotation with the same sentence `guidance.json`
+  renders for that id — Cedar's inline form, for a bundle that ships no
+  guidance; the loader synthesises the guidance from the annotations and
+  `expected_ids.json`'s tiers. With the guidance present the annotations are
+  not read, and `tests/test_fixture_corpus.py` holds the two identical.
 - `guidance.json` is byte-identical to the Rego twin's, so a denial renders
   the same sentence whichever engine produced the id.
 

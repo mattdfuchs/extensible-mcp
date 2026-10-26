@@ -11,8 +11,11 @@ memberships, no second credential, no DID resolution. Those live in
 read in full.
 
 - Package: `policybundle.examples.minimal_spend`.
-- Entrypoints: `allow`, `failed_checks`. No `deny_reason`: denials render
-  through `guidance.json`, and the English fallback would only duplicate it.
+- Entrypoints: `allow`, `failed_checks`, `deny_reason`. The `deny_reason`
+  rules carry the same five sentences as `guidance.json`: they are Rego's
+  inline form of the text, what the proxy falls back to for a bundle that
+  ships no guidance. With guidance present they are not read, and
+  `tests/test_fixture_corpus.py` holds the two sets of sentences identical.
 - Five named check ids, one tier (`solo.*`), `"id_scheme": "named-split"`
   in `guidance.json`, which carries no `guidance_digest` because that field
   names a supplier artifact and this bundle is not one.
@@ -31,7 +34,7 @@ read in full.
 
 ```sh
 P=policybundle/examples/minimal_spend
-opa build -t wasm -e $P/allow -e $P/failed_checks policy.rego -o /tmp/ms.tar.gz
+opa build -t wasm -e $P/allow -e $P/failed_checks -e $P/deny_reason policy.rego -o /tmp/ms.tar.gz
 tar xzf /tmp/ms.tar.gz -C /tmp policy.wasm
 cp /tmp/policy.wasm .
 ```

@@ -168,12 +168,14 @@ class CedarPolicy:
                 "forbid-only set allows everything."
             )
         self._package = package or policy_path.parent.name
-        self._expected_ids, self._expected_tiers, self._shape = _read_expected(
-            expected_path
+        self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
+            _read_expected(expected_path)
         )
 
         text = policy_path.read_text()
-        self._check_complete(_parse_policies(cedarpy, text, policy_path))
+        policies = _parse_policies(cedarpy, text, policy_path)
+        self._check_complete(policies)
+        self._sentences = _inline_sentences(policies)
         # Parsed once here; `is_authorized` accepts the PolicySet directly, so a
         # 100 KB emitted policy is not re-parsed on every call.
         self._policies = cedarpy.PolicySet.from_str(text)
@@ -195,6 +197,39 @@ class CedarPolicy:
         """Which policy-set shape ``expected_ids.json`` declared and the loader
         verified: :data:`SHAPE_FORBID_ONLY` or :data:`SHAPE_PERMIT_DECIDES`."""
         return self._shape
+
+    # -- sentences written beside the rules ------------------------------- #
+
+    @property
+    def inline_sentences(self) -> dict[str, str]:
+        """The ``@sentence("...")`` annotations the ``@id`` forbids carry, by
+        id. Empty for a file that leaves its text to ``guidance.json``."""
+        return dict(self._sentences)
+
+    def inline_guidance(self) -> dict[str, Any]:
+        """The guidance this file alone supports (see
+        :func:`~extensible_mcp.policy_engine.inline_guidance`). The tier
+        structure is ``expected_ids.json``'s, in its order, so a tier is
+        numbered by position as the generated guidance numbers it; each check
+        renders its ``@sentence``, or ``required: <id>`` when it has none —
+        Cedar's condition is not available as text, so the id, which a hand
+        author chose to be readable, stands in."""
+        return {
+            "tiers": [
+                {
+                    "tier": index,
+                    "checks": [
+                        {
+                            "id": cid,
+                            "sentence": self._sentences.get(cid, "required: " + cid),
+                            "remedy_class": "re-promptable",
+                        }
+                        for cid in ids
+                    ],
+                }
+                for index, (_, ids) in enumerate(self._tier_ids)
+            ]
+        }
 
     # -- PolicyEngine Protocol ------------------------------------------- #
 
@@ -385,7 +420,9 @@ class CedarPolicy:
             )
 
 
-def _read_expected(path: Path) -> tuple[frozenset[str], frozenset[str], str]:
+def _read_expected(
+    path: Path,
+) -> tuple[frozenset[str], frozenset[str], str, list[tuple[str, list[str]]]]:
     spec = json.loads(path.read_text())
     shape = spec.get("shape", SHAPE_FORBID_ONLY)
     if shape not in SHAPES:
@@ -403,18 +440,20 @@ def _read_expected(path: Path) -> tuple[frozenset[str], frozenset[str], str]:
         raise CedarPolicyError(f"{path}: 'tiers' must be a non-empty list")
     names: list[str] = []
     per_tier: set[str] = set()
+    ordered: list[tuple[str, list[str]]] = []
     for t in tiers:
         if not isinstance(t, dict) or not isinstance(t.get("tier"), str):
             raise CedarPolicyError(f"{path}: each tier needs a string 'tier' name")
         names.append(t["tier"])
         per_tier.update(t.get("ids") or [])
+        ordered.append((t["tier"], list(t.get("ids") or [])))
     if len(set(names)) != len(names):
         raise CedarPolicyError(f"{path}: a tier is listed twice")
     if per_tier != set(ids):
         raise CedarPolicyError(
             f"{path}: the per-tier ids and the flat 'ids' list disagree"
         )
-    return frozenset(ids), frozenset(names), shape
+    return frozenset(ids), frozenset(names), shape, ordered
 
 
 def refuse_reserved_plan_fields(fetchplan: dict[str, Any], path: Path | str) -> None:
@@ -447,6 +486,28 @@ def _parse_policies(cedarpy: Any, text: str, path: Path) -> list[tuple[str, dict
     out: list[tuple[str, dict[str, Any]]] = []
     for policy in (parsed.get("staticPolicies") or {}).values():
         out.append((policy.get("effect"), dict(policy.get("annotations") or {})))
+    return out
+
+
+def _inline_sentences(policies: list[tuple[str, dict[str, Any]]]) -> dict[str, str]:
+    """``@sentence`` by check id. Only an ``@id`` forbid has a sentence to
+    render; on a permit or an ``@assembly`` forbid the annotation would be
+    text nothing can ever show, so it is refused rather than ignored."""
+    out: dict[str, str] = {}
+    for effect, annotations in policies:
+        sentence = annotations.get("sentence")
+        if sentence is None:
+            continue
+        check_id = annotations.get("id")
+        if effect != "forbid" or check_id is None:
+            where = "a permit" if effect == "permit" else "an @assembly forbid"
+            raise CedarPolicyError(
+                f"@sentence on {where}: only an @id forbid renders a sentence, so "
+                "this text could never be shown"
+            )
+        if not sentence:
+            raise CedarPolicyError(f"forbid {check_id!r} carries an empty @sentence")
+        out[check_id] = sentence
     return out
 
 
