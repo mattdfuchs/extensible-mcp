@@ -418,6 +418,19 @@ def test_bundle_loads_with_no_fetchplan_warning_in_its_intended_configuration(bu
             if r.name == "extensible_mcp.fetchplan"] == []
 
 
+@pytest.mark.parametrize("bundle", sorted(LOAD_CONFIG))
+def test_inline_sentences_do_not_drift_from_the_guidance(bundle):
+    """A bundle may carry its sentences both inline (CEL ``{"expr",
+    "sentence"}``, Cedar ``@sentence``) and in ``guidance.json``. The file
+    wins when present, so a drift between the two would be invisible at run
+    time; it is pinned here instead, per id, for every bundle that has any."""
+    b = PolicyBundle.load(FIXTURES / bundle, name=bundle, **LOAD_CONFIG[bundle])
+    inline = getattr(b.policy, "inline_sentences", {})
+    by_id = {c["id"]: c["sentence"] for t in _guidance(bundle)["tiers"] for c in t["checks"]}
+    for cid, sentence in inline.items():
+        assert by_id.get(cid) == sentence, (bundle, cid)
+
+
 def test_the_warning_still_fires_when_the_registry_is_not_configured(caplog):
     """The quiet path above is quiet because the registry is configured, not
     because the warning is gone: the engine alone leaves ``verify_webauthn``
