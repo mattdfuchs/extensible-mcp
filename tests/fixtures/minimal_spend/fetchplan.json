@@ -1,0 +1,74 @@
+{
+  "input": "MinimalSpendInput",
+  "entries": [
+    {
+      "field": "tool",
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "type": "string"
+      },
+      "guard": {
+        "field": "tool",
+        "always": true,
+        "required_in_tiers": [
+          0
+        ],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "arguments",
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/SpendRequest"
+      },
+      "guard": {
+        "field": "arguments",
+        "always": true,
+        "required_in_tiers": [
+          0
+        ],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "requestVC",
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/RequestVC"
+      },
+      "guard": {
+        "field": "requestVC",
+        "always": true,
+        "required_in_tiers": [
+          0
+        ],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "requesterJwk",
+      "source": {
+        "kind": "config"
+      },
+      "schema": {
+        "type": "string"
+      }
+    },
+    {
+      "field": "now",
+      "source": {
+        "kind": "clock"
+      },
+      "schema": {
+        "$ref": "#/definitions/Timestamp"
+      }
+    }
+  ]
+}

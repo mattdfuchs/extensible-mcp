@@ -1,0 +1,28 @@
+{
+  "why": "Forbid-only: an empty policy set allows everything, so a loader that finds fewer ids than this has a silent permit, not a partial policy. `ids` are the same ids guidance.json renders and the Rego and CEL twins report. `assembly_tiers` names the one extra forbid per tier, annotated @assembly and carrying no @id, which fires when the tier's inputs were incomplete. A loader must find one forbid per id AND one per assembly tier.",
+  "goal": "policybundle.examples.minimal_spend",
+  "id_scheme": "named-split",
+  "count": 5,
+  "ids": [
+    "solo.request_vc.signed_by",
+    "solo.request_vc.within_window",
+    "solo.request_vc.action_matches",
+    "solo.request_vc.arguments_matches",
+    "solo.arguments.amount_cents_at_most"
+  ],
+  "tiers": [
+    {
+      "tier": "solo",
+      "ids": [
+        "solo.request_vc.signed_by",
+        "solo.request_vc.within_window",
+        "solo.request_vc.action_matches",
+        "solo.request_vc.arguments_matches",
+        "solo.arguments.amount_cents_at_most"
+      ]
+    }
+  ],
+  "assembly_tiers": [
+    "solo"
+  ]
+}
