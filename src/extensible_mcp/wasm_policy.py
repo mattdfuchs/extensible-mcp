@@ -136,6 +136,68 @@ def _verify_eddsa(jws: Any, jwk: Any) -> bool:
         return False
 
 
+def _make_jws_verifier(
+    *, builtin: str, key_cls_name: str, algorithms: list[str]
+) -> Callable[[Any, Any], bool]:
+    """A JWS verifier with ``_verify_eddsa``'s contract for one key family.
+
+    ``io.jwt.verify_es256`` and ``io.jwt.verify_rs256`` are the ordinary
+    identity-provider algorithms (and ES256 is what AP2 signs a checkout
+    with), so a hand-written policy over an ordinary JWT has something to
+    call. The split between evidence and fault is the EdDSA one, verbatim:
+    a ``jwk`` that is ``None`` is a ``False`` denial; a JWK string that does
+    not parse, a JWK of another key family, or a non-JWK operand is a
+    ``HostBuiltinError``, because a verifier that cannot read its configured
+    key must fail closed and never as a quiet "deny"; anything wrong with the
+    ``jws`` -- not a string, malformed, a different ``alg`` in its header, a
+    bad signature -- is a ``False`` denial. One key family per verifier: an
+    EC key handed to the RS256 verifier is a malformed key *for that
+    primitive*, as an EC key handed to ``io.jwt.verify_eddsa`` is.
+    """
+
+    def verify(jws: Any, jwk: Any) -> bool:
+        from joserfc import jwk as joserfc_jwk
+        from joserfc import jws as joserfc_jws
+
+        key_cls = getattr(joserfc_jwk, key_cls_name)
+        if jwk is None:
+            return False
+        if isinstance(jwk, dict):
+            key_data: Any = jwk
+        elif isinstance(jwk, str):
+            try:
+                key_data = json.loads(jwk)
+            except Exception as e:  # noqa: BLE001 - corrupt config string is fail-closed
+                raise HostBuiltinError(f"{builtin}: unparseable JWK: {e}") from e
+        else:
+            raise HostBuiltinError(
+                f"{builtin}: JWK must be object, string, or null, "
+                f"got {type(jwk).__name__}"
+            )
+        try:
+            key = key_cls.import_key(key_data)
+        except Exception as e:  # noqa: BLE001
+            raise HostBuiltinError(f"{builtin}: invalid JWK: {e}") from e
+        if not isinstance(jws, str):
+            return False
+        try:
+            joserfc_jws.deserialize_compact(jws, key, algorithms=algorithms)
+            return True
+        except Exception:  # noqa: BLE001 - bad signature, wrong alg, malformed → deny
+            return False
+
+    verify.__name__ = verify.__qualname__ = builtin.replace(".", "_")
+    return verify
+
+
+_verify_es256 = _make_jws_verifier(
+    builtin="io.jwt.verify_es256", key_cls_name="ECKey", algorithms=["ES256"]
+)
+_verify_rs256 = _make_jws_verifier(
+    builtin="io.jwt.verify_rs256", key_cls_name="RSAKey", algorithms=["RS256"]
+)
+
+
 def _b58decode(s: str) -> bytes:
     """Decode a base58btc string to bytes."""
     num = 0
@@ -320,6 +382,8 @@ def default_builtins(*, webauthn_rp_id: str | None = None) -> dict[str, Callable
     builtins: dict[str, Callable[..., Any]] = {
         "crypto.sha256": _sha256,
         "io.jwt.verify_eddsa": _verify_eddsa,
+        "io.jwt.verify_es256": _verify_es256,
+        "io.jwt.verify_rs256": _verify_rs256,
         "key_from_did_key": _key_from_did_key,
         "base64url.encode_no_pad": _b64url_encode_no_pad,
         "verify_ed25519_raw": _verify_ed25519_raw,

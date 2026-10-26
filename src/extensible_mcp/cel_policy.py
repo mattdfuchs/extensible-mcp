@@ -67,6 +67,8 @@ from .wasm_policy import (
     _key_from_did_key,
     _sha256,
     _verify_eddsa,
+    _verify_es256,
+    _verify_rs256,
     _verify_ed25519_raw,
 )
 
@@ -140,6 +142,12 @@ def default_cel_functions(*, webauthn_rp_id: str | None = None) -> dict[str, Cal
     def verify_eddsa(jws: Any, jwk: Any) -> "celtypes.BoolType":
         return celtypes.BoolType(_verify_eddsa(_py(jws), _py(jwk)))
 
+    def verify_es256(jws: Any, jwk: Any) -> "celtypes.BoolType":
+        return celtypes.BoolType(_verify_es256(_py(jws), _py(jwk)))
+
+    def verify_rs256(jws: Any, jwk: Any) -> "celtypes.BoolType":
+        return celtypes.BoolType(_verify_rs256(_py(jws), _py(jwk)))
+
     def key_from_did_key(did: Any) -> Any:
         key = _key_from_did_key(_py(did))
         return celtypes.NullType() if key is None else celtypes.MapType(
@@ -194,6 +202,8 @@ def default_cel_functions(*, webauthn_rp_id: str | None = None) -> dict[str, Cal
 
     functions: dict[str, Callable[..., Any]] = {
         "verify_eddsa": verify_eddsa,
+        "verify_es256": verify_es256,
+        "verify_rs256": verify_rs256,
         "key_from_did_key": key_from_did_key,
         "sha256": sha256,
         "base64url_encode_no_pad": base64url_encode_no_pad,
