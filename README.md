@@ -342,7 +342,7 @@ A Cedar policy is interpreted too, but Cedar has no host-function extension poin
 
 | Engine | What a bundle may contain | What the proxy imposes |
 |---|---|---|
-| Rego | Any program `opa build -t wasm` compiles, exposing `<package>/allow`; `failed_checks` and `deny_reason` optional | Host builtins beyond OPA's own must be ones the proxy registers; an unregistered one fails at load |
+| Rego | Any program `opa build -t wasm` compiles, exposing `<package>/allow`; `failed_checks` and `deny_reason` optional | Host builtins beyond OPA's own must be ones the proxy registers — JWS verification for EdDSA, ES256 and RS256 (`io.jwt.verify_eddsa` / `verify_es256` / `verify_rs256`), raw Ed25519, WebAuthn, SHA-256, `did:key` decoding; an unregistered one fails at load |
 | CEL | Any boolean CEL expression, one per check | The file format is this project's: a package, tiers, and a map from check id to expression; allow is the disjunction over tiers of each tier's conjunction. One tier with one check holds any policy CEL can express. Functions limited to the registered set |
 | Cedar | Conditions over `context`, in one of two declared shapes | One `@id` forbid per check, one `@assembly` forbid per tier, an `expected_ids.json` that must match exactly, no templates; either a base permit with forbid-only leaves, or one `@tier` permit per tier with probe-guarded forbids; a fixed synthetic principal, action and resource, and an empty entity store. A Cedar policy written over real principals and entity hierarchies cannot be loaded today |
 
