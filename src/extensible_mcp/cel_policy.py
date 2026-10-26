@@ -38,7 +38,14 @@ whole query, denying tiers that never read the field at all.
     {"engine": "cel-v1",
      "package": "<entrypoint prefix>",
      "tiers": [{"tier": 0, "checks": ["solo.request_vc.signed_by", ...]}, ...],
-     "checks": {"solo.request_vc.signed_by": "<CEL expression, authored positively>", ...}}
+     "checks": {"solo.request_vc.signed_by": "<CEL expression, authored positively>",
+                "solo.arguments.amount_cents_at_most":
+                    {"expr": "<CEL expression>", "sentence": "<the denial text>"}, ...}}
+
+A check's value is the expression, or an object carrying the expression and
+the sentence a denial renders for it — the inline form a hand author uses
+instead of a ``guidance.json``; the loader synthesises one from these when
+the file is absent (see :func:`~extensible_mcp.policy_engine.inline_guidance`).
 
 Checks are authored positively (must evaluate ``true`` to pass) — the
 opposite polarity from Rego bundles' failure-form ``condition`` strings in
@@ -206,6 +213,36 @@ def default_cel_functions(*, webauthn_rp_id: str | None = None) -> dict[str, Cal
     return functions
 
 
+_CHECK_OBJECT_KEYS = frozenset({"expr", "sentence"})
+
+
+def _check_value(check_id: str, value: Any) -> tuple[str, str | None]:
+    """A check's value is the expression, or ``{"expr": ..., "sentence": ...}``
+    when the denial text travels with the rule. Anything else is refused at
+    load with the key named, so a typo (``"sentance"``) cannot load as a check
+    with no sentence."""
+    if isinstance(value, str):
+        return value, None
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"check {check_id!r}: value must be a CEL expression string or an "
+            f"object with 'expr' and optional 'sentence', got {type(value).__name__}"
+        )
+    unknown = sorted(set(value) - _CHECK_OBJECT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"check {check_id!r}: unknown key(s) {unknown}; a check object carries "
+            "'expr' and optionally 'sentence', nothing else"
+        )
+    expr = value.get("expr")
+    if not isinstance(expr, str) or not expr:
+        raise ValueError(f"check {check_id!r}: 'expr' must be a non-empty CEL expression string")
+    sentence = value.get("sentence")
+    if sentence is not None and (not isinstance(sentence, str) or not sentence):
+        raise ValueError(f"check {check_id!r}: 'sentence' must be a non-empty string when present")
+    return expr, sentence
+
+
 class CelPolicy:
     """Loads one CEL-authored bundle (``checks.cel.json``) and evaluates it
     in-process. Implements the :class:`~extensible_mcp.policy_engine.PolicyEngine`
@@ -231,10 +268,47 @@ class CelPolicy:
 
         env = celpy.Environment()
         self._programs: dict[str, Any] = {}
-        for check_id, expr in spec["checks"].items():
+        self._exprs: dict[str, str] = {}
+        self._sentences: dict[str, str] = {}
+        for check_id, value in spec["checks"].items():
+            expr, sentence = _check_value(check_id, value)
             ast = env.compile(expr)
             self._programs[check_id] = env.program(ast, functions=self._functions)
+            self._exprs[check_id] = expr
+            if sentence is not None:
+                self._sentences[check_id] = sentence
         self._celpy = celpy
+
+    # -- sentences written beside the rules ------------------------------- #
+
+    @property
+    def inline_sentences(self) -> dict[str, str]:
+        """The sentences the file carries in ``{"expr", "sentence"}`` check
+        values, by id. Empty for a file in the plain id-to-expression form."""
+        return dict(self._sentences)
+
+    def inline_guidance(self) -> dict[str, Any]:
+        """The guidance this file alone supports (see
+        :func:`~extensible_mcp.policy_engine.inline_guidance`): its tiers, each
+        check with its inline sentence, or ``required: <expression>`` for a
+        check that carries none — the same mechanical form the generated
+        guidance files use for a condition nobody wrote a sentence for."""
+        return {
+            "tiers": [
+                {
+                    "tier": tier["tier"],
+                    "checks": [
+                        {
+                            "id": cid,
+                            "sentence": self._sentences.get(cid, "required: " + self._exprs[cid]),
+                            "remedy_class": "re-promptable",
+                        }
+                        for cid in tier["checks"]
+                    ],
+                }
+                for tier in self._tiers
+            ]
+        }
 
     # -- PolicyEngine Protocol ------------------------------------------- #
 
