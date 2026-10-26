@@ -18,6 +18,11 @@ Three properties of Cedar become tests here; what this file does not cover
   ``failed_checks`` rather than rendered as Cedar's positional label, and
   the absent credential is explained from the guard metadata instead.
 
+The second policy-set shape, *permit decides, forbid explains*, is tested in
+the last section over ``cedar_minimal_spend``: the loader rules it adds, the
+reserved ``probe`` key, and the two per-call guard checks that stand in for
+a static check cedarpy cannot offer.
+
 The rest mirrors ``test_cel_policy.py``'s filter-level assertions, so the
 three engine test files read the same way.
 """
@@ -373,3 +378,175 @@ async def test_fold_emits_no_witness_for_a_truthy_answer_that_is_not_true():
     executor = FetchExecutor(default_resolvers(primitives={"pseudo_verify": pseudo_verify}))
     assembled = await executor.assemble(plan, ctx)
     assert assembled["witnesses"] == ["k5"]
+
+
+# -- permit decides, forbid explains ------------------------------------------ #
+
+MINIMAL_DIR = FIXTURES / "cedar_minimal_spend"
+MINIMAL_ALLOW = "cedar_variant/allow"
+MINIMAL_FAILED = "cedar_variant/failed_checks"
+
+
+def _minimal_variant(tmp_path, *, policy=None, expected=None, fetchplan=None) -> Path:
+    d = tmp_path / "cedar_variant"
+    shutil.copytree(MINIMAL_DIR, d)
+    if policy is not None:
+        (d / "policy.cedar").write_text(policy)
+    if expected is not None:
+        (d / "expected_ids.json").write_text(json.dumps(expected))
+    if fetchplan is not None:
+        (d / "fetchplan.json").write_text(json.dumps(fetchplan))
+    return d
+
+
+def _minimal_policy() -> str:
+    return (MINIMAL_DIR / "policy.cedar").read_text()
+
+
+def _minimal_expected(**overrides) -> dict:
+    return {**json.loads((MINIMAL_DIR / "expected_ids.json").read_text()), **overrides}
+
+
+def _permit_block(text: str) -> str:
+    m = re.search(r'@tier\("solo"\)\npermit \(.*?\};\n', text, flags=re.S)
+    assert m, "the teaching twin's permit"
+    return m.group(0)
+
+
+def test_the_shape_is_declared_and_the_loader_reports_it():
+    assert PolicyBundle.load(MINIMAL_DIR).policy.shape == "permit-decides"
+    assert PolicyBundle.load(FIXTURES / "cedar_family_spend_compact").policy.shape == "permit-decides"
+    assert PolicyBundle.load(FIXTURE_DIR).policy.shape == "forbid-only"
+
+
+def test_an_unknown_shape_is_refused_at_load(tmp_path):
+    with pytest.raises(CedarPolicyError, match="never infers one"):
+        PolicyBundle.load(_minimal_variant(tmp_path, expected=_minimal_expected(shape="mixed")))
+
+
+def test_a_permit_without_tier_is_refused_in_the_permit_decides_shape(tmp_path):
+    text = _minimal_policy().replace('@tier("solo")\npermit', "permit", 1)
+    with pytest.raises(CedarPolicyError, match="carries no @tier"):
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+
+
+def test_a_tier_with_no_permit_is_refused(tmp_path):
+    text = _minimal_policy().replace(_permit_block(_minimal_policy()), "", 1)
+    # Something has to permit or the set denies every call; keep a base permit
+    # so the refusal under test is the tier one, not the no-permit one.
+    text += '@tier("other")\npermit (principal, action, resource) when { !(context has probe) && false };\n'
+    with pytest.raises(CedarPolicyError, match=r"missing \['solo'\], unexpected \['other'\]"):
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+
+
+def test_two_permits_for_one_tier_are_refused(tmp_path):
+    block = _permit_block(_minimal_policy())
+    with pytest.raises(CedarPolicyError, match=r"@tier annotated on more than one permit: \['solo'\]"):
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=_minimal_policy() + block))
+
+
+def test_a_forbid_only_file_declared_permit_decides_is_refused(tmp_path):
+    """The adopted bundle's bare permit has no @tier: declaring it in the
+    other shape is refused at load rather than evaluated into nonsense."""
+    with pytest.raises(CedarPolicyError, match="carries no @tier"):
+        PolicyBundle.load(_variant(tmp_path, expected={
+            **json.loads((FIXTURE_DIR / "expected_ids.json").read_text()),
+            "shape": "permit-decides",
+        }))
+
+
+def test_a_permit_decides_file_declared_forbid_only_is_refused(tmp_path):
+    expected = _minimal_expected()
+    del expected["shape"]
+    with pytest.raises(CedarPolicyError, match="which only the 'permit-decides' shape uses"):
+        PolicyBundle.load(_minimal_variant(tmp_path, expected=expected))
+
+
+def test_probe_is_a_reserved_input_key():
+    policy = PolicyBundle.load(MINIMAL_DIR).policy
+    with pytest.raises(PolicyEvaluationError, match="reserved for the Cedar engine's probe pass"):
+        policy.query({"probe": True}, f"{MINIMAL_DIR.name}/allow")
+    # In the forbid-only shape too: the key is the engine's, not the shape's.
+    adopted = PolicyBundle.load(FIXTURE_DIR).policy
+    with pytest.raises(PolicyEvaluationError, match="reserved"):
+        adopted.query({"probe": False}, f"{FIXTURE_DIR.name}/allow")
+
+
+def test_probe_is_a_reserved_fetch_plan_field(tmp_path):
+    plan = json.loads((MINIMAL_DIR / "fetchplan.json").read_text())
+    plan["entries"].append({"field": "probe", "source": {"kind": "config"},
+                            "schema": {"type": "boolean"}})
+    with pytest.raises(CedarPolicyError, match="reserved for the Cedar engine's probe pass"):
+        PolicyBundle.load(_minimal_variant(tmp_path, fetchplan=plan))
+
+
+def test_permit_decides_denies_by_default_and_explains_through_the_probe_pass():
+    """An input matching no permit is denied with no forbid having fired in
+    the decision pass; the probe pass then names the conditions that fail.
+    Here only the cap can be judged — every other condition's `has` guards
+    are false on this input, so only the @assembly forbid fires for them,
+    and it is dropped as always."""
+    policy = PolicyBundle.load(MINIMAL_DIR).policy
+    ctx = {"arguments": {"amountCents": 5000}}
+    assert policy.query(ctx, f"{MINIMAL_DIR.name}/allow") == [{"result": False}]
+    assert policy.query(ctx, f"{MINIMAL_DIR.name}/failed_checks") == [
+        {"result": ["solo.arguments.amount_cents_at_most"]}
+    ]
+
+
+def test_an_empty_permit_decides_set_denies_where_a_bare_permit_allowed(tmp_path):
+    """The property SECURITY.md states for this shape, pinned against cedarpy
+    with the loader out of the way: no permit, no allow."""
+    import cedarpy
+
+    res = cedarpy.is_authorized({**REQUEST_HEAD, "context": {}}, "", [])
+    assert res.decision == cedarpy.Decision.Deny and not list(res.diagnostics.reasons)
+
+
+def test_a_forbid_without_its_guard_is_a_fault_in_the_decision_pass(tmp_path):
+    """cedarpy's policy JSON carries no conditions, so the guard cannot be
+    checked at load. It is checked at the first call that would have let the
+    unguarded forbid decide: a denial with reasons in the decision pass."""
+    text = _minimal_policy().replace(
+        '@id("solo.arguments.amount_cents_at_most")\nforbid (principal, action, resource)\nwhen {\n  context has probe &&\n',
+        '@id("solo.arguments.amount_cents_at_most")\nforbid (principal, action, resource)\nwhen {\n', 1)
+    assert text != _minimal_policy()
+    policy = CedarPolicy(_minimal_variant(tmp_path, policy=text) / "policy.cedar")
+    with pytest.raises(PolicyEvaluationError, match=r"fired without a `context has probe` guard"):
+        policy.query({"arguments": {"amountCents": 5000}}, MINIMAL_ALLOW)
+
+
+def test_a_permit_that_matches_in_the_probe_pass_is_a_fault(tmp_path):
+    """A permit that merely lacks `!(context has probe)` is observationally
+    harmless — if it matches in the probe pass it matched in the decision
+    pass, which allowed and never probed. What the check catches is a permit
+    whose condition means something different once `probe` is present."""
+    text = _minimal_policy().replace(
+        _permit_block(_minimal_policy()),
+        '@tier("solo")\npermit (principal, action, resource) when { context has probe };\n', 1)
+    policy = CedarPolicy(_minimal_variant(tmp_path, policy=text) / "policy.cedar")
+    # A complete input every condition holds on: no forbid fires in the
+    # probe pass, so the contrived permit is the only policy that can match
+    # there — and the decision pass, where it never matches, denied.
+    args = {"amountCents": 500}
+    ctx = {"requestVCJwsRequesterJwkKeyWitnesses": ["k"], "requesterJwk": "k",
+           "requestVC": {"jws": "x", "claims": {"nbf": 1, "exp": 200, "action": "send",
+                                                "arguments": args}},
+           "now": 100, "tool": "send", "arguments": args}
+    assert policy.query(ctx, MINIMAL_ALLOW) == [{"result": False}]
+    with pytest.raises(PolicyEvaluationError, match=r"probe pass allowed: a permit matched"):
+        policy.query(ctx, MINIMAL_FAILED)
+
+
+def test_an_evaluation_diagnostic_in_the_probe_pass_is_a_fault(tmp_path):
+    """A forbid that reads an attribute without `has`: in the decision pass
+    it is inert, so the defect surfaces only when a denial is explained —
+    and a lost explanation is still a fault, not a quieter denial."""
+    text = _minimal_policy().replace(
+        "  context has probe &&\n  context has arguments && context.arguments has amountCents &&\n  !(context.arguments.amountCents <= 1000)",
+        "  context has probe &&\n  !(context.arguments.amountCents <= 1000)", 1)
+    assert text != _minimal_policy()
+    policy = CedarPolicy(_minimal_variant(tmp_path, policy=text) / "policy.cedar")
+    assert policy.query({}, MINIMAL_ALLOW) == [{"result": False}]
+    with pytest.raises(PolicyEvaluationError, match="in the probe pass"):
+        policy.query({}, MINIMAL_FAILED)

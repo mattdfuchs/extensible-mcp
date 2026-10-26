@@ -132,6 +132,10 @@ class PolicyBundle:
             package = _derive_package(policy)
         manifest = json.loads((d / "manifest.json").read_text())
         fetchplan = json.loads((d / "fetchplan.json").read_text())
+        if engine == "cedar":
+            from .cedar_policy import refuse_reserved_plan_fields
+
+            refuse_reserved_plan_fields(fetchplan, d / "fetchplan.json")
         # A plan whose derived fields are shaped wrong is a bundle that must
         # never reach a call, so this is a load-time refusal, not a runtime one.
         validate_derive_plan(fetchplan, primitives=primitives)

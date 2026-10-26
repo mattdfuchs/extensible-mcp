@@ -336,7 +336,7 @@ opa build -t wasm -e mypolicy/allow -e mypolicy/failed_checks \
 
 A CEL policy skips the compile step: `checks.cel.json` carries the expressions directly.
 
-A Cedar policy is interpreted too, but Cedar has no host-function extension point — by design, since one would destroy the decidability that makes Cedar analysable — so a signature check cannot run *inside* the policy. Each cryptographic leaf instead becomes a `derive` entry in the fetch plan, a witness set the rule tests a relation over, which is why a Cedar bundle's manifest and fetch plan carry fields the Rego and CEL twins never need. The policy set is forbid-only: one `forbid` per failable condition, annotated `@id` with the guidance's check id, plus one `@assembly` forbid per tier for its own incompleteness, over a base `permit`. `expected_ids.json` lists what the loader must find, and a bundle that carries fewer is refused rather than loaded as a permit. The proxy's half of that bargain is the derivation contract: the fold collects exactly the candidates the primitive verified, because a witness set that is too large makes a forbid fail to fire. A Cedar bundle is therefore *certified modulo its derivation contract*, which is a weaker claim than the other two engines can make, and the bundle's own `contract.json` says so.
+A Cedar policy is interpreted too, but Cedar has no host-function extension point — by design, since one would destroy the decidability that makes Cedar analysable — so a signature check cannot run *inside* the policy. Each cryptographic leaf instead becomes a `derive` entry in the fetch plan, a witness set the rule tests a relation over, which is why a Cedar bundle's manifest and fetch plan carry fields the Rego and CEL twins never need. A check id reaches a denial only as a `forbid` annotated `@id` with the guidance's check id, plus one `@assembly` forbid per tier for its own incompleteness, and the loader accepts two policy-set shapes, declared in `expected_ids.json` and never inferred. In the **forbid-only** shape, which the generated bundles use, an unconditional base `permit` carries nothing and every leaf forbid restates the negation of every other tier, so an empty set allows everything and a bundle that carries fewer forbids than the file lists is refused rather than loaded as a permit. In the **permit-decides** shape, which a hand author should use, one `permit` per tier annotated `@tier` carries that tier's conjunction once and each forbid carries only its own condition; the proxy evaluates twice, a decision pass with no `probe` key in which the forbids are inert and an empty set denies, and on a denial a probe pass with `probe: true` in which the permits are inert and the fired forbids are the failed checks. The guards are checked on every call, since cedarpy exposes a policy's effect and annotations but not its condition, and `probe` is reserved. The proxy's half of the hoist bargain is the derivation contract: the fold collects exactly the candidates the primitive verified, because a witness set that is too large makes a forbid fail to fire. A Cedar bundle is therefore *certified modulo its derivation contract*, which is a weaker claim than the other two engines can make, and the bundle's own `contract.json` says so.
 
 **What each engine accepts.** The bundle format, not the language, sets the contract, and the three engines are not equally open. Stated plainly, so the claim is no wider than the loader:
 
@@ -344,9 +344,9 @@ A Cedar policy is interpreted too, but Cedar has no host-function extension poin
 |---|---|---|
 | Rego | Any program `opa build -t wasm` compiles, exposing `<package>/allow`; `failed_checks` and `deny_reason` optional | Host builtins beyond OPA's own must be ones the proxy registers; an unregistered one fails at load |
 | CEL | Any boolean CEL expression, one per check | The file format is this project's: a package, tiers, and a map from check id to expression; allow is the disjunction over tiers of each tier's conjunction. One tier with one check holds any policy CEL can express. Functions limited to the registered set |
-| Cedar | Conditions over `context`, in one declared shape | Forbid-only over a base permit, one `@id` forbid per check, one `@assembly` forbid per tier, an `expected_ids.json` that must match exactly, no templates; a fixed synthetic principal, action and resource, and an empty entity store. A Cedar policy written over real principals and entity hierarchies cannot be loaded today |
+| Cedar | Conditions over `context`, in one of two declared shapes | One `@id` forbid per check, one `@assembly` forbid per tier, an `expected_ids.json` that must match exactly, no templates; either a base permit with forbid-only leaves, or one `@tier` permit per tier with probe-guarded forbids; a fixed synthetic principal, action and resource, and an empty entity store. A Cedar policy written over real principals and entity hierarchies cannot be loaded today |
 
-So Rego support is support for Rego; CEL support is CEL expressions in a wrapper of this project's design; and Cedar support, as of this release, is Cedar as the condition language of a bundle in the shape above. Widening the Cedar side — a second, permit-decides shape that an author can read and write, and mapping Cedar's principal, action and resource onto the proxy's own once it has a verified principal — is tracked for a later release.
+So Rego support is support for Rego; CEL support is CEL expressions in a wrapper of this project's design; and Cedar support, as of this release, is Cedar as the condition language of a bundle, in a shape a hand author can read and write. What remains for a later release is mapping Cedar's principal, action and resource onto the proxy's own, once it has a verified principal.
 
 Any artifact can be hand-authored — several bundles under [`tests/fixtures/`](tests/fixtures/) are. The certified ones are instead **generated from a common core**, so the Rego, CEL and Cedar twins agree by construction rather than by someone keeping three files in sync. Running all three against the same inputs then tests what generation can't guarantee on its own: that three quite different runtimes — a WASM module under wasmtime, CEL expressions evaluated in-process, and Cedar's engine over host-derived witness sets — reach the same decision, and report the same failed checks, from the same signed evidence.
 
@@ -452,28 +452,38 @@ Cedar, in `policy.cedar`. Cedar cannot call a host function, so the signature ch
             "project": "key"}}
 ```
 
-Read it as: fold `verify_eddsa(jws, key)` over the candidate keys — here, the one trusted key — and project the keys that verified. The result is a witness set the rule tests a relation over, never a bare boolean; a key that failed to verify is simply not in it. The policy is forbid-only over a base permit, one forbid per condition, each carrying the id it reports under:
+Read it as: fold `verify_eddsa(jws, key)` over the candidate keys — here, the one trusted key — and project the keys that verified. The result is a witness set the rule tests a relation over, never a bare boolean; a key that failed to verify is simply not in it. The policy is in the permit-decides shape: one `permit` per tier, annotated `@tier`, carries the tier's conditions once, and one `forbid` per condition carries only that condition and the id it reports under:
 
 ```
-permit (principal, action, resource);
-
-@id("solo.request_vc.signed_by")
-forbid (principal, action, resource)
+@tier("solo")
+permit (principal, action, resource)
 when {
-  context has requestVCJwsRequesterJwkKeyWitnesses &&
-  context has requesterJwk &&
-  !context.requestVCJwsRequesterJwkKeyWitnesses.contains(context.requesterJwk)
+  !(context has probe) &&
+  context has requestVCJwsRequesterJwkKeyWitnesses && context has requesterJwk &&
+  context.requestVCJwsRequesterJwkKeyWitnesses.contains(context.requesterJwk) &&
+  context has requestVC && context.requestVC has claims &&
+  context.requestVC.claims has nbf && context.requestVC.claims has exp && context has now &&
+  context.requestVC.claims.nbf <= context.now && context.now <= context.requestVC.claims.exp &&
+  context.requestVC.claims has action && context has tool &&
+  context.requestVC.claims.action == context.tool &&
+  context.requestVC.claims has arguments && context has arguments &&
+  context.requestVC.claims.arguments == context.arguments &&
+  context.arguments has amountCents &&
+  context.arguments.amountCents <= 1000
 };
 
 @id("solo.arguments.amount_cents_at_most")
 forbid (principal, action, resource)
 when {
+  context has probe &&
   context has arguments && context.arguments has amountCents &&
   !(context.arguments.amountCents <= 1000)
 };
 ```
 
-plus one `@assembly("solo")` forbid, carrying no `@id`, that fires when the tier's inputs are incomplete — otherwise an input missing a field would make every `has` guard false, no forbid would fire, and a forbid-only set would allow it. `expected_ids.json` lists the five ids and the one tier, and the loader refuses a policy set that does not carry exactly those forbids, because an empty forbid-only set allows everything.
+The `probe` guards are the mechanism. The proxy evaluates the file twice. In the **decision pass** the context has no `probe` key, so every forbid is inert, the permit decides, and an input that matches no permit is denied: an empty policy set denies. On a denial the proxy runs a **probe pass** with `probe: true`, in which the permit is inert and the forbids that fire are the failed checks. One `@assembly("solo")` forbid, carrying no `@id` and probe-guarded like the rest, fires when the tier's inputs are incomplete, so the renderer can say which credential was absent. `expected_ids.json` declares the shape and lists the five ids and the one tier; the loader refuses a policy set that does not carry exactly those forbids and exactly one `@tier` permit per tier, and since cedarpy exposes a policy's effect and annotations but not its condition, the guards are checked on every call: a forbid that fires in the decision pass, or a permit that matches in the probe pass, is a fault. `probe` is reserved, as an input key and as a fetch-plan field.
+
+The other shape the loader accepts, **forbid-only**, is what the generated bundles use: an unconditional base `permit` and leaf forbids that each restate the negation of every other tier, so that a solo leaf cannot fire on a call the full chain allows. Cedar has no way to factor that repetition, which is why a hand author should write the shape above; [`tests/fixtures/cedar_family_spend_compact/`](tests/fixtures/cedar_family_spend_compact/) is the adopted two-tier policy re-shaped that way, a quarter of the bytes, and decides identically on every differential scenario.
 
 **What a denial looks like.** A $50 call carrying a valid $50 request fails one condition. All three engines report the same id, and it renders through the guidance as:
 

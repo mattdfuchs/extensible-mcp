@@ -77,13 +77,22 @@ it. A defect in a hoisted application is in scope as a finding.
 
 Two structural consequences, in scope for reports:
 
-- A Cedar bundle is **forbid-only** and emits **no entity hierarchy**, so an
-  **empty policy set allows everything**. There is no deny-by-default to fall
-  back on.
-- What stands between a failed load and a silent permit is therefore the
-  load-time check that every expected rule `@id` is present. A way to load a
-  Cedar bundle with rules missing, or to make that check pass without them, is
-  a bypass and a finding.
+- A Cedar bundle in the **forbid-only** shape — the one the external
+  toolchain emits — carries an unconditional base permit and emits **no
+  entity hierarchy**, so an **empty policy set allows everything**. There
+  is no deny-by-default to fall back on. What stands between a failed load
+  and a silent permit is therefore the load-time check that every expected
+  rule `@id` is present. A way to load such a bundle with rules missing, or
+  to make that check pass without them, is a bypass and a finding.
+- A Cedar bundle in the **permit-decides** shape — the one a hand author
+  should write — is decided by one `@tier` permit per tier, with the
+  forbids guarded behind a `probe` key the proxy injects only to explain a
+  denial. An empty set denies. The shape is declared in `expected_ids.json`,
+  never inferred, and the guards are checked on every call rather than at
+  load, because cedarpy exposes a policy's effect and annotations but not
+  its condition. A way to make a forbid decide in the decision pass, a
+  permit match in the probe pass, or a bundle evaluate in a shape other
+  than the one it declares, is a finding.
 
 **The proxy does not prevent a client from reaching other servers.** It governs
 what passes through it. A client that can connect elsewhere — another MCP server

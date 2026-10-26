@@ -46,6 +46,8 @@ EXPECTED_COUNTS = {
     "family_spend": (29, 16, 13),
     "cel_family_spend": (29, 16, 13),
     "cedar_family_spend": (29, 16, 13),
+    # The adopted Cedar policy re-shaped by this repo: permit decides, forbid explains.
+    "cedar_family_spend_compact": (29, 16, 13),
     # The smallest bundle, three ways: the README's authoring walk-through.
     "minimal_spend": (5, 2, 3),
     "cel_minimal_spend": (5, 2, 3),
@@ -56,6 +58,7 @@ ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
 # cedar_family_spend's rules are supplied, but its guidance is this repo's
 # own teaching file, so it carries no digest either.
 TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend",
+            "cedar_family_spend_compact",
             "minimal_spend", "cel_minimal_spend", "cedar_minimal_spend"}
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
                 "family_spend_invoice", "minimal_spend"}
@@ -286,18 +289,28 @@ def test_cel_twin_is_the_same_bundle_in_another_notation(rego):
 # manifest and fetch plan cannot be byte-identical to the Rego bundle's —
 # every hoisted crypto leaf reads a derived field no other engine needs — so
 # the pairing asserts the differences are exactly the ones Cedar forces.
+# A Rego bundle may have one Cedar twin per policy-set shape; each is held
+# to the same relation to the Rego bundle.
 CEDAR_TWIN = {
-    "family_spend": "cedar_family_spend",
-    "minimal_spend": "cedar_minimal_spend",
+    "family_spend": ["cedar_family_spend", "cedar_family_spend_compact"],
+    "minimal_spend": ["cedar_minimal_spend"],
     "family_spend_prod": None,      # ships upstream; needs #27's `concat` as a derive primitive
     "family_spend_webauthn": None,  # ships upstream; needs #27 and `verify_webauthn` registered
     "family_spend_invoice": None,   # ships upstream; needs `verify_webauthn` registered
 }
 
 
-@pytest.mark.parametrize("rego", sorted(CEDAR_TWIN))
-def test_cedar_twin_differs_from_the_rego_bundle_only_where_cedar_forces_it(rego):
-    cedar = CEDAR_TWIN[rego]
+def _cedar_pairs():
+    for rego, twins in sorted(CEDAR_TWIN.items()):
+        if twins is None:
+            yield rego, None
+        else:
+            for cedar in twins:
+                yield rego, cedar
+
+
+@pytest.mark.parametrize("rego,cedar", list(_cedar_pairs()))
+def test_cedar_twin_differs_from_the_rego_bundle_only_where_cedar_forces_it(rego, cedar):
     if cedar is None:
         assert not (FIXTURES / f"cedar_{rego}").exists(), (
             f"cedar_{rego} exists on disk but is listed as having no twin"
@@ -384,6 +397,7 @@ LOAD_CONFIG = {
     "family_spend": {},
     "cel_family_spend": {},
     "cedar_family_spend": {},
+    "cedar_family_spend_compact": {},
     "minimal_spend": {},
     "cel_minimal_spend": {},
     "cedar_minimal_spend": {},
