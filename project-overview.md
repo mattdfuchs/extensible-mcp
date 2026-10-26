@@ -117,7 +117,7 @@ All four pipelines are extensible — add any filter implementing the protocol.
 - Per-server bundle selection at admission time, fail closed — a server the proxy cannot positively place is not connected
 - Search-side guidance: governed tools surface their credential parameters and when each is required
 - Downstream credentials acquired by OAuth grant (`private_key_jwt` or `client_credentials`), short-lived and held in memory; the on-disk tokens file remains supported until a runnable example of the grant path ships
-- 710 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 133 and 51
+- 750 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 133 and 51
 - Example configs for Claude Desktop and OpenClaw, targeting GitHub's MCP server
 
 ## ABAC with signed claims
