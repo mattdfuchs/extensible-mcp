@@ -320,7 +320,7 @@ Without `load_control`, an LLM could be prompt-injected into connecting to a mal
 |---|---|
 | `manifest.json` | JSON Schema for the policy's whole input object. Names the input contract, declares which fields are required, and closes it with `additionalProperties: false`. |
 | `fetchplan.json` | Where each input field comes from. One entry per field, with `source.kind` of `call` (from the tool call), `config` (from deployment config), `clock` (current time), `wallet` (fetched by a lookup you supply, parameterized by other input fields), or `derive` (computed from earlier fields by one primitive, for a policy language that cannot evaluate the primitive itself). A `derive` entry that verifies a signature may only be *folded* over candidate keys and *project* a witness — never applied bare to yield a verdict, because a verdict no longer carries the relation the rule has to keep. |
-| `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. |
+| `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. Optional: a hand-written bundle may keep its sentences in the policy file instead (a CEL check written as `{"expr", "sentence"}`, a Cedar `@sentence` annotation, a Rego `deny_reason` rule), and the loader synthesises this layer from them. |
 | `policy.wasm`, `checks.cel.json` *or* `policy.cedar` + `expected_ids.json` | The rules themselves, in whichever engine you prefer. A Cedar bundle also lists the policy ids its loader must find, because a forbid-only policy set that half-loads allows everything. |
 
 All three engines are optional extras, because each pulls dependencies not every deployment wants: `pip install "extensible-mcp[wasm]"` for the OPA/WASM one, `[cel]` for CEL, `[cedar]` for Cedar. They are imported lazily, so `PolicyBundle.load` is where a base install discovers it is missing one.
@@ -408,6 +408,8 @@ Three fields come from the call. Of those, `requestVC` is a credential field, be
 
 The id is the join key between the rules and this file; `remedy_class` tells the renderer whether re-prompting could open the path. These three files are identical for the Rego and CEL twins, byte for byte, and the Cedar twin differs in exactly one place, shown below.
 
+**Where the text lives.** Someone writing rules by hand puts the sentence beside the rule, and each engine has a place for it: a CEL check written as `{"expr": ..., "sentence": ...}` instead of the bare expression, a `@sentence("...")` annotation on a Cedar `@id` forbid, a Rego `deny_reason` rule. Leave `guidance.json` out and the loader synthesises it from those — tiers from the file, call guards from the fetch plan — so the denial renders exactly as it would have; a check with no sentence renders as `required: <expression>` (CEL) or `required: <id>` (Cedar). The three twins below carry their sentences both ways, so either file can be read alone, and the corpus test holds the two identical. `guidance.json` remains the richer layer — call guards, issuer roles, what the search-side augmenter advertises — and is what a generated bundle ships; when present it wins.
+
 **The rules, three ways.** Rego, in `policy.rego`:
 
 ```rego
@@ -425,19 +427,20 @@ failed_checks contains "solo.arguments.amount_cents_at_most" if {
 }
 ```
 
-`signed_by` calls `io.jwt.verify_eddsa`, a host builtin the proxy supplies to the WASM module, so the signature is checked inside the policy. One `failed_checks` rule per condition reports its id on a denial. Compiled with:
+`signed_by` calls `io.jwt.verify_eddsa`, a host builtin the proxy supplies to the WASM module, so the signature is checked inside the policy. One `failed_checks` rule per condition reports its id on a denial, and one `deny_reason` rule per condition carries its sentence — Rego's inline form of the text, read only when there is no guidance. Compiled with:
 
 ```bash
 P=policybundle/examples/minimal_spend
-opa build -t wasm -e $P/allow -e $P/failed_checks policy.rego
+opa build -t wasm -e $P/allow -e $P/failed_checks -e $P/deny_reason policy.rego
 ```
 
-CEL, in `checks.cel.json`, is a map from id to one expression, plus the tier each id belongs to, with no compile step:
+CEL, in `checks.cel.json`, is a map from id to one expression, plus the tier each id belongs to, with no compile step. A check's value is the expression, or an object carrying the expression and its sentence:
 
 ```json
-"solo.request_vc.signed_by":           "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
-"solo.request_vc.within_window":       "input.requestVC.claims.nbf <= input.now && input.now <= input.requestVC.claims.exp",
-"solo.arguments.amount_cents_at_most": "input.arguments.amountCents <= 1000"
+"solo.request_vc.signed_by":           {"expr": "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
+                                        "sentence": "a credential signature is invalid"},
+"solo.arguments.amount_cents_at_most": {"expr": "input.arguments.amountCents <= 1000",
+                                        "sentence": "required: input.arguments.amountCents <= 1000"}
 ```
 
 A tier allows when every one of its checks is true; the ids of the checks that were not are the failed checks.
@@ -473,6 +476,7 @@ when {
 };
 
 @id("solo.arguments.amount_cents_at_most")
+@sentence("required: input.arguments.amountCents <= 1000")
 forbid (principal, action, resource)
 when {
   context has probe &&
@@ -481,7 +485,7 @@ when {
 };
 ```
 
-The `probe` guards are the mechanism. The proxy evaluates the file twice. In the **decision pass** the context has no `probe` key, so every forbid is inert, the permit decides, and an input that matches no permit is denied: an empty policy set denies. On a denial the proxy runs a **probe pass** with `probe: true`, in which the permit is inert and the forbids that fire are the failed checks. One `@assembly("solo")` forbid, carrying no `@id` and probe-guarded like the rest, fires when the tier's inputs are incomplete, so the renderer can say which credential was absent. `expected_ids.json` declares the shape and lists the five ids and the one tier; the loader refuses a policy set that does not carry exactly those forbids and exactly one `@tier` permit per tier, and since cedarpy exposes a policy's effect and annotations but not its condition, the guards are checked on every call: a forbid that fires in the decision pass, or a permit that matches in the probe pass, is a fault. `probe` is reserved, as an input key and as a fetch-plan field.
+`@sentence` is the text a denial renders for that forbid when the bundle ships no guidance; the evaluator never reads it. The `probe` guards are the mechanism. The proxy evaluates the file twice. In the **decision pass** the context has no `probe` key, so every forbid is inert, the permit decides, and an input that matches no permit is denied: an empty policy set denies. On a denial the proxy runs a **probe pass** with `probe: true`, in which the permit is inert and the forbids that fire are the failed checks. One `@assembly("solo")` forbid, carrying no `@id` and probe-guarded like the rest, fires when the tier's inputs are incomplete, so the renderer can say which credential was absent. `expected_ids.json` declares the shape and lists the five ids and the one tier; the loader refuses a policy set that does not carry exactly those forbids and exactly one `@tier` permit per tier, and since cedarpy exposes a policy's effect and annotations but not its condition, the guards are checked on every call: a forbid that fires in the decision pass, or a permit that matches in the probe pass, is a fault. `probe` is reserved, as an input key and as a fetch-plan field.
 
 The other shape the loader accepts, **forbid-only**, is what the generated bundles use: an unconditional base `permit` and leaf forbids that each restate the negation of every other tier, so that a solo leaf cannot fire on a call the full chain allows. Cedar has no way to factor that repetition, which is why a hand author should write the shape above; [`tests/fixtures/cedar_family_spend_compact/`](tests/fixtures/cedar_family_spend_compact/) is the adopted two-tier policy re-shaped that way, a quarter of the bytes, and decides identically on every differential scenario.
 
