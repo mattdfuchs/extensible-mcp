@@ -15,12 +15,19 @@ What Cedar forces, and nothing else, is different here:
   primitive in the plan's `primitives` block, and `manifest.json` lists the
   derived field under `derived_fields` and in `properties` — never in
   `required`, since the fold yields `[]` when nothing verified.
-- **Forbid-only over a base permit.** One `forbid` per check, annotated
-  `@id` with the guidance id it reports under, plus one `@assembly("solo")`
-  forbid with no `@id` that fires when the tier's inputs are incomplete. An
-  empty policy set would allow everything, so `expected_ids.json` lists the
-  five ids and the one tier the loader must find; a file carrying fewer is
-  refused rather than loaded as a permit.
+- **Permit decides, forbid explains** — the shape `expected_ids.json`
+  declares. One `@tier("solo")` permit carries the five conditions once,
+  guarded `!(context has probe)`; one `forbid` per check carries only its
+  own condition, annotated `@id` with the guidance id it reports under and
+  guarded `context has probe`; one `@assembly("solo")` forbid with no `@id`
+  fires, in the probe pass only, when the tier's inputs are incomplete. The
+  proxy evaluates the file twice: without `probe` the permit decides and an
+  empty set denies; with `probe: true`, on a denial, the fired forbids are
+  the failed checks. `expected_ids.json` lists the five ids and the one tier
+  the loader must find as forbids, and the one tier it must find as a
+  permit; the guards it checks on every call. The forbid-only shape the
+  external toolchain emits is the other one the loader accepts;
+  `../cedar_family_spend` is in it.
 - `guidance.json` is byte-identical to the Rego twin's, so a denial renders
   the same sentence whichever engine produced the id.
 
@@ -34,4 +41,6 @@ the most any Cedar bundle here claims (see SECURITY.md).
 ## Rebuild
 
 Nothing to build — `policy.cedar` is interpreted source. Edit it directly,
-keeping `expected_ids.json` in step: the loader refuses a mismatch.
+keeping `expected_ids.json` in step: the loader refuses a mismatch, and a
+forbid or permit that loses its `probe` guard is a fault at the first call
+that would have exercised it.

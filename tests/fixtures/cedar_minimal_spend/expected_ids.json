@@ -1,5 +1,6 @@
 {
-  "why": "Forbid-only: an empty policy set allows everything, so a loader that finds fewer ids than this has a silent permit, not a partial policy. `ids` are the same ids guidance.json renders and the Rego and CEL twins report. `assembly_tiers` names the one extra forbid per tier, annotated @assembly and carrying no @id, which fires when the tier's inputs were incomplete. A loader must find one forbid per id AND one per assembly tier.",
+  "why": "Permit decides, forbid explains: one @tier permit per tier carries the decision and an empty policy set denies, so the loader's completeness check guards the explanation rather than the decision. `ids` are the same ids guidance.json renders and the Rego and CEL twins report; the loader must find one @id forbid per id, one @assembly forbid per tier, and one @tier permit per tier. The forbids are guarded `context has probe` and the permit `!(context has probe)`; the proxy checks those guards on every call.",
+  "shape": "permit-decides",
   "goal": "policybundle.examples.minimal_spend",
   "id_scheme": "named-split",
   "count": 5,
