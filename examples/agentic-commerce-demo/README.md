@@ -12,7 +12,7 @@ The sibling package [`household-identity`](../identity) provides the wallet serv
 
 ## One enforcement path, two rails
 
-Every gated call is decided by a **policy bundle** — a manifest, a fetch plan, guidance, and rules in Rego-compiled-to-WASM or CEL — evaluated by `extensible-mcp`'s engine. This package doesn't decide anything itself. It supplies the evidence a bundle decides over, plus a thin *wire adapter* per rail that maps the on-the-wire argument names onto the policy's input contract.
+Every gated call is decided by a **policy bundle** — a manifest, a fetch plan, guidance, and rules in Rego compiled to WASM, in CEL, or in Cedar — evaluated by `extensible-mcp`'s engine. This package doesn't decide anything itself. It supplies the evidence a bundle decides over, plus a thin *wire adapter* per rail that maps the on-the-wire argument names onto the policy's input contract.
 
 `family_proxy_server.py` runs two rails at once, all over the same machinery:
 

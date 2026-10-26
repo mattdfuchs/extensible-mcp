@@ -10,7 +10,7 @@ extensible-mcp is built as that enforcement point. Every operation between the L
 
 ### The Order Pizza demo: Zero Trust, fully elaborated
 
-Two things in this repo carry that idea. A [**policy bundle**](#policy-bundles) is how a policy over signed evidence is written and attached to the filter pipeline — a manifest, a fetch plan, human-facing guidance, and the rules themselves in either Rego-compiled-to-WASM or CEL. The **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)) is that machinery worked all the way through: a full elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
+Two things in this repo carry that idea. A [**policy bundle**](#policy-bundles) is how a policy over signed evidence is written and attached to the filter pipeline — a manifest, a fetch plan, human-facing guidance, and the rules themselves in Rego compiled to WASM, in CEL, or in Cedar. The **Order Pizza** demo ([`examples/agentic-commerce-demo/`](examples/agentic-commerce-demo/)) is that machinery worked all the way through: a full elaboration of what Zero Trust looks like once every party's word has to be backed by a signature.
 
 Our Zero Trust posture assumes any statement an agent makes about a user's intent — an agent that is subject to hallucination and prompt injection — is hearsay. User intent can only be asserted, in a non-repudiable way, by a signed statement the LLM could not have produced itself. We get that from the W3C's **Verifiable Credentials** framework: a statement wrapped in a signed envelope, where the signature is the signer vouching for it.
 
@@ -60,11 +60,11 @@ Retrieval is model-driven: the LLM decides when to search and crafts its own que
 
 ## Status
 
-The base proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and downstream authentication (the `tokens` file, kept out of the LLM's context) all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. The example configs work against the official GitHub MCP server.
+The base proxy is working: dynamic server loading, RAG-based tool retrieval, an extensible filter pipeline, and downstream authentication (credentials the proxy acquires by OAuth grant, or a legacy tokens file, either way kept out of the LLM's context) all ship today. The pipeline enforces one structural guarantee — the LLM can only call tools it has discovered via `search_tools` — and ships reference filters for access control, Rego policy evaluation, and server-load whitelisting that you can use as-is, configure, or replace with your own. The example configs work against the official GitHub MCP server.
 
-Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, or authored directly in CEL) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and both a Rego and a CEL backend ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
+Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, authored directly in CEL, or emitted as Cedar) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and Rego, CEL and Cedar backends ship as proof. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 369 tests; the two example packages add 133 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 750 tests; the two example packages add 133 and 51.
 
 ## Threat Model
 
@@ -78,7 +78,7 @@ The pipeline allows for control at all points of contact between the LLM and the
 - At call time, further policies can prevent illegitimate use of an allowed tool. In the sample code we prevent the closing of an issue, but allow other uses of the same tool to allow updating issues.
 - At response time, filters can inspect or rewrite tool results on their way back to the LLM — useful for redacting secrets that leak back from a buggy server, flagging or scrubbing prompt-injection content in scraped pages or email bodies, truncating large responses, or audit logging. Tool results are an injection surface every bit as real as tool descriptions; the response pipeline is where you handle it.
 - The LLM cannot call any tools it didn't find during search. This ensures the LLM calls only tools in the protected set and is not vulnerable to attempts to call outside the protected envelope.
-- We do not pass secrets (in particular, security tokens) to the LLM. Tokens to be used in HTTP Authorization headers are kept in a separate file. The LLM can prompt the user to update a token when it appears to have expired, but it never sees the tokens themselves.
+- We do not pass secrets (in particular, downstream credentials) to the LLM. The proxy holds them itself — acquired by an OAuth grant, or read from a file the model cannot see — and presents them in HTTP Authorization headers. The LLM can prompt the user to fix a credential when it appears to have expired, but it never sees one.
 
 The discovery rule is scoped per MCP session: what one conversation surfaced is not callable by another. On a transport without sessions (stdio) a process serves a single client, so the scope is the process. This was not always so — until 0.3.2 the set was process-wide, which on an HTTP transport meant a tool surfaced by any session was callable by every session. It was reported as a bypass and it was one.
 
@@ -111,7 +111,7 @@ A growing set of protocols governs agent-mediated commerce — AP2, ACP, UCP, Vi
 
 They carry a delegation. They do not decide one. That distinction is invisible in consumer commerce, where the principal is a person spending their own money and authority follows from identity: it's Alice's card, Alice signed, done. Inside an organization it is the whole problem. Knowing *which* employee's key signed tells you nothing about whether that employee could commit the company to a $40,000 purchase. Signing authority is a policy — delegated limits, role thresholds, separation of duties, dual control above a bar — and it lives inside the organization, unverifiable from the far side of any boundary. What a counterparty can check is that a key belonging to your organization was used. Whether the party that invoked it was entitled to is a question only you can answer, and it has to be answered before the signature exists.
 
-It is also not a commerce question. *Did this employee ask to share this document with this partner? Did this clinician request this patient's X-rays? Did the homeowner schedule this service call, before the smart home opens the door?* Same shape, no payment anywhere in it — and no cart, mandate, or payment credential can express any of them.
+It is not only a commerce question. *Did this employee ask to share this document with this partner? Did this clinician request this patient's X-rays? Did the homeowner schedule this service call, before the smart home opens the door?* Same shape, no payment anywhere in it — and no cart, mandate, or payment credential can express any of them.
 
 Here we can separate "*may*" from "*did*". A general-purpose policy model such as Zanzibar can answer if an actor *may* perform an act. That is a different question from the one here, and the two compose rather than compete. Consider the sharing case: a prompt-injected agent asks to share a document with an outside company, and the employee genuinely does hold share rights. A relationship check returns allow, and it is *right* — the permission was real. What was forged was the request. Relationship-based access control decides whether a principal **may** act; it assumes the caller is not lying about what the principal asked for.
 
@@ -141,7 +141,7 @@ cp config.example.json config.json
 | Command | Adds |
 |---|---|
 | `uv sync` | the proxy itself |
-| `uv sync --group dev` | pytest, plus all three engine extras (`wasm`, `rego`, `cel`) |
+| `uv sync --group dev` | pytest, plus the engine extras (`wasm`, `rego`, `cel`, `cedar`) and `oauth` |
 | `uv sync --all-packages --all-extras --group dev` | the `examples/` workspace members and their extras too |
 
 Use the middle one to work on the proxy, the last one to run every suite in the repo. To install a single engine without the rest, name its extra: `uv sync --extra wasm`.
@@ -187,44 +187,70 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
 
 ### Authentication
 
-Many MCP servers require credentials — OAuth Bearer tokens, PATs, API keys. extensible-mcp supports two paths, depending on how the downstream server is reached:
+Many MCP servers require credentials. How the proxy supplies one depends on how the downstream server is reached, and in every case the credential stays out of the LLM's context: the model never sees a token, a client secret or a key, and the proxy's system instructions tell it never to ask for one in the conversation.
 
 **Stdio servers** (launched as child processes via `command`) — pass credentials through the `env` block in `mcpServers`, the same way you would for any MCP server. The GitHub example in [`examples/`](examples/) uses this pattern with `$GITHUB_PERSONAL_ACCESS_TOKEN` resolved from a `.env` file or the proxy's environment.
 
-**URL servers** (Streamable HTTP via `url`) — drop a `tokens` file next to your config:
+**URL servers** (Streamable HTTP via `url`) — the proxy authenticates itself to an OAuth authorization server and is handed a short-lived access token, which lives only in memory. Declare the client identity once under `credentials`, then reference it by name from each server:
 
+```json
+{
+  "credentials": {
+    "corp-as": {
+      "grant": "private_key_jwt",
+      "token_endpoint": "https://as.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "private_key_file": "keys/proxy-signing.pem"
+    },
+    "legacy-as": {
+      "grant": "client_credentials",
+      "token_endpoint": "https://legacy.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "client_secret_env": "LEGACY_CLIENT_SECRET"
+    }
+  },
+  "mcpServers": {
+    "payments": {
+      "url": "https://payments.example.com/mcp",
+      "credential": "corp-as",
+      "scope": "payments.invoke",
+      "audience": "https://payments.example.com"
+    }
+  }
+}
 ```
-# tokens — gitignored by default
-notion=secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-internal-api=eyJhbGciOiJIUzI1NiIs...
-```
 
-Format: one `server_name=value` pair per line, `#` for comments, surrounding quotes on values are stripped. The proxy automatically picks up `tokens` if it exists in the same directory as the loaded config.
+Two grants ship. Both are the OAuth 2.0 `client_credentials` grant at the token endpoint; they differ in how the proxy proves it is the client:
 
-**Moving the tokens file outside the project.** If your setup includes a filesystem MCP server (or any other tool) that can read paths inside the project directory, the default `tokens` location is reachable by the agent. To keep credentials out of reach, set `EXTENSIBLE_MCP_TOKENS_FILE` to a path the agent can't see — e.g. `~/.secrets/extensible-mcp-tokens`. The variable can be set in the proxy's environment or in the `.env` file next to the config; relative paths are resolved relative to the config directory, and `~` is expanded. If the variable is set but the file doesn't exist, the proxy refuses to start. Without the variable, behavior is unchanged: the proxy looks for `tokens` next to the config and runs without one if it isn't there. The resolved path is logged at startup so you can confirm which file is in use.
+- `private_key_jwt` (RFC 7523) signs a short-lived assertion with a private key the authorization server never sees, so nothing replayable is transmitted or logged. It needs the `oauth` extra: `pip install "extensible-mcp[oauth]"`.
+- `client_credentials` sends a client secret, read from the environment variable named by `client_secret_env`. There is deliberately no `client_secret` field: the config file is one people commit and share, so a config carrying one is refused at load.
 
-**Tokens are only sent to URLs you configured.** A token is keyed by server name, but the URL a connection goes to is chosen by whoever opened it — and for a runtime `load_mcp_server`, that is the LLM. So a stored token is presented only when the connection's URL matches the one named for that server in the config file. A prompt-injected model calling `load_mcp_server("notion", "https://attacker.example/mcp")` gets no credential: the connection is attempted anonymously and, against a server that requires auth, simply fails. This means a server that needs a token must be in your config, not discovered at runtime.
+`scope` and `audience` belong to the server rather than the credential, because one OAuth client legitimately serves many resources. Relative paths such as `private_key_file` resolve against the config file's directory. The token is attached per request and refreshed in place when the downstream answers 401, so expiry is handled without a restart and without anyone editing a file.
 
-**Adding an authenticated server without restarting.** That rule would otherwise make "get a token, start using it" a restart, so the proxy ships an operator command:
+What this earns is *no replayable secret at rest*, not *no secret at rest*: `private_key_jwt` still keeps a private key on disk. A workload identity — a platform-attested, short-lived token exchanged at the authorization server — is the step past that, and is deliberately not built in, because every form of it is deployment-specific. The seam is there for it: a `CredentialProvider` is an object that returns a token, so "read the projected service-account token and exchange it" is another provider, written without touching the proxy.
+
+**No identity provider is required.** Nothing in the proxy needs Keycloak, Okta, Entra or any other authorization server unless you add a `credentials` entry pointing at one. A deployment of stdio servers, or of URL servers that need no credential, runs with none. (The Order Pizza demo's passkey page has its own built-in sign-in and does not use an external provider either.)
+
+**The tokens file.** Before 0.3.5 the only path for a URL server was a `tokens` file next to the config — one `server_name=value` line per server, `#` for comments, surrounding quotes stripped — sent as `Authorization: Bearer <token>`. It remains supported: the proxy reads it if it exists (or at the path in `EXTENSIBLE_MCP_TOKENS_FILE`, for keeping it somewhere a filesystem tool cannot reach), reads it fresh on every connection so a rotated line takes effect without a restart, and logs a note once per process when it is used, naming the grant path as the alternative. It will be removed in a later release, once a runnable example of the grant path ships alongside the demo — not before. The reason to move when that comes is that a bearer token on disk is a long-lived credential that stays valid until someone notices it has leaked, where a grant-acquired token is short-lived and never written anywhere. A server uses one path or the other: naming a `credential` for a server that also has a tokens-file line is refused at load, rather than settled by a silent precedence rule. Across servers the two can be mixed.
+
+**A credential is only presented to a URL you configured.** A credential is keyed by server name, but the URL a connection goes to is chosen by whoever opened it — and for a runtime `load_mcp_server`, that is the LLM. So a credential is presented only when the connection's URL matches the one named for that server in the config file. A prompt-injected model calling `load_mcp_server("notion", "https://attacker.example/mcp")` gets no credential: the connection is attempted anonymously and, against a server that requires auth, simply fails. This means a server that needs a credential must be in your config, not discovered at runtime.
+
+**Adding an authenticated server without restarting.** That rule would otherwise make "get a credential, start using it" a restart, so a running proxy reloads its server list on `SIGHUP`: add the server (and, for the grant path, its `credentials` entry) to the config and signal the process, and it connects and indexes the new tools in place. For the bearer-token path the proxy also ships an operator command:
 
 ```bash
 # --token-stdin keeps the secret out of your shell history and the process list
 echo -n "$TOKEN" | extensible-mcp add-server --name notion --url https://notion.example/mcp --token-stdin
 ```
 
-It connects to the URL as an MCP client with that token and lists its tools, and *only if that works* writes the server into your config and the token into the tokens file (`0600`), then sends `SIGHUP` to a proxy already running against that config so it connects and indexes the new tools in place. If no proxy is running, the files are still written and the next start picks them up.
+It connects to the URL as an MCP client with that token and lists its tools, and *only if that works* writes the server into your config and the token into the tokens file (`0600`), then sends `SIGHUP` to a proxy already running against that config. If no proxy is running, the files are still written and the next start picks them up. It writes a bearer token to the tokens file, and says so when it does; a credential acquired by grant is configured by hand as above.
 
 Verification matches the runtime exactly, including not following redirects — so a URL that redirects is reported here, with the URL to use instead, rather than passing the check and failing later at the proxy.
 
-It is a CLI command rather than an argument on `load_mcp_server` on purpose. The flaw it works around was the model *referencing a credential it had never seen*; passing the token in inverts that, so only a caller who already holds it can use it, and the model holds none. Putting a `token` parameter on the meta-tool would be safe from exfiltration for the same reason, but it shares the surface the model drives, and any user who pasted a token into a chat to make it work would break the rule that tokens never transit the conversation.
+It is a CLI command rather than an argument on `load_mcp_server` on purpose. The flaw it works around was the model *referencing a credential it had never seen*; passing the token in inverts that, so only a caller who already holds it can use it, and the model holds none. Putting a `token` parameter on the meta-tool would be safe from exfiltration for the same reason, but it shares the surface the model drives, and any user who pasted a token into a chat to make it work would break the rule that credentials never transit the conversation.
 
 An existing server name is never re-pointed: repointing a name at another host is the substitution the URL binding exists to prevent, so the command refuses and tells you to edit the config by hand if you really mean it.
 
-Tokens are sent as `Authorization: Bearer <token>` headers. The file is read fresh on every connection, so you can rotate credentials without restarting the proxy — overwrite the line, save, and the next request picks up the new value.
-
-extensible-mcp does **not** run an OAuth flow itself. If a server uses OAuth, mint the access token externally (CLI, browser flow, headless service-account auth, whatever you have) and drop it into the `tokens` file. Refresh is your responsibility.
-
-**Token expiry.** If a downstream call returns 401/403 (or an error message containing "unauthorized"/"forbidden"), the proxy translates it into a clear error to the LLM naming the server and reporting how long the token has been unchanged. The proxy's system instructions tell the LLM to ask the user to update the token in the `tokens` file and retry — never to request a token in the conversation. Tokens stay out of the chat transcript by design.
+**Credential expiry.** If a downstream call returns 401/403 (or an error message containing "unauthorized"/"forbidden") and the proxy cannot recover by acquiring a fresh token, it translates the failure into a clear error to the LLM naming the server and reporting how long the credential has been unchanged. The proxy's system instructions tell the LLM to ask the user to fix the credential and retry — never to request one in the conversation. Credentials stay out of the chat transcript by design.
 
 ### Filter pipelines
 
@@ -271,7 +297,7 @@ The policy receives this input on every `call_tool` invocation:
 
 The policy must define `allow` (boolean). Optionally define `deny_reason` (string) for a custom error message. See [`examples/deny_dangerous.rego`](examples/deny_dangerous.rego) for a working example. Relative paths in the config are resolved relative to the config file's directory.
 
-Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which ships as the `rego` extra: `pip install "extensible-mcp[rego]"`, or `uv sync --extra rego` in a checkout. The policy-bundle engines are extras too — `wasm` for OPA-compiled policies and `cel` for CEL ones — since both pull compiled dependencies not everyone needs. A checkout's `--group dev` installs all three.
+Rego policy evaluation uses [`regopy`](https://pypi.org/project/regopy/), which ships as the `rego` extra: `pip install "extensible-mcp[rego]"`, or `uv sync --extra rego` in a checkout. The policy-bundle engines are extras too — `wasm` for OPA-compiled policies, `cel` for CEL, `cedar` for Cedar — since each pulls dependencies not everyone needs. A checkout's `--group dev` installs all of them.
 
 **Response filters** — applied to tool results on their way back from the downstream server, before the LLM sees them. No reference filters ship by default; the pipeline is empty unless you wire in your own. Useful for redacting secrets that leak back from a buggy server, scrubbing or flagging prompt-injection patterns in scraped content, truncating large responses, or audit logging. See [Writing a custom filter](#writing-a-custom-filter) for the Protocol shape.
 
@@ -311,6 +337,16 @@ opa build -t wasm -e mypolicy/allow -e mypolicy/failed_checks \
 A CEL policy skips the compile step: `checks.cel.json` carries the expressions directly.
 
 A Cedar policy is interpreted too, but Cedar has no host-function extension point — by design, since one would destroy the decidability that makes Cedar analysable — so a signature check cannot run *inside* the policy. Each cryptographic leaf instead becomes a `derive` entry in the fetch plan, a witness set the rule tests a relation over, which is why a Cedar bundle's manifest and fetch plan carry fields the Rego and CEL twins never need. The policy set is forbid-only: one `forbid` per failable condition, annotated `@id` with the guidance's check id, plus one `@assembly` forbid per tier for its own incompleteness, over a base `permit`. `expected_ids.json` lists what the loader must find, and a bundle that carries fewer is refused rather than loaded as a permit. The proxy's half of that bargain is the derivation contract: the fold collects exactly the candidates the primitive verified, because a witness set that is too large makes a forbid fail to fire. A Cedar bundle is therefore *certified modulo its derivation contract*, which is a weaker claim than the other two engines can make, and the bundle's own `contract.json` says so.
+
+**What each engine accepts.** The bundle format, not the language, sets the contract, and the three engines are not equally open. Stated plainly, so the claim is no wider than the loader:
+
+| Engine | What a bundle may contain | What the proxy imposes |
+|---|---|---|
+| Rego | Any program `opa build -t wasm` compiles, exposing `<package>/allow`; `failed_checks` and `deny_reason` optional | Host builtins beyond OPA's own must be ones the proxy registers; an unregistered one fails at load |
+| CEL | Any boolean CEL expression, one per check | The file format is this project's: a package, tiers, and a map from check id to expression; allow is the disjunction over tiers of each tier's conjunction. One tier with one check holds any policy CEL can express. Functions limited to the registered set |
+| Cedar | Conditions over `context`, in one declared shape | Forbid-only over a base permit, one `@id` forbid per check, one `@assembly` forbid per tier, an `expected_ids.json` that must match exactly, no templates; a fixed synthetic principal, action and resource, and an empty entity store. A Cedar policy written over real principals and entity hierarchies cannot be loaded today |
+
+So Rego support is support for Rego; CEL support is CEL expressions in a wrapper of this project's design; and Cedar support, as of this release, is Cedar as the condition language of a bundle in the shape above. Widening the Cedar side — a second, permit-decides shape that an author can read and write, and mapping Cedar's principal, action and resource onto the proxy's own once it has a verified principal — is tracked for a later release.
 
 Any artifact can be hand-authored — several bundles under [`tests/fixtures/`](tests/fixtures/) are. The certified ones are instead **generated from a common core**, so the Rego, CEL and Cedar twins agree by construction rather than by someone keeping three files in sync. Running all three against the same inputs then tests what generation can't guarantee on its own: that three quite different runtimes — a WASM module under wasmtime, CEL expressions evaluated in-process, and Cedar's engine over host-derived witness sets — reach the same decision, and report the same failed checks, from the same signed evidence.
 
@@ -473,7 +509,7 @@ class AuditLogFilter:
         )
 ```
 
-Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, and `extra_load_filters`, plus `bundle_router` (per-server policy bundles, see Status) and `local_tools` (below):
+Wire it in by writing your own entry point — `create_server` accepts `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, and `extra_load_filters`, plus `bundle_router` (per-server policy bundles, see [Policy bundles](#policy-bundles)) and `local_tools` (below):
 
 ```python
 from extensible_mcp.config import find_config_path, load_config

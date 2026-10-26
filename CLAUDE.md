@@ -24,7 +24,7 @@ Each has its own `tests/` and its own README. The root `uv sync` installs *only*
 # Everything, including both example packages and all extras
 uv sync --all-packages --all-extras --group dev
 
-# Just the proxy plus pytest and the three engine extras (wasm, rego, cel)
+# Just the proxy plus pytest, the engine extras (wasm, rego, cel, cedar) and oauth
 uv sync --group dev
 
 # The three test suites
@@ -81,11 +81,11 @@ The proxy is a FastMCP server that connects to downstream MCP servers as a clien
 
 ### Filter pipelines
 
-Four independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ResponseFilterPipeline`, `ServerLoadFilterPipeline`) gate search, call (request), response, and server-load operations respectively. The only structurally enforced rule is `DiscoveredToolsFilter`: the LLM cannot call any tool it has not previously surfaced via `search_tools` (state is per proxy process, not per MCP session). The other shipped filters (`AccessControlFilter`, `RegoPolicyFilter`, `ServerLoadAccessControlFilter`, `SimilarityThresholdFilter`) are reference implementations — third parties are expected to write their own and inject them via the `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, `extra_load_filters` kwargs on `create_server`. Response filters can inspect or modify tool results on the way back to the LLM (no built-in response filters ship). Custom filters run after the built-ins.
+Four independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ResponseFilterPipeline`, `ServerLoadFilterPipeline`) gate search, call (request), response, and server-load operations respectively. The only structurally enforced rule is `DiscoveredToolsFilter`: the LLM cannot call any tool it has not previously surfaced via `search_tools` (scoped per MCP session; on stdio one process serves one client, so the scope is the process). The other shipped filters (`AccessControlFilter`, `RegoPolicyFilter`, `ServerLoadAccessControlFilter`, `SimilarityThresholdFilter`) are reference implementations — third parties are expected to write their own and inject them via the `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, `extra_load_filters` kwargs on `create_server`. Response filters can inspect or modify tool results on the way back to the LLM (no built-in response filters ship). Custom filters run after the built-ins.
 
 ### Policy bundles
 
-A bundle is a directory of four files: `manifest.json` (JSON Schema for the policy's whole closed input), `fetchplan.json` (where each input field comes from — `call`, `config`, `clock`, or a `wallet` lookup you supply), `guidance.json` (a sentence per failable condition, so a denial renders as an explanation), and the rules as `policy.wasm` (Rego compiled by `opa build -t wasm`), `checks.cel.json`, or `policy.cedar` with its `expected_ids.json`. `guidance.json` is engine-independent across all three; Rego and CEL also share the manifest and fetch plan, while a Cedar bundle's carry one `derive` entry and one derived field per cryptographic leaf, because Cedar cannot call a host function. Eleven worked bundles live in `tests/fixtures/`, each with a `PROVENANCE.md`; the `minimal_spend` trio (Rego, CEL, Cedar) is the one to read first, and the README's "Authoring a bundle" section walks through it.
+A bundle is a directory of four files: `manifest.json` (JSON Schema for the policy's whole closed input), `fetchplan.json` (where each input field comes from — `call`, `config`, `clock`, a `wallet` lookup you supply, or `derive`, computed from earlier fields by one registered primitive), `guidance.json` (a sentence per failable condition, so a denial renders as an explanation), and the rules as `policy.wasm` (Rego compiled by `opa build -t wasm`), `checks.cel.json`, or `policy.cedar` with its `expected_ids.json`. `guidance.json` is engine-independent across all three; Rego and CEL also share the manifest and fetch plan, while a Cedar bundle's carry one `derive` entry and one derived field per cryptographic leaf, because Cedar cannot call a host function. Eleven worked bundles live in `tests/fixtures/`, each with a `PROVENANCE.md`; the `minimal_spend` trio (Rego, CEL, Cedar) is the one to read first, and the README's "Authoring a bundle" section walks through it.
 
 Enforcement is a `CallFilter`. `bundle_router` on `create_server` maps each downstream server to the bundle governing it, decided at admission time from proxy-controlled provenance facts — never from tool-supplied metadata — and fails closed on a server it cannot place.
 
@@ -103,10 +103,10 @@ Core proxy:
 Policy-bundle engine:
 
 - **`bundle.py` / `fetchplan.py`** — loads a bundle and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers.
-- **`cedar_policy.py`** — the third engine, via `cedarpy`. Forbid-only policies over a base permit; the loader refuses a policy set that does not carry exactly the `@id` forbids and `@assembly` tiers `expected_ids.json` lists, because an empty forbid-only set allows everything. Any evaluation diagnostic is a fault, never a denial: Cedar skips a policy whose condition raises, and a skipped forbid is a permit. Crypto never runs inside a Cedar policy; the fetch plan derives witness sets and the rule tests a relation over them.
 - **`policy_engine.py`** — the `PolicyEngine` Protocol all three engines implement; the bundle format is engine-plural by design.
 - **`wasm_policy.py`** — OPA-compiled Rego evaluated in-process via wasmtime, with the crypto builtins a credential policy needs supplied from Python as host imports, so signature checks run *inside* the policy. The OPA heap is a bump allocator: the heap pointer is captured after instantiation and rewound per query.
 - **`cel_policy.py`** — the second engine over the same bundle format, via `cel-python`. A check that does not evaluate to a CEL bool fails closed.
+- **`cedar_policy.py`** — the third engine, via `cedarpy`. Forbid-only policies over a base permit; the loader refuses a policy set that does not carry exactly the `@id` forbids and `@assembly` tiers `expected_ids.json` lists, because an empty forbid-only set allows everything. Any evaluation diagnostic is a fault, never a denial: Cedar skips a policy whose condition raises, and a skipped forbid is a permit. Crypto never runs inside a Cedar policy; the fetch plan derives witness sets and the rule tests a relation over them.
 - **`wasm_filter.py`** — the call filters that enforce a bundle: generic `WasmPolicyFilter` and the production `VCPolicyFilter`.
 - **`guidance.py`** — renders a denial from the bundle's guidance layer (`render_denial`, exported).
 - **`selection.py` / `routing.py`** — which bundle governs a server, and per-call routing.
@@ -117,6 +117,6 @@ Engine faults always fail closed and stay distinct from policy denials. When a f
 
 ### Testing
 
-Tests use `pytest` with `pytest-asyncio` (auto mode). The mock MCP server in `tests/mock_server.py` provides fake tool definitions for integration tests without real downstream servers. Credential tests build real signed artifacts via `tests/vc_helpers.py` and evaluate them against the actual compiled policy fixtures, on both engines — so a change to the evidence path is tested against the real bundles, not mocks.
+Tests use `pytest` with `pytest-asyncio` (auto mode). The mock MCP server in `tests/mock_server.py` provides fake tool definitions for integration tests without real downstream servers. Credential tests build real signed artifacts via `tests/vc_helpers.py` and evaluate them against the actual compiled policy fixtures, on all three engines — so a change to the evidence path is tested against the real bundles, not mocks.
 
 CI runs all three suites on 3.11/3.12/3.13.
