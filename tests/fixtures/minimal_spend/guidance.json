@@ -1,0 +1,67 @@
+{
+  "id_scheme": "named-split",
+  "goal": "CanSpend",
+  "tiers": [
+    {
+      "tier": 0,
+      "checks": [
+        {
+          "id": "solo.request_vc.signed_by",
+          "sentence": "a credential signature is invalid",
+          "condition": "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.request_vc.within_window",
+          "sentence": "a credential is outside its validity window",
+          "condition": "input.requestVC.claims.nbf <= input.now && input.now <= input.requestVC.claims.exp",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.request_vc.action_matches",
+          "sentence": "required: input.requestVC.claims.action == input.tool",
+          "condition": "input.requestVC.claims.action == input.tool",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.request_vc.arguments_matches",
+          "sentence": "required: input.requestVC.claims.arguments == input.arguments",
+          "condition": "input.requestVC.claims.arguments == input.arguments",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.arguments.amount_cents_at_most",
+          "sentence": "required: input.arguments.amountCents <= 1000",
+          "condition": "input.arguments.amountCents <= 1000",
+          "remedy_class": "re-promptable"
+        }
+      ]
+    }
+  ],
+  "call_guards": [
+    {
+      "field": "tool",
+      "always": true,
+      "required_in_tiers": [
+        0
+      ],
+      "deciding_checks": []
+    },
+    {
+      "field": "arguments",
+      "always": true,
+      "required_in_tiers": [
+        0
+      ],
+      "deciding_checks": []
+    },
+    {
+      "field": "requestVC",
+      "always": true,
+      "required_in_tiers": [
+        0
+      ],
+      "deciding_checks": []
+    }
+  ]
+}

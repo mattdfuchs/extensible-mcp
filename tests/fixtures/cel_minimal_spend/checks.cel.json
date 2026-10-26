@@ -1,0 +1,23 @@
+{
+  "engine": "cel-v1",
+  "package": "policybundle.examples.minimal_spend",
+  "tiers": [
+    {
+      "tier": 0,
+      "checks": [
+        "solo.request_vc.signed_by",
+        "solo.request_vc.within_window",
+        "solo.request_vc.action_matches",
+        "solo.request_vc.arguments_matches",
+        "solo.arguments.amount_cents_at_most"
+      ]
+    }
+  ],
+  "checks": {
+    "solo.request_vc.signed_by": "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
+    "solo.request_vc.within_window": "input.requestVC.claims.nbf <= input.now && input.now <= input.requestVC.claims.exp",
+    "solo.request_vc.action_matches": "input.requestVC.claims.action == input.tool",
+    "solo.request_vc.arguments_matches": "input.requestVC.claims.arguments == input.arguments",
+    "solo.arguments.amount_cents_at_most": "input.arguments.amountCents <= 1000"
+  }
+}

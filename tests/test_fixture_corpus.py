@@ -46,20 +46,26 @@ EXPECTED_COUNTS = {
     "family_spend": (29, 16, 13),
     "cel_family_spend": (29, 16, 13),
     "cedar_family_spend": (29, 16, 13),
+    # The smallest bundle, three ways: the README's authoring walk-through.
+    "minimal_spend": (5, 2, 3),
+    "cel_minimal_spend": (5, 2, 3),
+    "cedar_minimal_spend": (5, 2, 3),
 }
 ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
            "cel_family_spend_invoice"}
 # cedar_family_spend's rules are supplied, but its guidance is this repo's
 # own teaching file, so it carries no digest either.
-TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend"}
+TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend",
+            "minimal_spend", "cel_minimal_spend", "cedar_minimal_spend"}
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
-                "family_spend_invoice"}
-CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_invoice"}
+                "family_spend_invoice", "minimal_spend"}
+CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_invoice", "cel_minimal_spend"}
 
 # Rego bundle -> its CEL twin, or the reason it has none. A missing twin that
 # is not listed here fails the pairing test rather than vanishing from it.
 CEL_TWIN = {
     "family_spend": "cel_family_spend",
+    "minimal_spend": "cel_minimal_spend",
     "family_spend_invoice": "cel_family_spend_invoice",
     "family_spend_webauthn": None,  # Rego-only upstream: no CEL artifact ships
     "family_spend_prod": None,      # ships upstream, adoption tracked as #18
@@ -221,11 +227,17 @@ def test_deciding_checks_resolve(bundle):
     ids = set(_ids(_guidance(bundle)))
     plan = json.loads((FIXTURES / bundle / "fetchplan.json").read_text())
     seen = 0
+    conditional = 0
     for entry in plan["entries"]:
-        for cid in (entry.get("guard") or {}).get("deciding_checks") or []:
+        guard = entry.get("guard") or {}
+        conditional += not guard.get("always", True)
+        for cid in guard.get("deciding_checks") or []:
             assert cid in ids, (entry["field"], cid)
             seen += 1
-    assert seen, "expected at least one guarded entry"
+    # A conditional credential must say which checks decide it; a bundle
+    # whose every field is always required (the minimal trio) has none to say.
+    if conditional:
+        assert seen, "a conditional field with no deciding_checks"
 
 
 @pytest.mark.parametrize("bundle", sorted(REGO_BUNDLES))
@@ -276,6 +288,7 @@ def test_cel_twin_is_the_same_bundle_in_another_notation(rego):
 # the pairing asserts the differences are exactly the ones Cedar forces.
 CEDAR_TWIN = {
     "family_spend": "cedar_family_spend",
+    "minimal_spend": "cedar_minimal_spend",
     "family_spend_prod": None,      # ships upstream; needs #27's `concat` as a derive primitive
     "family_spend_webauthn": None,  # ships upstream; needs #27 and `verify_webauthn` registered
     "family_spend_invoice": None,   # ships upstream; needs `verify_webauthn` registered
@@ -371,6 +384,9 @@ LOAD_CONFIG = {
     "family_spend": {},
     "cel_family_spend": {},
     "cedar_family_spend": {},
+    "minimal_spend": {},
+    "cel_minimal_spend": {},
+    "cedar_minimal_spend": {},
     "family_spend_prod": {},
     "family_spend_webauthn": {"builtins": default_builtins(webauthn_rp_id=RP_ID),
                               "primitives": default_primitives(webauthn_rp_id=RP_ID)},

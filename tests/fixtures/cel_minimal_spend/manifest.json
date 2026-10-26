@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MinimalSpendInput",
+  "description": "Input to the minimal teaching policy: one signed request, one spending cap. Hand-authored for this repository; see PROVENANCE.md.",
+  "type": "object",
+  "required": [
+    "tool",
+    "arguments",
+    "requestVC",
+    "requesterJwk",
+    "now"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string"
+    },
+    "arguments": {
+      "$ref": "#/definitions/SpendRequest"
+    },
+    "requestVC": {
+      "$ref": "#/definitions/RequestVC"
+    },
+    "requesterJwk": {
+      "type": "string"
+    },
+    "now": {
+      "$ref": "#/definitions/Timestamp"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Timestamp": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "DID": {
+      "type": "string",
+      "pattern": "^did:(key|web):.+$"
+    },
+    "JWS": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+    },
+    "SpendRequest": {
+      "type": "object",
+      "required": [
+        "amountCents",
+        "merchant"
+      ],
+      "properties": {
+        "amountCents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "merchant": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestVCClaims": {
+      "type": "object",
+      "required": [
+        "jti",
+        "iss",
+        "action",
+        "arguments",
+        "nbf",
+        "exp"
+      ],
+      "properties": {
+        "jti": {
+          "type": "string"
+        },
+        "iss": {
+          "$ref": "#/definitions/DID"
+        },
+        "action": {
+          "type": "string"
+        },
+        "arguments": {
+          "$ref": "#/definitions/SpendRequest"
+        },
+        "nbf": {
+          "$ref": "#/definitions/Timestamp"
+        },
+        "exp": {
+          "$ref": "#/definitions/Timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestVC": {
+      "type": "object",
+      "required": [
+        "jws",
+        "claims"
+      ],
+      "properties": {
+        "jws": {
+          "$ref": "#/definitions/JWS"
+        },
+        "claims": {
+          "$ref": "#/definitions/RequestVCClaims"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
