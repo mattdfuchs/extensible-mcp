@@ -343,7 +343,111 @@ guarded = SingleUseEvidenceFilter(policy_filter, credential_fields=("requestVC",
 
 The `jti` sits inside the signed payload, so a caller cannot vary it without invalidating the signature — which is what makes it usable as a replay key, and what a challenge derived purely from the terms lacks. It wraps rather than follows the policy filter for two reasons: the policy filter strips credential fields from the arguments it passes on, so a later filter never sees them; and evidence must be spent only when the call was actually authorized, or a call the policy refuses would burn the human's approval. The store is in memory and per process — a deployment needing replay protection across restarts or several proxies should supply its own.
 
-Eight worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: seven call-gate policies across the three engines, from a two-credential spend policy up to an invoice-settlement one, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. [`project-overview.md`](project-overview.md) covers the modules involved.
+Eleven worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: ten call-gate policies across the three engines, from the minimal trio walked through below up to an invoice-settlement policy, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. A twelfth directory, `undefined_shapes/`, is not a bundle: it is a table of Rego expression shapes, measured alongside their CEL twins, pinning how each engine treats an undefined operand. [`project-overview.md`](project-overview.md) covers the modules involved.
+
+#### Authoring a bundle
+
+The smallest bundle in the corpus is the place to start: [`tests/fixtures/minimal_spend/`](tests/fixtures/minimal_spend/), with its CEL twin [`cel_minimal_spend/`](tests/fixtures/cel_minimal_spend/) and Cedar twin [`cedar_minimal_spend/`](tests/fixtures/cedar_minimal_spend/). One tier, one signed request, one spending cap: a call to `send` is allowed when a request credential, signed by the one key the deployment trusts, is current, names this tool and these exact arguments, and asks for at most $10. Five conditions, and every file fits on a screen.
+
+**The three engine-independent files.** `manifest.json` is the JSON Schema of the policy's whole input, closed with `additionalProperties: false`. Five fields: the `tool` being called, its `arguments`, the `requestVC` credential as `{jws, claims}`, the trusted `requesterJwk`, and `now`. Everything the rules can read is named here, and nothing else reaches them.
+
+`fetchplan.json` says where each field comes from, one entry per field:
+
+```json
+{"field": "tool",         "source": {"kind": "call"},   "schema": {"type": "string"},                     "guard": {"always": true, "required_in_tiers": [0], ...}}
+{"field": "arguments",    "source": {"kind": "call"},   "schema": {"$ref": "#/definitions/SpendRequest"}, "guard": {...}}
+{"field": "requestVC",    "source": {"kind": "call"},   "schema": {"$ref": "#/definitions/RequestVC"},    "guard": {...}}
+{"field": "requesterJwk", "source": {"kind": "config"}, "schema": {"type": "string"}}
+{"field": "now",          "source": {"kind": "clock"},  "schema": {"$ref": "#/definitions/Timestamp"}}
+```
+
+Three fields come from the call. Of those, `requestVC` is a credential field, because it is neither `tool` nor `arguments`: the search-side augmenter advertises it on the tool's schema, and the filter strips it before forwarding. `requesterJwk` is a deployment fact handed to the filter as `config`, and `now` is the proxy's clock, so the policy never reads the wall clock itself. A `call` entry's `guard` says which tiers require it; here every field is always required, so a call that omits the credential is refused before the rules run.
+
+`guidance.json` gives each condition an id and a sentence:
+
+```json
+{"id": "solo.request_vc.signed_by",           "sentence": "a credential signature is invalid",             "remedy_class": "re-promptable", ...}
+{"id": "solo.arguments.amount_cents_at_most", "sentence": "required: input.arguments.amountCents <= 1000", "remedy_class": "re-promptable", ...}
+```
+
+The id is the join key between the rules and this file; `remedy_class` tells the renderer whether re-prompting could open the path. These three files are identical for the Rego and CEL twins, byte for byte, and the Cedar twin differs in exactly one place, shown below.
+
+**The rules, three ways.** Rego, in `policy.rego`:
+
+```rego
+allow if {
+	signed_by(input.requestVC.jws, input.requesterJwk)
+	within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)
+	input.requestVC.claims.action == input.tool
+	input.requestVC.claims.arguments == input.arguments
+	input.arguments.amountCents <= 1000
+}
+
+failed_checks contains "solo.arguments.amount_cents_at_most" if {
+	not allow
+	input.arguments.amountCents > 1000
+}
+```
+
+`signed_by` calls `io.jwt.verify_eddsa`, a host builtin the proxy supplies to the WASM module, so the signature is checked inside the policy. One `failed_checks` rule per condition reports its id on a denial. Compiled with:
+
+```bash
+P=policybundle/examples/minimal_spend
+opa build -t wasm -e $P/allow -e $P/failed_checks policy.rego
+```
+
+CEL, in `checks.cel.json`, is a map from id to one expression, plus the tier each id belongs to, with no compile step:
+
+```json
+"solo.request_vc.signed_by":           "verify_eddsa(input.requestVC.jws, input.requesterJwk)",
+"solo.request_vc.within_window":       "input.requestVC.claims.nbf <= input.now && input.now <= input.requestVC.claims.exp",
+"solo.arguments.amount_cents_at_most": "input.arguments.amountCents <= 1000"
+```
+
+A tier allows when every one of its checks is true; the ids of the checks that were not are the failed checks.
+
+Cedar, in `policy.cedar`. Cedar cannot call a host function, so the signature check moves out of the policy and into the fetch plan: the Cedar twin's `fetchplan.json` is the shared plan plus one `derive` entry, and its manifest gains the one field that entry produces.
+
+```json
+{"field": "requestVCJwsRequesterJwkKeyWitnesses",
+ "source": {"kind": "derive", "fn": "verify_eddsa",
+            "args": [{"$input": "requestVC.jws"}, {"$item": "key"}],
+            "over":  [{"key": {"$input": "requesterJwk"}}],
+            "project": "key"}}
+```
+
+Read it as: fold `verify_eddsa(jws, key)` over the candidate keys — here, the one trusted key — and project the keys that verified. The result is a witness set the rule tests a relation over, never a bare boolean; a key that failed to verify is simply not in it. The policy is forbid-only over a base permit, one forbid per condition, each carrying the id it reports under:
+
+```
+permit (principal, action, resource);
+
+@id("solo.request_vc.signed_by")
+forbid (principal, action, resource)
+when {
+  context has requestVCJwsRequesterJwkKeyWitnesses &&
+  context has requesterJwk &&
+  !context.requestVCJwsRequesterJwkKeyWitnesses.contains(context.requesterJwk)
+};
+
+@id("solo.arguments.amount_cents_at_most")
+forbid (principal, action, resource)
+when {
+  context has arguments && context.arguments has amountCents &&
+  !(context.arguments.amountCents <= 1000)
+};
+```
+
+plus one `@assembly("solo")` forbid, carrying no `@id`, that fires when the tier's inputs are incomplete — otherwise an input missing a field would make every `has` guard false, no forbid would fire, and a forbid-only set would allow it. `expected_ids.json` lists the five ids and the one tier, and the loader refuses a policy set that does not carry exactly those forbids, because an empty forbid-only set allows everything.
+
+**What a denial looks like.** A $50 call carrying a valid $50 request fails one condition. All three engines report the same id, and it renders through the guidance as:
+
+```
+Tool call denied by policy: no allowed path was satisfied. To succeed, satisfy every condition of one of these paths:
+- Path 1: required: input.arguments.amountCents <= 1000.
+Gather the missing evidence or adjust the call, then retry.
+```
+
+That text is asserted byte for byte in [`tests/test_minimal_bundle_differential.py`](tests/test_minimal_bundle_differential.py), which runs every scenario — allowed under the cap, and one denial per condition — through the real filter on all three twins and holds them to one verdict and one set of ids. To write your own, copy the trio, rename the package, and change the conditions; [`tests/test_fixture_corpus.py`](tests/test_fixture_corpus.py) states what every bundle in the corpus has to keep in step.
 
 ### Writing a custom filter
 
