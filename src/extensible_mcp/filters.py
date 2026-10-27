@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import json
 import re
@@ -111,16 +112,15 @@ class CallFilterPipeline:
         tool_name = request.tool_name
         arguments = dict(request.arguments)
         for f in self.filters:
+            # Rebuilt with `replace`, never by naming the fields: a rebuild
+            # that enumerates what it knows drops the field it does not, and
+            # on this path a dropped field is a control that lost its key.
+            # `session_id` went missing exactly that way in 0.3.2, and a
+            # session-scoped filter that sees None falls back to the shared
+            # bucket -- the bypass the scoping exists to close. Only the two
+            # fields a filter may rewrite are named here.
             result = await f.check(
-                CallRequest(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    server_name=request.server_name,
-                    # Carried through, or a session-scoped filter would see
-                    # None for every call and fall back to the shared bucket --
-                    # silently restoring the bypass this scoping exists to fix.
-                    session_id=request.session_id,
-                )
+                dataclasses.replace(request, tool_name=tool_name, arguments=arguments)
             )
             if not result.allowed:
                 return result
@@ -268,14 +268,10 @@ class ResponseFilterPipeline:
         content = list(response.content)
         is_error = response.is_error
         for f in self.filters:
+            # Same rule as CallFilterPipeline: only the two fields a filter
+            # may rewrite are named; everything else rides along unnamed.
             result = await f.check(
-                CallResponse(
-                    tool_name=response.tool_name,
-                    arguments=response.arguments,
-                    server_name=response.server_name,
-                    content=content,
-                    is_error=is_error,
-                )
+                dataclasses.replace(response, content=content, is_error=is_error)
             )
             if not result.allowed:
                 return result
