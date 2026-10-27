@@ -24,6 +24,7 @@ have no reason to exist or quietly accept a byte-differing pair as a twin.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -374,15 +375,56 @@ def test_every_bundle_on_disk_is_accounted_for():
             assert (d / "PROVENANCE.md").is_file(), d.name
 
 
+_NEEDLES_ENV = "EXTENSIBLE_MCP_PRIVATE_NEEDLES"
+_ALLOW_ENV = "EXTENSIBLE_MCP_PRIVATE_NEEDLES_ALLOW"
+_REPO = Path(__file__).parent.parent
+_SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", "scratch", "dist", ".claude"}
+_SKIP_FILES = {"uv.lock"}
+_BINARY_SUFFIXES = {".wasm", ".png", ".jpg", ".gif", ".ico", ".pdf", ".whl", ".gz"}
+
+
+def _private_needles() -> tuple[list[str], list[str]]:
+    """The strings that must not appear in anything published, and the tokens
+    that are allowed to contain them. Both come from the environment, never
+    from this file: the test that guards against publishing a name cannot
+    itself publish the name. Unset means the check cannot run, and says so,
+    rather than passing."""
+    needles = [n.strip().lower() for n in os.environ.get(_NEEDLES_ENV, "").split(",") if n.strip()]
+    allow = [a.strip().lower() for a in os.environ.get(_ALLOW_ENV, "").split(",") if a.strip()]
+    return needles, allow
+
+
 def test_no_supplier_namespace_leaks_into_a_public_artifact():
-    """The one allowed match is the challenge pre-image's version tag, which
-    is an opaque wire constant shared with the approval page."""
+    """Every text file in the tree, not only the fixtures: a leak in a test,
+    a docstring or a workflow is published the same way. The allowed tokens
+    are opaque wire constants that happen to contain a needle (the challenge
+    pre-image's version tag, shared with the approval page)."""
+    needles, allow = _private_needles()
+    if not needles:
+        pytest.skip(f"{_NEEDLES_ENV} is unset; the private-name check did not run")
     hits = []
-    for path in FIXTURES.rglob("*"):
-        if path.is_file() and path.suffix != ".wasm":
-            for n, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-                if "lego" in line.lower() and "legov1" not in line:
-                    hits.append(f"{path.relative_to(FIXTURES)}:{n}")
+    for path in sorted(_REPO.rglob("*")):
+        if not path.is_file() or path.suffix in _BINARY_SUFFIXES or path.name in _SKIP_FILES:
+            continue
+        if _SKIP_DIRS & set(path.relative_to(_REPO).parts):
+            continue
+        rel = str(path.relative_to(_REPO)).lower()
+        for tok in allow:
+            rel = rel.replace(tok, "")
+        if any(n in rel for n in needles):
+            hits.append(f"{path.relative_to(_REPO)} (path)")
+        try:
+            text = path.read_bytes()
+        except OSError:
+            continue
+        if b"\0" in text:
+            continue
+        for n_line, line in enumerate(text.decode("utf-8", errors="replace").splitlines(), 1):
+            low = line.lower()
+            for tok in allow:
+                low = low.replace(tok, "")
+            if any(n in low for n in needles):
+                hits.append(f"{path.relative_to(_REPO)}:{n_line}")
     assert hits == []
 
 
