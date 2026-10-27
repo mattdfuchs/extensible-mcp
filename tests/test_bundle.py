@@ -62,10 +62,16 @@ def test_no_shipped_fixture_sets_emit():
 def test_the_credential_partition_is_independent_of_emit(rewritten_bundle):
     """Hazard 1, at the bundle: ``requestVC`` with ``emit: false`` is still a
     ``call`` field the LLM supplies, so it is still a credential field, still
-    always required, guarded exactly as before."""
+    always required, guarded exactly as before. The manifest drops the
+    property too, as an unemitted field's manifest must (see the load
+    refusal below)."""
     shipped = PolicyBundle.load(MINIMAL_SPEND)
     bundle = PolicyBundle.load(
-        rewritten_bundle(MINIMAL_SPEND, plan=_set_emit("requestVC", False))
+        rewritten_bundle(
+            MINIMAL_SPEND,
+            plan=_set_emit("requestVC", False),
+            manifest=_drop_property("requestVC"),
+        )
     )
     assert bundle.call_fields() == shipped.call_fields()
     assert bundle.credential_fields() == shipped.credential_fields() == ["requestVC"]
@@ -119,6 +125,17 @@ def test_load_refuses_a_non_boolean_emit_naming_the_field(rewritten_bundle, valu
     d = rewritten_bundle(MINIMAL_SPEND, plan=_set_emit("requestVC", value))
     with pytest.raises(DerivePlanError, match=r"'requestVC'.*'emit' must be a boolean"):
         PolicyBundle.load(d)
+
+
+def test_load_refuses_an_unemitted_field_the_manifest_still_requires(rewritten_bundle):
+    """``emit: false`` on a field the manifest's root ``required`` lists is a
+    bundle no input can satisfy: every call would fail validation with a
+    message about a field the author meant to drop. It fails at load,
+    naming the field and both ways out, not on the first call."""
+    d = rewritten_bundle(MINIMAL_SPEND, plan=_set_emit("requestVC", False))
+    with pytest.raises(ValueError, match="'requestVC' carries 'emit': false") as e:
+        PolicyBundle.load(d)
+    assert "required" in str(e.value) and "or emit it" in str(e.value)
 
 
 def test_a_cedar_bundle_accepts_the_flag_at_load(rewritten_bundle):

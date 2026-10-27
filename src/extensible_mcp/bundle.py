@@ -143,6 +143,7 @@ class PolicyBundle:
         # A plan whose derived fields are shaped wrong is a bundle that must
         # never reach a call, so this is a load-time refusal, not a runtime one.
         validate_derive_plan(fetchplan, primitives=primitives)
+        _refuse_required_but_unemitted(fetchplan, manifest, d / "fetchplan.json")
         guidance_path = d / "guidance.json"
         guidance = (
             json.loads(guidance_path.read_text()) if guidance_path.exists() else None
@@ -364,6 +365,32 @@ def _synthesize_guidance(
         if e.get("source", {}).get("kind") == _TOOL_FIELD_KIND and isinstance(guard, dict):
             guards.append({"field": e["field"], **{k: guard[k] for k in _GUARD_KEYS[1:] if k in guard}})
     return {**inline, "call_guards": guards, "synthesized_from": "inline"}
+
+
+def _refuse_required_but_unemitted(
+    fetchplan: dict[str, Any], manifest: dict[str, Any], path: Path
+) -> None:
+    """A field the plan keeps out of the input (``emit: false``) that the
+    manifest's root ``required`` still lists is a bundle that denies every
+    call -- the assembled input can never satisfy its own schema -- with a
+    validation message about a field the author meant to drop. That is a
+    misconfiguration, so it is refused here, at load, and the message says
+    which side to change."""
+    required = manifest.get("required")
+    if not isinstance(required, list):
+        return
+    unemitted = [
+        e.get("field")
+        for e in fetchplan.get("entries") or []
+        if e.get("emit") is False and e.get("field") in required
+    ]
+    if unemitted:
+        names = ", ".join(repr(f) for f in unemitted)
+        raise ValueError(
+            f"{path}: {names} carries 'emit': false but the manifest lists it "
+            f"under 'required', so no assembled input could ever validate. "
+            f"Drop it from the manifest's 'required' (and 'properties'), or emit it."
+        )
 
 
 def _derive_package(policy: OpaWasmPolicy) -> str:
