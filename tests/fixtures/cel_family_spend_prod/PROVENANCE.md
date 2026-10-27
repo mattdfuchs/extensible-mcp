@@ -58,6 +58,17 @@ hand-authored teaching bundle this is not related to.
   when those credentials are genuinely absent at or under the $10
   threshold — exercised by `test_vc_policy.py`'s solo-tier scenarios on
   both engines.
+- **Cross-engine divergence, not a defect in this bundle:** on a signed
+  request whose claims carry no `merchant` at all (an out-of-contract
+  input the proxy's own fetch-plan assembly never produces), this bundle
+  raises `PolicyEvaluationError` from `solo.request_vc.merchant_matches` —
+  this repo's CEL engine is fail-closed on any exception, with no attempt
+  to distinguish a structural fault from an evidentiary denial. The Rego
+  twin evaluates around the undefined reference and returns a
+  `failed_checks` set that is silent on the merchant ids. Same class as the
+  divergence documented in `cel_family_spend_invoice`'s PROVENANCE.md;
+  `test_vc_policy.py::test_undefined_reference_comparison_emits_no_failed_check_id`
+  is therefore Rego-only and says so.
 
 ## Rebuild
 
