@@ -111,6 +111,22 @@ async def test_over_limit_without_auth_denies(vc_filter, keys):
     assert "1000" in result.reason  # amountCents <= 1000 violated
 
 
+async def test_missing_request_credential_is_a_denial_naming_it(vc_filter, keys, caplog):
+    """The production filter, same rule as the generic one: a call without the
+    credential every path requires is refused as a denial that names it, not
+    as an assembly fault, and nothing is logged at warning -- the caller
+    omitted something the tool advertises, which is expected traffic."""
+    call = _call(keys, amount=5.00)
+    del call.arguments["requestVC"]
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
+        result = await vc_filter.check(call)
+    assert result.allowed is False
+    assert "provide `requestVC`" in result.reason
+    assert "could not be assembled" not in result.reason
+    assert result.arguments == {"amount": 5.00, "merchant": "acme"}
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
 async def test_tampered_request_signature_denies(vc_filter, keys):
     call = _call(keys, amount=5.00)
     jws = call.arguments["requestVC"]["token"]

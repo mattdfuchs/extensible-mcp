@@ -25,7 +25,7 @@ What it shows, in order:
    requirements the augmenter derives from the bundle's own guidance — the
    obligation arrives as part of the tool definition, not as a side channel.
 2. **A call with no credentials** is refused before it reaches the
-   downstream: `Policy input could not be assembled: tool call has no field 'requestVC'`.
+   downstream, and the denial names what was missing: `provide \`requestVC\` which was not supplied`.
 3. **$5 with the kid's request VC** is allowed — the solo tier — and the
    downstream actually debits: `New balance: $95.00`.
 4. **$50 with only the kid's VC** is denied, and the denial explains itself:
