@@ -57,9 +57,10 @@ The adopted policy bundles under `tests/fixtures/` come from an external
 policy-authoring toolchain whose tree is not available in CI, so the check
 that nothing it ships has gone unadopted is a script run by hand:
 `uv run python scripts/check_adoption.py /path/to/upstream-checkout` lists
-every upstream bundle as adopted, not adopted, or local-only, and exits
-non-zero on one that is neither adopted nor recorded in the script as a
-decision not to. Run it when re-pinning a fixture or after pulling upstream.
+every upstream bundle, on all three engines, as adopted, not adopted, or
+local-only, and exits non-zero on one that is neither adopted nor recorded
+in the script as a decision not to. Run it when re-pinning a fixture or
+after pulling upstream.
 
 ## Secret scanning
 
