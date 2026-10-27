@@ -168,3 +168,73 @@ async def test_arguments_binding_enforced(bundle, key):
     call.arguments["amountCents"] = 999
     result = await f.check(call)
     assert result.allowed is False
+
+
+# --------------------------------------------------------------------------- #
+# ``emit: false`` on a credential: still a credential
+# --------------------------------------------------------------------------- #
+
+
+def _request_guard(records):
+    [guard] = [r for r in records if r.get("field") == "requestVC"]
+    return guard
+
+
+def _add_unemitted_credential(plan):
+    """A call-sourced ``invoiceJws`` the shipped rules never read, required
+    on every tier exactly as ``requestVC`` is, and kept out of the assembled
+    input."""
+    guard = _request_guard([e.get("guard") or {} for e in plan["entries"]])
+    plan["entries"].append({
+        "field": "invoiceJws",
+        "source": {"kind": "call"},
+        "emit": False,
+        "schema": {"$ref": "#/definitions/JWS"},
+        "guard": {**guard, "field": "invoiceJws"},
+    })
+
+
+def _guard_it_in_guidance(guidance):
+    guard = _request_guard(guidance["call_guards"])
+    guidance["call_guards"].append({**guard, "field": "invoiceJws"})
+
+
+@pytest.fixture
+def unemitted_bundle(rewritten_bundle):
+    """family_spend plus ``invoiceJws``: ``emit: false`` keeps it out of the
+    assembled input, so the closed manifest does not reject it and the
+    shipped rules allow exactly as before."""
+    d = rewritten_bundle(
+        FIXTURE_DIR, plan=_add_unemitted_credential, guidance=_guard_it_in_guidance
+    )
+    return PolicyBundle.load(d, name="family_spend")
+
+
+async def test_an_unemitted_credential_is_stripped_from_the_allowed_call(unemitted_bundle, key):
+    """Hazard 1. The strip reads ``credential_fields()``; an implementation
+    that narrowed that to emitted entries would forward the raw credential
+    to the downstream tool on every *allowed* call, and nothing else on the
+    path would notice."""
+    assert "invoiceJws" in unemitted_bundle.credential_fields()
+    f = _filter(unemitted_bundle, key)
+    call = _call(key, amount=500, with_auth=False)
+    call = CallRequest(
+        tool_name=call.tool_name,
+        server_name=call.server_name,
+        arguments={**call.arguments, "invoiceJws": "header.payload.sig"},
+    )
+    result = await f.check(call)
+    assert result.allowed is True, result.reason
+    assert "invoiceJws" not in result.arguments
+    assert result.arguments == {"amountCents": 500, "merchant": "acme"}
+
+
+async def test_an_unemitted_required_credential_is_still_required(unemitted_bundle, key):
+    """``is_always_required`` and the absent-credential denial read the
+    guard, not ``emit``: a call that leaves the field out is denied, and the
+    denial names it."""
+    f = _filter(unemitted_bundle, key)
+    result = await f.check(_call(key, amount=500, with_auth=False))
+    assert result.allowed is False
+    assert "invoiceJws" in result.reason
+    assert "could not" not in result.reason  # a denial, not a fault
