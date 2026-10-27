@@ -35,6 +35,15 @@ is allowed to take is a security property: a verification primitive may only be
 *folded* over candidates and *project* a witness, never applied bare to return a
 verdict, because a verdict no longer carries the relation the rule has to keep.
 :class:`DeriveResolver` and :func:`validate_derive_plan` say why at length.
+
+An entry may also carry ``"emit": false``. It is resolved like any other and a
+later entry's ``$input`` can read it, but it is not written into the assembled
+input: that is how a plan derives from the wire bytes and then drops them, so
+the raw JWS feeds a ``sha256`` entry while the manifest, closed with
+``additionalProperties: false``, has no raw property to reject. ``emit``
+defaults to ``true``, and it says nothing about *where* a field comes from --
+an unemitted ``call`` field is still LLM-supplied, still a credential the
+bundle partitions out of the native arguments, still stripped downstream.
 """
 
 from __future__ import annotations
@@ -87,6 +96,11 @@ class FetchContext:
 
 
 class Resolver(Protocol):
+    """One source kind's lookup. ``assembled`` is every field resolved so far,
+    the unemitted ones included -- the same document a ``$input`` path
+    navigates -- so a resolver that reads an earlier field sees what the
+    plan's own references see."""
+
     async def resolve(
         self,
         name: str,
@@ -622,12 +636,30 @@ def _validate_unique_fields(plan: dict[str, Any]) -> None:
         seen[field] = str(kind)
 
 
+def _validate_emit_flags(plan: dict[str, Any]) -> None:
+    """Refuse a plan whose entry carries an ``emit`` that is not a JSON
+    boolean, naming the field. Kind-agnostic, like the uniqueness check: a
+    string ``"false"`` is truthy, so a lenient reader would emit the field the
+    author meant to drop, and the only thing standing between the raw value
+    and the rule would be the manifest's ``additionalProperties: false`` --
+    a denial on every call, with a message nobody can act on."""
+    for entry in plan.get("entries") or []:
+        if "emit" not in entry:
+            continue
+        emit = entry["emit"]
+        if not isinstance(emit, bool):
+            raise DerivePlanError(
+                f"fetch plan entry {entry.get('field')!r}: 'emit' must be a "
+                f"boolean, got {type(emit).__name__} {emit!r}"
+            )
+
+
 def validate_derive_plan(
     plan: dict[str, Any], *, primitives: dict[str, Callable[..., Any]] | None = None
 ) -> None:
     """Refuse, at load, a fetch plan the proxy must not assemble from. Raises
-    :class:`DerivePlanError`. The first check is kind-agnostic; the rest
-    concern ``derive`` entries, and a plan with none passes them whatever
+    :class:`DerivePlanError`. The first two checks are kind-agnostic; the
+    rest concern ``derive`` entries, and a plan with none passes them whatever
     vocabulary it declares.
 
     What is refused, and why each is a load-time question rather than an
@@ -642,6 +674,8 @@ def validate_derive_plan(
       candidate domain all named ``trustRootJwkKeyWitnesses``, so five
       leaves checked the wrong credential's signature) and fixed its
       generator; this is the independent guard on the consuming side;
+    - an ``emit`` flag that is not a JSON boolean, on an entry of any kind:
+      see :func:`_validate_emit_flags`;
     - a primitive a ``derive`` entry **invokes** that the proxy cannot
       satisfy, or one it invokes without declaring -- the same discipline as
       an unregistered host built-in, which fails when the policy is loaded and
@@ -674,6 +708,7 @@ def validate_derive_plan(
     runs. So an unimplemented declaration is logged, not raised.
     """
     _validate_unique_fields(plan)
+    _validate_emit_flags(plan)
     declared = declared_primitives(plan)
     available = default_primitives() if primitives is None else primitives
     for prim in sorted(declared):
@@ -1008,8 +1043,21 @@ class FetchExecutor:
         engines agree on, including on a tier the call does not reach, where
         garbage in an unneeded credential must not turn an allow into a
         denial.
+
+        **Emit-aware.** An entry carrying ``"emit": false`` is resolved into
+        *scratch*, where every later ``$input`` reference reads it exactly as
+        it reads an emitted field, and is never written into the returned
+        input. The raw bytes a digest is derived from stay out of the rule's
+        reach, and the manifest has no property to reject. ``emit`` defaults
+        to ``true``, so a plan that never mentions it assembles as before; a
+        non-boolean ``emit`` is refused at bundle load and, belt and braces,
+        fails closed here.
         """
-        assembled: dict[str, Any] = {}
+        # Every resolved value, emitted or not: the document ``$input`` paths
+        # navigate and the one a resolver is handed. ``emitted`` is the subset
+        # returned as the closed input.
+        scratch: dict[str, Any] = {}
+        emitted: dict[str, Any] = {}
         omitted: set[str] = set()
         for entry in plan["entries"]:
             name = entry["field"]
@@ -1018,6 +1066,13 @@ class FetchExecutor:
             resolver = self.resolvers.get(kind)
             if resolver is None:
                 raise FetchError(f"no resolver registered for source kind {kind!r}")
+
+            emit = entry.get("emit", True)
+            if not isinstance(emit, bool):
+                raise FetchError(
+                    f"fetch plan entry {name!r}: 'emit' must be a boolean, "
+                    f"got {type(emit).__name__} {emit!r}"
+                )
 
             guard = entry.get("guard")
             optional = guard is not None and not guard.get("always", True)
@@ -1029,16 +1084,16 @@ class FetchExecutor:
             # at an omitted credential omits the derived field too.
             try:
                 if kind == DERIVE_KIND:
-                    params = self._resolve_derive_source(name, source, assembled)
+                    params = self._resolve_derive_source(name, source, scratch)
                 else:
-                    params = self._resolve_params(source.get("params", {}), assembled)
+                    params = self._resolve_params(source.get("params", {}), scratch)
             except FetchError:
                 logger.debug("fetchplan: omitting %r (depends on an omitted field)", name)
                 omitted.add(name)
                 continue
 
             try:
-                assembled[name] = await resolver.resolve(name, params, assembled, ctx)
+                value = await resolver.resolve(name, params, scratch, ctx)
             except DeriveUndefined as e:
                 logger.debug("fetchplan: omitting %r (undefined: %s)", name, e)
                 omitted.add(name)
@@ -1049,7 +1104,12 @@ class FetchExecutor:
                     omitted.add(name)
                     continue
                 raise
-        return assembled
+            scratch[name] = value
+            if emit:
+                emitted[name] = value
+            else:
+                logger.debug("fetchplan: %r resolved but not emitted", name)
+        return emitted
 
     def _resolve_params(
         self, params: dict[str, Any], assembled: dict[str, Any]

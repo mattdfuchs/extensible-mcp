@@ -1338,3 +1338,131 @@ def test_validate_keeps_the_class_cross_check_advisory_for_an_unused_name(caplog
     with caplog.at_level(logging.WARNING, logger="extensible_mcp.fetchplan"):
         validate_derive_plan(plan)
     assert "classifies it as 'key-consuming'" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# ``emit``: resolved and readable, never written
+# --------------------------------------------------------------------------- #
+
+
+async def test_emit_defaults_true_so_a_plan_spelling_it_out_assembles_identically(key):
+    """Every shipped plan is silent about ``emit``; writing ``"emit": true``
+    on each of family_spend's entries changes nothing about what the policy
+    reads."""
+    explicit = {**PLAN, "entries": [{**e, "emit": True} for e in PLAN["entries"]]}
+    ctx = _context(key, amount=5000, with_auth=True)
+    assert (
+        await FetchExecutor().assemble(explicit, ctx)
+        == await FetchExecutor().assemble(PLAN, ctx)
+    )
+
+
+async def test_an_unemitted_field_is_absent_from_the_assembled_input():
+    plan = _plan(
+        {"field": "requestVcJws", "source": {"kind": "config"}, "emit": False},
+        _config_entry("trustRoot"),
+    )
+    ctx = FetchContext(config={"requestVcJws": "header.payload.sig", "trustRoot": "x"})
+    assert await FetchExecutor().assemble(plan, ctx) == {"trustRoot": "x"}
+
+
+async def test_a_later_derive_entry_reads_an_unemitted_field_as_input():
+    """The hoist's third constraint -- derive from the wire bytes, then drop
+    them: the digest is what the rule reads, and the JWS it was computed
+    over is nowhere in the input for a re-serialised copy to disagree
+    with."""
+    plan = _plan(
+        {"field": "requestVcJws", "source": {"kind": "call"}, "emit": False},
+        {"field": "requestVcDigest",
+         "source": {"kind": "derive", "fn": "sha256",
+                    "args": [{"$input": "requestVcJws"}]}},
+    )
+    ctx = FetchContext(envelope={"requestVcJws": "header.payload.sig"})
+    assert await FetchExecutor().assemble(plan, ctx) == {
+        "requestVcDigest": hashlib.sha256(b"header.payload.sig").hexdigest()
+    }
+
+
+async def test_an_unemitted_field_is_readable_from_every_input_position(key):
+    """``$input`` means the same thing wherever it appears -- a ``wallet``
+    subject, a derive argument, a leaf of a literal ``over`` element -- and
+    an unemitted field answers to all of them."""
+    req = vc.request_vc(args={"amountCents": 1, "merchant": "acme"}, key=key)
+    plan = _plan(
+        {"field": "requestVC", "source": {"kind": "call"}},
+        {"field": "requesterJwk", "source": {"kind": "config"}, "emit": False},
+        {"field": "subjectDid", "source": {"kind": "config"}, "emit": False},
+        {"field": "membership",
+         "source": {"kind": "wallet", "params": {"subject": {"$input": "subjectDid"}}}},
+        {"field": "witnesses",
+         "source": {"kind": "derive", "fn": "verify_eddsa",
+                    "over": [{"key": {"$input": "requesterJwk"}}],
+                    "args": [{"$input": "requestVC.jws"}, {"$item": "key"}],
+                    "project": "key"}},
+    )
+
+    async def wallet(subject):
+        return {"sub": subject, "role": "kid"}
+
+    ctx = FetchContext(
+        envelope={"requestVC": req},
+        config={"requesterJwk": vc.public_jwk(key), "subjectDid": vc.KID_DID},
+        wallet=wallet,
+    )
+    assert await FetchExecutor().assemble(plan, ctx) == {
+        "requestVC": req,
+        "membership": {"sub": vc.KID_DID, "role": "kid"},
+        "witnesses": [vc.public_jwk(key)],
+    }
+
+
+async def test_an_absent_optional_unemitted_field_omits_what_reads_it():
+    """``emit`` composes with the guards: an unemitted conditional credential
+    the call did not carry is omitted, not failed, and so is the derive that
+    reads it."""
+    plan = _plan(
+        {"field": "invoiceJws", "source": {"kind": "call"}, "emit": False,
+         "guard": {"always": False}},
+        {"field": "invoiceDigest",
+         "source": {"kind": "derive", "fn": "sha256",
+                    "args": [{"$input": "invoiceJws"}]}},
+        _config_entry("trustRoot"),
+    )
+    ctx = FetchContext(config={"trustRoot": "x"})
+    assert await FetchExecutor().assemble(plan, ctx) == {"trustRoot": "x"}
+
+
+async def test_a_resolver_is_handed_the_unemitted_fields_too():
+    """A deployment's own resolver reading an earlier field sees the document
+    the plan's ``$input`` references see, not just the emitted half."""
+    seen: dict = {}
+
+    class Peek:
+        async def resolve(self, name, params, assembled, ctx):
+            seen.update(assembled)
+            return "ok"
+
+    plan = _plan(
+        {"field": "requestVcJws", "source": {"kind": "config"}, "emit": False},
+        {"field": "peeked", "source": {"kind": "peek"}},
+    )
+    executor = FetchExecutor({**default_resolvers(), "peek": Peek()})
+    ctx = FetchContext(config={"requestVcJws": "header.payload.sig"})
+    assert await executor.assemble(plan, ctx) == {"peeked": "ok"}
+    assert seen == {"requestVcJws": "header.payload.sig"}
+
+
+@pytest.mark.parametrize("emit", ["false", 0, 1, None, [False]])
+def test_validate_rejects_a_non_boolean_emit_naming_the_field(emit):
+    plan = _plan({"field": "requestVcJws", "source": {"kind": "config"}, "emit": emit})
+    with pytest.raises(DerivePlanError, match=r"'requestVcJws'.*'emit' must be a boolean"):
+        validate_derive_plan(plan)
+
+
+@pytest.mark.parametrize("emit", ["false", 0])
+async def test_assemble_fails_closed_on_a_non_boolean_emit(emit):
+    """Belt and braces: the loader refused this plan, so a malformed flag
+    reaching the executor means the plan never went through the loader."""
+    plan = _plan({"field": "requestVcJws", "source": {"kind": "config"}, "emit": emit})
+    with pytest.raises(FetchError, match=r"'requestVcJws'.*'emit' must be a boolean"):
+        await FetchExecutor().assemble(plan, FetchContext(config={"requestVcJws": "x"}))
