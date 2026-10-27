@@ -126,6 +126,13 @@ jobs:
         # their suites cannot run.
         run: uv sync --all-packages --group dev
       - name: Run core tests
+        env:
+          # The private-name check reads what it must not find from the
+          # environment, never from the tree, so the test that guards the name
+          # cannot publish it. Set on the private repository only; on the
+          # public one the secret is absent and the test skips, saying so.
+          EXTENSIBLE_MCP_PRIVATE_NEEDLES: ${{ secrets.PRIVATE_NEEDLES }}
+          EXTENSIBLE_MCP_PRIVATE_NEEDLES_ALLOW: ${{ secrets.PRIVATE_NEEDLES_ALLOW }}
         run: uv run pytest -q
       - name: Run commerce demo tests
         run: uv run --package extensible-mcp-vc pytest examples/agentic-commerce-demo/tests -q
