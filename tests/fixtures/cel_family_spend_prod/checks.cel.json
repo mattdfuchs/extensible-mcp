@@ -1,0 +1,116 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   ["solo.request_vc.signed_by_did_key",
+    "solo.request_vc.within_window",
+    "solo.request_vc.type_matches",
+    "solo.request_vc.amount_cents_matches",
+    "solo.request_vc.merchant_matches",
+    "solo.requester_membership.issued_by_trusted_admin",
+    "solo.requester_membership.signed_by_key",
+    "solo.requester_membership.sub_matches",
+    "solo.requester_membership.within_window",
+    "solo.requester_membership.role_matches",
+    "solo.request_vc.amount_cents_at_most"]},
+  {"tier": 1,
+   "checks":
+   ["full_chain.request_vc.signed_by_did_key",
+    "full_chain.request_vc.within_window",
+    "full_chain.request_vc.type_matches",
+    "full_chain.request_vc.amount_cents_matches",
+    "full_chain.request_vc.merchant_matches",
+    "full_chain.requester_membership.issued_by_trusted_admin",
+    "full_chain.requester_membership.signed_by_key",
+    "full_chain.requester_membership.sub_matches",
+    "full_chain.requester_membership.within_window",
+    "full_chain.requester_membership.role_matches",
+    "full_chain.request_vc.amount_cents_above",
+    "full_chain.request_vc.amount_cents_at_most",
+    "full_chain.authorization_vc.signed_by_did_key",
+    "full_chain.authorization_vc.within_window",
+    "full_chain.authorization_vc.authorizes_request_matches",
+    "full_chain.authorization_vc.hash_binds",
+    "full_chain.approver_membership.issued_by_trusted_admin",
+    "full_chain.approver_membership.signed_by_key",
+    "full_chain.approver_membership.sub_matches",
+    "full_chain.approver_membership.within_window",
+    "full_chain.approver_membership.role_matches"]}],
+ "package": "policybundle.examples.family_spend_prod",
+ "guards":
+ {"full_chain.authorization_vc.within_window": ["authorizationVC"],
+  "full_chain.authorization_vc.signed_by_did_key": ["authorizationVC"],
+  "full_chain.authorization_vc.hash_binds": ["authorizationVC"],
+  "full_chain.authorization_vc.authorizes_request_matches": ["authorizationVC"],
+  "full_chain.approver_membership.within_window": ["approverMembership"],
+  "full_chain.approver_membership.sub_matches":
+  ["approverMembership", "authorizationVC"],
+  "full_chain.approver_membership.signed_by_key": ["approverMembership"],
+  "full_chain.approver_membership.role_matches": ["approverMembership"],
+  "full_chain.approver_membership.issued_by_trusted_admin":
+  ["approverMembership"]},
+ "engine": "cel-v1",
+ "checks":
+ {"solo.requester_membership.within_window":
+  "(((((input.requesterMembership.claims.nbf <= input.now)) && ((input.now < input.requesterMembership.claims.exp)))))",
+  "solo.requester_membership.sub_matches":
+  "((input.requesterMembership.claims.sub == input.requestVC.claims.iss))",
+  "solo.requester_membership.signed_by_key":
+  "((verify_eddsa(input.requesterMembership.jws, input.requesterMembership.adminKey)))",
+  "solo.requester_membership.role_matches":
+  "((input.requesterMembership.claims.vc.credentialSubject.role == \"child\"))",
+  "solo.requester_membership.issued_by_trusted_admin":
+  "((((input.trustedAdminDids.exists(d, (((input.requesterMembership.claims.iss == d))))))))",
+  "solo.request_vc.within_window":
+  "(((((input.requestVC.claims.nbf <= input.now)) && ((input.now < input.requestVC.claims.exp)))))",
+  "solo.request_vc.type_matches":
+  "((input.requestVC.claims.vc.credentialSubject.requests.type == input.tool))",
+  "solo.request_vc.signed_by_did_key":
+  "((verify_eddsa(input.requestVC.jws, key_from_did_key(input.requestVC.claims.iss))))",
+  "solo.request_vc.merchant_matches":
+  "((input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant))",
+  "solo.request_vc.amount_cents_matches":
+  "((input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents))",
+  "solo.request_vc.amount_cents_at_most":
+  "((input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 1000))",
+  "full_chain.requester_membership.within_window":
+  "(((((input.requesterMembership.claims.nbf <= input.now)) && ((input.now < input.requesterMembership.claims.exp)))))",
+  "full_chain.requester_membership.sub_matches":
+  "((input.requesterMembership.claims.sub == input.requestVC.claims.iss))",
+  "full_chain.requester_membership.signed_by_key":
+  "((verify_eddsa(input.requesterMembership.jws, input.requesterMembership.adminKey)))",
+  "full_chain.requester_membership.role_matches":
+  "((input.requesterMembership.claims.vc.credentialSubject.role == \"child\"))",
+  "full_chain.requester_membership.issued_by_trusted_admin":
+  "((((input.trustedAdminDids.exists(d, (((input.requesterMembership.claims.iss == d))))))))",
+  "full_chain.request_vc.within_window":
+  "(((((input.requestVC.claims.nbf <= input.now)) && ((input.now < input.requestVC.claims.exp)))))",
+  "full_chain.request_vc.type_matches":
+  "((input.requestVC.claims.vc.credentialSubject.requests.type == input.tool))",
+  "full_chain.request_vc.signed_by_did_key":
+  "((verify_eddsa(input.requestVC.jws, key_from_did_key(input.requestVC.claims.iss))))",
+  "full_chain.request_vc.merchant_matches":
+  "((input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant))",
+  "full_chain.request_vc.amount_cents_matches":
+  "((input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents))",
+  "full_chain.request_vc.amount_cents_at_most":
+  "((input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 20000))",
+  "full_chain.request_vc.amount_cents_above":
+  "((1000 < input.requestVC.claims.vc.credentialSubject.requests.amountCents))",
+  "full_chain.authorization_vc.within_window":
+  "(has(input.authorizationVC) && ((((input.authorizationVC.claims.nbf <= input.now)) && ((input.now < input.authorizationVC.claims.exp)))))",
+  "full_chain.authorization_vc.signed_by_did_key":
+  "(has(input.authorizationVC) && (verify_eddsa(input.authorizationVC.jws, key_from_did_key(input.authorizationVC.claims.iss))))",
+  "full_chain.authorization_vc.hash_binds":
+  "(has(input.authorizationVC) && (input.authorizationVC.claims.vc.credentialSubject.request_hash == \"sha256:\" + sha256(input.requestVC.jws)))",
+  "full_chain.authorization_vc.authorizes_request_matches":
+  "(has(input.authorizationVC) && (input.authorizationVC.claims.vc.credentialSubject.authorizes_request == input.requestVC.claims.jti))",
+  "full_chain.approver_membership.within_window":
+  "(has(input.approverMembership) && ((((input.approverMembership.claims.nbf <= input.now)) && ((input.now < input.approverMembership.claims.exp)))))",
+  "full_chain.approver_membership.sub_matches":
+  "(has(input.approverMembership) && has(input.authorizationVC) && (input.approverMembership.claims.sub == input.authorizationVC.claims.iss))",
+  "full_chain.approver_membership.signed_by_key":
+  "(has(input.approverMembership) && (verify_eddsa(input.approverMembership.jws, input.approverMembership.adminKey)))",
+  "full_chain.approver_membership.role_matches":
+  "(has(input.approverMembership) && (input.approverMembership.claims.vc.credentialSubject.role == \"parent\"))",
+  "full_chain.approver_membership.issued_by_trusted_admin":
+  "(has(input.approverMembership) && (((input.trustedAdminDids.exists(d, (((input.approverMembership.claims.iss == d))))))))"}}
