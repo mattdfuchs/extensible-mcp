@@ -77,7 +77,7 @@ The policy needs to be evaluated at call time against the actual request, not fr
 - **`client_manager.py`** — Manages stdio/HTTP connections to downstream servers, tool indexing, call proxying. Tools namespaced as `{server}__{tool}`.
 - **`vector_store.py`** — In-memory vector index using FastEmbed (ONNX runtime). Cosine similarity via normalized dot product.
 - **`filters.py`** — Pluggable pipelines for all four paths: search (`ToolFilter`), call (`CallFilter`), response (`ResponseFilter`), and server load (`ServerLoadFilter`). `AccessControlFilter` implements both search and call.
-- **`config.py`** — JSON config in Claude Desktop's `mcpServers` format plus `filters` section.
+- **`config.py`** — JSON config in Claude Desktop's `mcpServers` format plus `filters` section, including `policy_bundles`: a bundle declared per server by path, attached by `declared_bundles.py` as a server-scoped call filter plus the search-side augmenter, with no Python written; a plan needing a `wallet` lookup is refused at startup and pointed at the embedding API.
 - **`types.py`** — the shared dataclasses: `ServerConfig`, `ToolRecord`, `LocalTool`, `SearchResult`, and the per-pipeline request/result pairs (`CallRequest`/`CallFilterResult`, `CallResponse`/`ResponseFilterResult`, `ServerLoadRequest`/`ServerLoadResult`).
 
 Policy-bundle enforcement:

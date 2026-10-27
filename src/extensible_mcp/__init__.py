@@ -15,6 +15,12 @@ from .credentials import (
     ProxyItself,
     build_provider,
 )
+from .declared_bundles import (
+    DeclaredBundles,
+    ServerScopedFilter,
+    build_declared_bundle_filters,
+    credential_jti,
+)
 from .didweb import (
     DidResolutionError,
     DidWebResolver,
@@ -78,6 +84,7 @@ __all__ = [
     "CredentialConfig",
     "CredentialError",
     "CredentialProvider",
+    "DeclaredBundles",
     "DerivePlanError",
     "DeriveResolver",
     "DidResolutionError",
@@ -100,6 +107,7 @@ __all__ = [
     "ResponseFilter",
     "ResponseFilterResult",
     "SearchResult",
+    "ServerScopedFilter",
     "SelectionResult",
     "ServerLoadFilter",
     "ServerLoadRequest",
@@ -113,6 +121,8 @@ __all__ = [
     "WalletLookup",
     "WasmPolicyFilter",
     "build_provider",
+    "build_declared_bundle_filters",
+    "credential_jti",
     "default_builtins",
     "default_primitives",
     "did_web_to_url",

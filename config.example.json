@@ -50,12 +50,28 @@
       }
     }
   },
+  "//policy_bundles": [
+    "A 'policy_bundles' entry attaches a policy bundle (Rego, CEL or Cedar)",
+    "to one server's tools, by server name. 'path' is relative to this file;",
+    "'config' is the object the bundle's fetch plan reads its config facts",
+    "from; 'engine' forces one where a directory carries several artifacts;",
+    "'single_use' names the credential fields to spend per call. A plan with",
+    "a 'wallet' source cannot be attached here: that lookup is code, and the",
+    "proxy refuses to start rather than run with it missing."
+  ],
   "filters": {
     "similarity_threshold": 0.3,
     "access_control": {
       "deny": ["github__delete_repo"],
       "deny_patterns": ["*__drop_*", "*__delete_*"],
       "allow_servers": ["filesystem", "github", "payments"]
+    },
+    "policy_bundles": {
+      "payments": {
+        "path": "policies/spend",
+        "config": {"requesterJwk": "<the requester's public JWK, as a JSON string>"},
+        "single_use": ["requestVC"]
+      }
     }
   }
 }
