@@ -665,7 +665,7 @@ def validate_derive_plan(
     references. The ``primitives`` block is a declaration of the plan's
     vocabulary, not a request for the derive registry -- a bundle whose policy
     calls ``verify_webauthn`` as a host built-in declares it while deriving
-    nothing, and the two engines share one ``fetchplan.json``, so the block can
+    nothing, and the Rego and CEL twins share one ``fetchplan.json``, so the block can
     only carry the union of what the policy reaches. Requiring every declared
     name of the *derive* registry refused such a bundle from a deployment that
     had configured the engine correctly. The engine asks the other question and
