@@ -218,10 +218,12 @@ async def test_the_bundle_governs_the_server_from_config_alone(tmp_path, key, en
             "call_tool",
             {"tool_name": "payments__send", "arguments": _call(500, key, with_credential=False)},
         )
-        # A required credential the call did not carry: the plan cannot be
-        # assembled, and the generic filter fails closed as a fault, with the
-        # detail (which field) in the proxy log rather than in the reason.
-        assert bare.content[0].text.startswith("Error: Policy input could not be assembled")
+        # A required credential the call did not carry is a denial that names
+        # it -- the first message a hand author's model will ever see from a
+        # config-attached bundle -- not an assembly fault.
+        assert bare.content[0].text.startswith("Error: Tool call denied by policy")
+        assert "provide `requestVC`" in bare.content[0].text
+        assert "could not be assembled" not in bare.content[0].text
 
 
 async def test_single_use_spends_the_credential_on_the_call_it_authorized(tmp_path, key):

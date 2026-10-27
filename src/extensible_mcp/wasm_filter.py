@@ -120,6 +120,33 @@ def _rendered_denial(bundle: PolicyBundle, assembled: dict[str, Any]) -> str | N
     return render_denial(bundle.guidance, ids, absent_fields=absent)
 
 
+def _absent_required_credentials(bundle: PolicyBundle, envelope: dict[str, Any]) -> list[str]:
+    """The bundle's credential fields that every path requires and the call
+    did not carry. A conditional credential (``always: false``) is not here:
+    the executor omits it and the rules decide without it."""
+    return [
+        f
+        for f in bundle.credential_fields()
+        if bundle.is_always_required(f) and f not in envelope
+    ]
+
+
+def _absent_credentials_denial(bundle: PolicyBundle, absent: list[str]) -> str:
+    """A call without a credential every path requires is a *denial* -- the
+    caller omitted something the tool advertises -- not an engine fault.
+    Before this check the plan's ``call`` resolver raised on the missing
+    field and the filter reported "Policy input could not be assembled",
+    which reads as a crash and names nothing the caller can act on. Rendered
+    through the guidance it is the same sentence the renderer already uses
+    for an absent conditional credential: ``provide `requestVC` ...``.
+    Falls back to a plain sentence for a bundle with no guidance at all."""
+    rendered = render_denial(bundle.guidance, [], absent_fields=absent)
+    if rendered is not None:
+        return rendered
+    names = ", ".join(f"`{f}`" for f in absent)
+    return f"Tool call denied by policy: provide {names}, which was not supplied."
+
+
 def _unqualified_action(tool_name: str) -> str:
     """Default ``input.tool``: the tool name without its ``{server}__`` prefix.
 
@@ -191,6 +218,10 @@ class WasmPolicyFilter:
             tool_name=request.tool_name,
             arguments=native_args,
         )
+
+        absent = _absent_required_credentials(self.bundle, envelope)
+        if absent:
+            return deny(_absent_credentials_denial(self.bundle, absent))
 
         try:
             assembled = await self._executor.assemble(self.bundle.fetchplan, ctx)
@@ -327,6 +358,10 @@ class VCPolicyFilter:
             now=self._clock(),
             wallet=wallet_lookup,
         )
+
+        absent = _absent_required_credentials(self.bundle, adapted.envelope)
+        if absent:
+            return deny(_absent_credentials_denial(self.bundle, absent))
 
         try:
             assembled = await self._executor.assemble(self.bundle.fetchplan, ctx)
