@@ -185,6 +185,29 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
 }
 ```
 
+**Attaching a policy bundle from the config file.** A [policy bundle](#policy-bundles) — rules over signed evidence, in Rego, CEL or Cedar — is attached to a server by name under `filters.policy_bundles`, with the deployment facts its fetch plan reads from `config`:
+
+```json
+{
+  "mcpServers": {
+    "payments": {"url": "https://payments.example.com/mcp"}
+  },
+  "filters": {
+    "policy_bundles": {
+      "payments": {
+        "path": "policies/spend",
+        "config": {"requesterJwk": "{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"...\"}"},
+        "single_use": ["requestVC"]
+      }
+    }
+  }
+}
+```
+
+`path` is relative to the config file. `config` is the object the plan's `config` entries read from, verbatim. `engine` forces `rego`, `cel` or `cedar` where a directory carries more than one artifact; otherwise the engine is inferred from the artifact present. `single_use` names the credential fields to spend per call (see [Evidence is single-use](#policy-bundles)). The bundle's call filter runs on that server's tools and no other, and the governed tools are surfaced with their credential parameters added, so the LLM is told what evidence to supply. A bundle that cannot be loaded, or one declared for a server that is not in `mcpServers`, stops the proxy from starting with the loader's own message; there is no running proxy with a gate missing.
+
+Two things this form cannot do, and says so at startup. A fetch plan with a `wallet` source needs a lookup — code that fetches a credential from somewhere the deployment knows about — so such a bundle is attached from an entry point instead, as shown under Policy bundles. And a bundle that verifies passkeys needs `default_builtins(webauthn_rp_id=...)`, a deployment fact only an embedder can supply. Selecting a bundle per server from provenance facts rather than by name is `bundle_router`, also an embedder feature.
+
 ### Authentication
 
 Many MCP servers require credentials. How the proxy supplies one depends on how the downstream server is reached, and in every case the credential stays out of the LLM's context: the model never sees a token, a client secret or a key, and the proxy's system instructions tell it never to ask for one in the conversation.
@@ -314,14 +337,14 @@ Without `load_control`, an LLM could be prompt-injected into connecting to a mal
 
 ### Policy bundles
 
-`rego_policy` above decides on the raw arguments alone. When the decision has to rest on signed evidence instead — a Verifiable Credential, a passkey assertion — use a **policy bundle**: a directory of four files, three of which are engine-independent.
+`rego_policy` above decides on the raw arguments alone. When the decision has to rest on signed evidence instead — a Verifiable Credential, a passkey assertion — use a **policy bundle**: a directory of four files, three of which are engine-independent. A bundle is attached either by name in the config file (`filters.policy_bundles`, see [Configuration](#configuration)) or in code by an embedder; the rest of this section is the same either way.
 
 | File | What it is |
 |---|---|
 | `manifest.json` | JSON Schema for the policy's whole input object. Names the input contract, declares which fields are required, and closes it with `additionalProperties: false`. |
 | `fetchplan.json` | Where each input field comes from. One entry per field, with `source.kind` of `call` (from the tool call), `config` (from deployment config), `clock` (current time), `wallet` (fetched by a lookup you supply, parameterized by other input fields), or `derive` (computed from earlier fields by one primitive, for a policy language that cannot evaluate the primitive itself). A `derive` entry that verifies a signature may only be *folded* over candidate keys and *project* a witness — never applied bare to yield a verdict, because a verdict no longer carries the relation the rule has to keep. |
 | `guidance.json` | A sentence for each condition the policy can fail, so a denial renders as an explanation — for a human, or for the LLM, telling it what evidence is still missing — instead of a bare `false`. Optional: a hand-written bundle may keep its sentences in the policy file instead (a CEL check written as `{"expr", "sentence"}`, a Cedar `@sentence` annotation, a Rego `deny_reason` rule), and the loader synthesises this layer from them. |
-| `policy.wasm`, `checks.cel.json` *or* `policy.cedar` + `expected_ids.json` | The rules themselves, in whichever engine you prefer. A Cedar bundle also lists the policy ids its loader must find, because a forbid-only policy set that half-loads allows everything. |
+| `policy.wasm`, `checks.cel.json` *or* `policy.cedar` | The rules themselves, in whichever engine you prefer. A Cedar bundle in the forbid-only shape also ships `expected_ids.json`, the policy ids its loader must find, because a forbid-only policy set that half-loads allows everything; a permit-decides bundle may omit it. |
 
 All three engines are optional extras, because each pulls dependencies not every deployment wants: `pip install "extensible-mcp[wasm]"` for the OPA/WASM one, `[cel]` for CEL, `[cedar]` for Cedar. They are imported lazily, so `PolicyBundle.load` is where a base install discovers it is missing one.
 
@@ -336,15 +359,15 @@ opa build -t wasm -e mypolicy/allow -e mypolicy/failed_checks \
 
 A CEL policy skips the compile step: `checks.cel.json` carries the expressions directly.
 
-A Cedar policy is interpreted too, but Cedar has no host-function extension point — by design, since one would destroy the decidability that makes Cedar analysable — so a signature check cannot run *inside* the policy. Each cryptographic leaf instead becomes a `derive` entry in the fetch plan, a witness set the rule tests a relation over, which is why a Cedar bundle's manifest and fetch plan carry fields the Rego and CEL twins never need. A check id reaches a denial only as a `forbid` annotated `@id` with the guidance's check id, plus one `@assembly` forbid per tier for its own incompleteness, and the loader accepts two policy-set shapes, declared in `expected_ids.json` and never inferred. In the **forbid-only** shape, which the generated bundles use, an unconditional base `permit` carries nothing and every leaf forbid restates the negation of every other tier, so an empty set allows everything and a bundle that carries fewer forbids than the file lists is refused rather than loaded as a permit. In the **permit-decides** shape, which a hand author should use, one `permit` per tier annotated `@tier` carries that tier's conjunction once and each forbid carries only its own condition; the proxy evaluates twice, a decision pass with no `probe` key in which the forbids are inert and an empty set denies, and on a denial a probe pass with `probe: true` in which the permits are inert and the fired forbids are the failed checks. The guards are checked on every call, since cedarpy exposes a policy's effect and annotations but not its condition, and `probe` is reserved. The proxy's half of the hoist bargain is the derivation contract: the fold collects exactly the candidates the primitive verified, because a witness set that is too large makes a forbid fail to fire. A Cedar bundle is therefore *certified modulo its derivation contract*, which is a weaker claim than the other two engines can make, and the bundle's own `contract.json` says so.
+A Cedar policy is interpreted too, but Cedar has no host-function extension point — by design, since one would destroy the decidability that makes Cedar analysable — so a signature check cannot run *inside* the policy. Each cryptographic leaf instead becomes a `derive` entry in the fetch plan, a witness set the rule tests a relation over, which is why a Cedar bundle's manifest and fetch plan carry fields the Rego and CEL twins never need. A check id reaches a denial only as a `forbid` annotated `@id` with the guidance's check id, plus one `@assembly` forbid per tier for its own incompleteness, and the loader accepts two policy-set shapes. In the **forbid-only** shape, which the generated bundles use, an unconditional base `permit` carries nothing and every leaf forbid restates the negation of every other tier, so an empty set allows everything; `expected_ids.json` is required, and a bundle that carries fewer forbids than it lists is refused rather than loaded as a permit. In the **permit-decides** shape, which a hand author should use, one `permit` per tier annotated `@tier` carries that tier's conjunction once and each forbid carries only its own condition; the proxy evaluates twice, a decision pass with no `probe` key in which the forbids are inert and an empty set denies, and on a denial a probe pass with `probe: true` in which the permits are inert and the fired forbids are the failed checks. The guards are checked on every call, since cedarpy exposes a policy's effect and annotations but not its condition, and `probe` is reserved. That shape may omit `expected_ids.json`: the `@tier` permits then declare it and are its tiers, in order of appearance, and the `@id` forbids are its ids, each naming its tier with `@tier` when there is more than one. A file that is present always wins. The proxy's half of the hoist bargain is the derivation contract: the fold collects exactly the candidates the primitive verified, because a witness set that is too large makes a forbid fail to fire. A Cedar bundle is therefore *certified modulo its derivation contract*, which is a weaker claim than the other two engines can make, and the bundle's own `contract.json` says so.
 
 **What each engine accepts.** The bundle format, not the language, sets the contract, and the three engines are not equally open. Stated plainly, so the claim is no wider than the loader:
 
 | Engine | What a bundle may contain | What the proxy imposes |
 |---|---|---|
-| Rego | Any program `opa build -t wasm` compiles, exposing `<package>/allow`; `failed_checks` and `deny_reason` optional | Host builtins beyond OPA's own must be ones the proxy registers; an unregistered one fails at load |
+| Rego | Any program `opa build -t wasm` compiles, exposing `<package>/allow`; `failed_checks` and `deny_reason` optional | Host builtins beyond OPA's own must be ones the proxy registers — JWS verification for EdDSA, ES256 and RS256 (`io.jwt.verify_eddsa` / `verify_es256` / `verify_rs256`), raw Ed25519, WebAuthn, SHA-256, `did:key` decoding; an unregistered one fails at load |
 | CEL | Any boolean CEL expression, one per check | The file format is this project's: a package, tiers, and a map from check id to expression; allow is the disjunction over tiers of each tier's conjunction. One tier with one check holds any policy CEL can express. Functions limited to the registered set |
-| Cedar | Conditions over `context`, in one of two declared shapes | One `@id` forbid per check, one `@assembly` forbid per tier, an `expected_ids.json` that must match exactly, no templates; either a base permit with forbid-only leaves, or one `@tier` permit per tier with probe-guarded forbids; a fixed synthetic principal, action and resource, and an empty entity store. A Cedar policy written over real principals and entity hierarchies cannot be loaded today |
+| Cedar | Conditions over `context`, in one of two shapes | One `@id` forbid per check, no templates; either a base permit with forbid-only leaves and an `expected_ids.json` that must match exactly, or one `@tier` permit per tier with probe-guarded forbids, where the file is optional and the permits declare the structure; a fixed synthetic principal, action and resource, and an empty entity store. A Cedar policy written over real principals and entity hierarchies cannot be loaded today |
 
 So Rego support is support for Rego; CEL support is CEL expressions in a wrapper of this project's design; and Cedar support, as of this release, is Cedar as the condition language of a bundle, in a shape a hand author can read and write. What remains for a later release is mapping Cedar's principal, action and resource onto the proxy's own, once it has a verified principal.
 
@@ -352,7 +375,7 @@ Any artifact can be hand-authored — several bundles under [`tests/fixtures/`](
 
 One consequence worth knowing when reading a bundle: the check identifiers threading a denial back to the condition that produced it are opaque join keys between the rules and `guidance.json`, and nothing in the proxy parses one. They are named, but they are still an artifact of generation. Render denials through `guidance.json`; don't build against the identifiers themselves.
 
-Attach a loaded bundle as a call filter:
+The config-file form covers a plan whose sources are `call`, `config`, `clock` and `derive`. An embedder attaches a bundle in code instead when the plan has a `wallet` source, when a non-default builtin registry is needed, or when the bundle should be selected per server rather than declared — loading it and wiring the filter by hand:
 
 ```python
 from extensible_mcp import PolicyBundle, WasmPolicyFilter
@@ -485,9 +508,9 @@ when {
 };
 ```
 
-`@sentence` is the text a denial renders for that forbid when the bundle ships no guidance; the evaluator never reads it. The `probe` guards are the mechanism. The proxy evaluates the file twice. In the **decision pass** the context has no `probe` key, so every forbid is inert, the permit decides, and an input that matches no permit is denied: an empty policy set denies. On a denial the proxy runs a **probe pass** with `probe: true`, in which the permit is inert and the forbids that fire are the failed checks. One `@assembly("solo")` forbid, carrying no `@id` and probe-guarded like the rest, fires when the tier's inputs are incomplete, so the renderer can say which credential was absent. `expected_ids.json` declares the shape and lists the five ids and the one tier; the loader refuses a policy set that does not carry exactly those forbids and exactly one `@tier` permit per tier, and since cedarpy exposes a policy's effect and annotations but not its condition, the guards are checked on every call: a forbid that fires in the decision pass, or a permit that matches in the probe pass, is a fault. `probe` is reserved, as an input key and as a fetch-plan field.
+`@sentence` is the text a denial renders for that forbid when the bundle ships no guidance; the evaluator never reads it. The `probe` guards are the mechanism. The proxy evaluates the file twice. In the **decision pass** the context has no `probe` key, so every forbid is inert, the permit decides, and an input that matches no permit is denied: an empty policy set denies. On a denial the proxy runs a **probe pass** with `probe: true`, in which the permit is inert and the forbids that fire are the failed checks. One `@assembly("solo")` forbid, carrying no `@id` and probe-guarded like the rest, fires when the tier's inputs are incomplete, so the renderer can say which credential was absent. There is no `expected_ids.json`: in this shape the loader reads the structure off the policy, the `@tier` permit declares the shape and is the one tier, and the five `@id` forbids are the ids. A policy with several tiers lists its permits in the order its paths should render and gives each `@id` forbid a `@tier`, so the renderer can place its sentence; a forbid it cannot place is refused at load. The file is still accepted, and when present it wins and is checked exactly. Since cedarpy exposes a policy's effect and annotations but not its condition, the guards are checked on every call: a forbid that fires in the decision pass, or a permit that matches in the probe pass, is a fault. `probe` is reserved, as an input key and as a fetch-plan field.
 
-The other shape the loader accepts, **forbid-only**, is what the generated bundles use: an unconditional base `permit` and leaf forbids that each restate the negation of every other tier, so that a solo leaf cannot fire on a call the full chain allows. Cedar has no way to factor that repetition, which is why a hand author should write the shape above; [`tests/fixtures/cedar_family_spend_compact/`](tests/fixtures/cedar_family_spend_compact/) is the adopted two-tier policy re-shaped that way, a quarter of the bytes, and decides identically on every differential scenario.
+The other shape the loader accepts, **forbid-only**, is what the generated bundles use: an unconditional base `permit` and leaf forbids that each restate the negation of every other tier, so that a solo leaf cannot fire on a call the full chain allows. That shape requires `expected_ids.json`, because an incomplete forbid-only set is a permit and only a declaration can say what complete means. Cedar has no way to factor that repetition, which is why a hand author should write the shape above; [`tests/fixtures/cedar_family_spend_compact/`](tests/fixtures/cedar_family_spend_compact/) is the adopted two-tier policy re-shaped that way, a quarter of the bytes, and decides identically on every differential scenario.
 
 **What a denial looks like.** A $50 call carrying a valid $50 request fails one condition. All three engines report the same id, and it renders through the guidance as:
 

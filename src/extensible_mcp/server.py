@@ -21,6 +21,7 @@ import mcp.types as mcp_types
 from . import admin
 from .client_manager import ClientManager, TokenExpiredError
 from .config import Config, find_config_path, load_config
+from .declared_bundles import build_declared_bundle_filters
 from .filters import (
     AccessControlFilter,
     CallFilter,
@@ -425,7 +426,19 @@ def create_server(
     unfiltered way to register a tool directly on the returned server that
     bypasses this — that asymmetry between "local" and "downstream" tools is
     exactly what ``local_tools`` exists to remove.
+
+    ``config.filters.policy_bundles`` — bundles declared in the config file
+    rather than wired in code — are loaded here, before the lifespan exists,
+    so a bundle that cannot be loaded raises from this call with the
+    engine's own message. Their call filters run ahead of ``extra_call_filters``
+    and their augmenter ahead of ``extra_search_filters``: what the config
+    declares is enforced before anything an embedder appends.
     """
+    declared_call_filters, declared_search_filters = build_declared_bundle_filters(
+        config
+    )
+    extra_call_filters = [*declared_call_filters, *extra_call_filters]
+    extra_search_filters = [*declared_search_filters, *extra_search_filters]
 
     @lifespan
     async def configured_lifespan(server: FastMCP):

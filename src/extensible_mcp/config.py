@@ -34,11 +34,30 @@ class LoadControlConfig:
 
 
 @dataclass
+class PolicyBundleConfig:
+    """A policy bundle declared in ``config.json`` for one server.
+
+    The direct, declared form of what ``bundle_router`` decides at admission:
+    this server's tools are governed by the bundle at ``path``, with
+    ``config`` supplying the facts the fetch plan's ``config`` entries read.
+    ``engine`` forces an engine where the directory carries more than one
+    artifact; ``single_use`` names the credential fields to spend per call.
+    """
+
+    server: str
+    path: Path
+    config: dict[str, Any] = field(default_factory=dict)
+    engine: str | None = None
+    single_use: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FiltersConfig:
     similarity_threshold: float = 0.3
     access_control: AccessControlConfig = field(default_factory=AccessControlConfig)
     rego_policy: str | None = None
     load_control: LoadControlConfig = field(default_factory=LoadControlConfig)
+    policy_bundles: dict[str, PolicyBundleConfig] = field(default_factory=dict)
 
 
 @dataclass
@@ -253,6 +272,77 @@ def _load_credentials(
     return credentials
 
 
+_POLICY_BUNDLE_KEYS = frozenset({"path", "config", "engine", "single_use"})
+_POLICY_BUNDLE_ENGINES = ("rego", "cel", "cedar")
+
+
+def _load_policy_bundles(
+    raw: Any, *, base_dir: Path, server_names: set[str]
+) -> dict[str, PolicyBundleConfig]:
+    """Parse ``filters.policy_bundles``, refusing anything ambiguous.
+
+    Keyed by server name so that a bundle governs a *server*, the same unit
+    ``bundle_router`` governs; a name that is not in ``mcpServers`` is a typo
+    that would otherwise leave a gate declared and never attached, which is
+    the quiet failure this loader exists to refuse. Unknown keys are refused
+    for the same reason: ``"singe_use"`` must not mean "no single use".
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "'filters.policy_bundles' must be an object mapping a server name "
+            "to its bundle"
+        )
+    bundles: dict[str, PolicyBundleConfig] = {}
+    for server, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"Policy bundle for '{server}' must be an object")
+        unknown = sorted(set(entry) - _POLICY_BUNDLE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Policy bundle for '{server}' has unexpected field(s) {unknown}; "
+                f"allowed: {sorted(_POLICY_BUNDLE_KEYS)}"
+            )
+        if server not in server_names:
+            raise ValueError(
+                f"Policy bundle for '{server}' names a server that is not in "
+                f"'mcpServers' (defined: {sorted(server_names)})"
+            )
+        path_raw = entry.get("path")
+        if not isinstance(path_raw, str) or not path_raw:
+            raise ValueError(f"Policy bundle for '{server}' must have a 'path' field")
+        bundle_path = Path(path_raw)
+        if not bundle_path.is_absolute():
+            bundle_path = base_dir / bundle_path
+        config = entry.get("config", {})
+        if not isinstance(config, dict):
+            raise ValueError(
+                f"Policy bundle for '{server}': 'config' must be an object of the "
+                "facts the fetch plan's config entries read"
+            )
+        engine = entry.get("engine")
+        if engine is not None and engine not in _POLICY_BUNDLE_ENGINES:
+            raise ValueError(
+                f"Policy bundle for '{server}': 'engine' must be one of "
+                f"{list(_POLICY_BUNDLE_ENGINES)}, got {engine!r}"
+            )
+        single_use = entry.get("single_use", [])
+        if not isinstance(single_use, list) or not all(
+            isinstance(f, str) and f for f in single_use
+        ):
+            raise ValueError(
+                f"Policy bundle for '{server}': 'single_use' must be a list of "
+                "credential field names"
+            )
+        bundles[server] = PolicyBundleConfig(
+            server=server,
+            path=bundle_path,
+            config=dict(config),
+            engine=engine,
+            single_use=list(single_use),
+        )
+    return bundles
+
+
 def _resolve_tokens_file(path: Path, dotenv: dict[str, str]) -> Optional[Path]:
     tokens_env = os.environ.get("EXTENSIBLE_MCP_TOKENS_FILE") or dotenv.get(
         "EXTENSIBLE_MCP_TOKENS_FILE"
@@ -336,11 +426,18 @@ def load_config(path: Path) -> Config:
             rego_path = path.parent / rego_path
         rego_policy = str(rego_path)
 
+    policy_bundles = _load_policy_bundles(
+        filters_raw.get("policy_bundles", {}),
+        base_dir=path.parent,
+        server_names={s.name for s in servers},
+    )
+
     filters = FiltersConfig(
         similarity_threshold=filters_raw.get("similarity_threshold", 0.3),
         access_control=access_control,
         rego_policy=rego_policy,
         load_control=load_control,
+        policy_bundles=policy_bundles,
     )
 
     if not servers:

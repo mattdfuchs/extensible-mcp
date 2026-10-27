@@ -4,8 +4,9 @@
 """Cedar: the third :class:`~extensible_mcp.policy_engine.PolicyEngine` over
 the same bundle format.
 
-A Cedar bundle carries ``policy.cedar`` and ``expected_ids.json`` beside the
-engine-independent ``manifest.json`` / ``fetchplan.json`` / ``guidance.json``.
+A Cedar bundle carries ``policy.cedar`` beside the engine-independent
+``manifest.json`` / ``fetchplan.json`` / ``guidance.json``, and
+``expected_ids.json`` where the shape needs one (see fact 2).
 Three facts about Cedar shape this module, and each one becomes a check the
 loader or the query path performs rather than a convention a reviewer has to
 remember:
@@ -33,8 +34,12 @@ remember:
    guidance has a sentence for, so a fired one is dropped from
    ``failed_checks`` and the renderer explains the absent credential from
    the guard metadata instead, as it already does for the other engines.
-   Two **shapes** satisfy that, and ``expected_ids.json`` declares which one
-   a bundle is in; the loader never infers it:
+   Two **shapes** satisfy that. ``expected_ids.json`` declares which one a
+   bundle is in and lists the ids and tiers the loader must find; the
+   forbid-only shape requires the file, and the permit-decides shape may
+   omit it, in which case the ``@tier`` permits are the declaration — a
+   file that is present always wins, and a declared value is never guessed
+   around:
 
    - ``forbid-only`` (the default, and what the external policy-authoring
      toolchain emits): one unconditional base permit, and every leaf forbid
@@ -55,7 +60,13 @@ remember:
      call: a decision pass that denies *with* reasons means a forbid lacks
      its guard, and a probe pass that allows means a permit lacks its; both
      are faults. ``probe`` is reserved for this and refused as an input key
-     and as a fetch-plan field.
+     and as a fetch-plan field. Without ``expected_ids.json`` the tiers are
+     the ``@tier`` permits in order of appearance, the ids are the ``@id``
+     forbids, and in a multi-tier file each ``@id`` forbid names its tier
+     with ``@tier`` so the renderer can place its sentence in a path; a
+     forbid it cannot place is refused at load. The file is optional here
+     because the decision no longer depends on the forbids: a missing one
+     costs an explanation, never a permit.
 
 3. **Cedar skips a policy whose condition raises.** In a forbid-only set a
    skipped forbid is a permit; in a permit-decides set a skipped permit is a
@@ -108,8 +119,10 @@ REQUEST_HEAD: dict[str, str] = {
 RESERVED_KEY_PREFIX = "__"
 
 #: The two policy-set shapes ``expected_ids.json`` may declare (see fact 2 in
-#: the module docstring). Absent means forbid-only, so every bundle written
-#: before the second shape existed loads exactly as it did.
+#: the module docstring). A file with no ``shape`` means forbid-only, so every
+#: bundle written before the second shape existed loads exactly as it did; no
+#: file at all means the ``@tier`` permits declare permit-decides, and a bare
+#: permit without the file is refused rather than read as forbid-only.
 SHAPE_FORBID_ONLY = "forbid-only"
 SHAPE_PERMIT_DECIDES = "permit-decides"
 SHAPES = frozenset({SHAPE_FORBID_ONLY, SHAPE_PERMIT_DECIDES})
@@ -124,8 +137,9 @@ class CedarPolicyError(ValueError):
     """A Cedar bundle this proxy refuses to load.
 
     Raised for a policy set that does not parse, that uses templates, that
-    does not carry exactly the forbids ``expected_ids.json`` says it must, or
-    whose permits do not fit the shape it declares — each of which is a
+    does not carry exactly the forbids ``expected_ids.json`` says it must,
+    that is forbid-only with no such file, or whose permits do not fit the
+    shape it declares or implies — each of which is a
     bundle that could allow a call the source policy denies, or report a
     denial it cannot explain, so none of them may govern one.
     """
@@ -161,19 +175,18 @@ class CedarPolicy:
             if expected_ids_path is not None
             else policy_path.with_name(EXPECTED_IDS_FILE)
         )
-        if not expected_path.exists():
-            raise CedarPolicyError(
-                f"{policy_path} has no {EXPECTED_IDS_FILE} beside it. A policy set "
-                "cannot be checked complete without one, and an incomplete "
-                "forbid-only set allows everything."
-            )
         self._package = package or policy_path.parent.name
-        self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
-            _read_expected(expected_path)
-        )
-
         text = policy_path.read_text()
         policies = _parse_policies(cedarpy, text, policy_path)
+        self._declared = expected_path.exists()
+        if self._declared:
+            self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
+                _read_expected(expected_path)
+            )
+        else:
+            self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
+                _infer_structure(policies, policy_path)
+            )
         self._check_complete(policies)
         self._sentences = _inline_sentences(policies)
         # Parsed once here; `is_authorized` accepts the PolicySet directly, so a
@@ -184,19 +197,30 @@ class CedarPolicy:
 
     @property
     def expected_ids(self) -> frozenset[str]:
-        """The check ids ``expected_ids.json`` lists, each found as an ``@id`` forbid."""
+        """The check ids the loader found as ``@id`` forbids: the ones
+        ``expected_ids.json`` lists, or, without the file, the ones the policy
+        carries."""
         return self._expected_ids
 
     @property
     def assembly_tiers(self) -> frozenset[str]:
-        """The tiers ``expected_ids.json`` lists, each found as an ``@assembly`` forbid."""
+        """The tiers: ``expected_ids.json``'s, each found as an ``@assembly``
+        forbid, or, without the file, the ``@tier`` permits'."""
         return self._expected_tiers
 
     @property
     def shape(self) -> str:
-        """Which policy-set shape ``expected_ids.json`` declared and the loader
-        verified: :data:`SHAPE_FORBID_ONLY` or :data:`SHAPE_PERMIT_DECIDES`."""
+        """Which policy-set shape the loader verified: :data:`SHAPE_FORBID_ONLY`
+        or :data:`SHAPE_PERMIT_DECIDES`, declared by ``expected_ids.json`` or,
+        without it, by the ``@tier`` permits."""
         return self._shape
+
+    @property
+    def expected_ids_declared(self) -> bool:
+        """Whether ``expected_ids.json`` was present, so the ids and tiers
+        above were checked against a declaration rather than read off the
+        policy."""
+        return self._declared
 
     # -- sentences written beside the rules ------------------------------- #
 
@@ -209,7 +233,8 @@ class CedarPolicy:
     def inline_guidance(self) -> dict[str, Any]:
         """The guidance this file alone supports (see
         :func:`~extensible_mcp.policy_engine.inline_guidance`). The tier
-        structure is ``expected_ids.json``'s, in its order, so a tier is
+        structure is ``expected_ids.json``'s, in its order, or without the
+        file the ``@tier`` permits' in order of appearance, so a tier is
         numbered by position as the generated guidance numbers it; each check
         renders its ``@sentence``, or ``required: <id>`` when it has none —
         Cedar's condition is not available as text, so the id, which a hand
@@ -412,11 +437,20 @@ class CedarPolicy:
             )
         missing = sorted(self._expected_tiers - set(found_tiers))
         unexpected = sorted(set(found_tiers) - self._expected_tiers)
+        if not self._declared:
+            # Read off the policy: an @assembly forbid is optional (its reason
+            # is dropped either way, and the renderer names an absent
+            # credential from the guards), but one for a tier no permit
+            # decides is a sentence about a path that does not exist.
+            missing = []
         if missing or unexpected:
             raise CedarPolicyError(
                 f"policy set does not carry one @assembly forbid per tier in "
                 f"{EXPECTED_IDS_FILE}: missing {missing}, unexpected {unexpected}. "
                 "Without it a tier whose inputs are all absent is allowed."
+                if self._declared else
+                f"an @assembly forbid names a tier no @tier permit decides: "
+                f"{unexpected}; the tiers are {sorted(self._expected_tiers)}"
             )
 
 
@@ -428,7 +462,7 @@ def _read_expected(
     if shape not in SHAPES:
         raise CedarPolicyError(
             f"{path}: 'shape' is {shape!r}; the loader knows {sorted(SHAPES)} and "
-            "never infers one"
+            "does not guess around a declared value"
         )
     ids = spec.get("ids")
     tiers = spec.get("tiers")
@@ -454,6 +488,75 @@ def _read_expected(
             f"{path}: the per-tier ids and the flat 'ids' list disagree"
         )
     return frozenset(ids), frozenset(names), shape, ordered
+
+
+def _infer_structure(
+    policies: list[tuple[str, dict[str, Any]]], path: Path
+) -> tuple[frozenset[str], frozenset[str], str, list[tuple[str, list[str]]]]:
+    """What ``expected_ids.json`` would have said, read off the policy.
+
+    Only the permit-decides shape can be read this way: its decision is the
+    ``@tier`` permits, so the tiers are those permits in order of appearance
+    and the ids are whatever ``@id`` forbids the file carries. A set whose
+    permits carry no ``@tier`` is forbid-only, and forbid-only *needs* the
+    file — an incomplete forbid-only set is a permit, and nothing but a
+    declaration can say what complete means — so it is refused here rather
+    than loaded on trust. A set with both kinds of permit is neither shape.
+    """
+    permits = [annotations for effect, annotations in policies if effect == "permit"]
+    if not permits:
+        raise CedarPolicyError("no permit: a policy set with no permit denies every call")
+    tiered = [a for a in permits if a.get("tier") is not None]
+    if not tiered:
+        raise CedarPolicyError(
+            f"{path} has no {EXPECTED_IDS_FILE} beside it and its permit carries no "
+            f"@tier, so it is in the {SHAPE_FORBID_ONLY!r} shape — which needs the "
+            "file: an incomplete forbid-only set is a permit, and only a "
+            "declaration can say what complete means"
+        )
+    if len(tiered) != len(permits):
+        raise CedarPolicyError(
+            f"{path} has no {EXPECTED_IDS_FILE} beside it and mixes @tier permits "
+            "with a bare one, so it is in neither shape"
+        )
+    tiers: list[str] = []
+    for a in tiered:
+        if a["tier"] in tiers:
+            raise CedarPolicyError(
+                f"@tier annotated on more than one permit: {[a['tier']]}"
+            )
+        tiers.append(a["tier"])
+    per_tier: dict[str, list[str]] = {t: [] for t in tiers}
+    for effect, annotations in policies:
+        check_id = annotations.get("id")
+        if effect != "forbid" or check_id is None:
+            continue
+        tier = annotations.get("tier")
+        if tier is None:
+            if len(tiers) != 1:
+                raise CedarPolicyError(
+                    f"forbid {check_id!r} carries no @tier and the file has no "
+                    f"{EXPECTED_IDS_FILE}: with tiers {tiers}, the renderer cannot "
+                    "place its sentence in a path"
+                )
+            tier = tiers[0]
+        if tier not in per_tier:
+            raise CedarPolicyError(
+                f"forbid {check_id!r} carries @tier({tier!r}), which no @tier permit "
+                f"decides; the tiers are {tiers}"
+            )
+        per_tier[tier].append(check_id)
+    ids = [cid for t in tiers for cid in per_tier[t]]
+    if not ids:
+        raise CedarPolicyError(
+            f"{path} carries no @id forbid, so no denial it makes can be explained"
+        )
+    return (
+        frozenset(ids),
+        frozenset(tiers),
+        SHAPE_PERMIT_DECIDES,
+        [(t, per_tier[t]) for t in tiers],
+    )
 
 
 def refuse_reserved_plan_fields(fetchplan: dict[str, Any], path: Path | str) -> None:

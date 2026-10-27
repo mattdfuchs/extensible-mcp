@@ -343,13 +343,24 @@ def test_cedar_twin_differs_from_the_rego_bundle_only_where_cedar_forces_it(rego
         "a Cedar plan declares exactly what it derives"
     )
 
-    # expected_ids.json names the guidance's ids, tier by tier, and no others.
-    expected = json.loads((c / "expected_ids.json").read_text())
+    # expected_ids.json, where the shape needs one, names the guidance's ids,
+    # tier by tier, and no others. A permit-decides twin may ship without it;
+    # the loader then reads the same structure off the @tier permits, and it
+    # must still be the guidance's.
     g = _guidance(cedar)
-    assert set(expected["ids"]) == set(_ids(g))
-    assert [set(t["ids"]) for t in expected["tiers"]] == [
-        {ch["id"] for ch in t["checks"]} for t in g["tiers"]
-    ]
+    if (c / "expected_ids.json").exists():
+        expected = json.loads((c / "expected_ids.json").read_text())
+        assert set(expected["ids"]) == set(_ids(g))
+        assert [set(t["ids"]) for t in expected["tiers"]] == [
+            {ch["id"] for ch in t["checks"]} for t in g["tiers"]
+        ]
+    else:
+        policy = PolicyBundle.load(c).policy
+        assert policy.shape == "permit-decides", "only that shape may omit the file"
+        assert policy.expected_ids == set(_ids(g))
+        assert [{ch["id"] for ch in t["checks"]} for t in policy.inline_guidance()["tiers"]] == [
+            {ch["id"] for ch in t["checks"]} for t in g["tiers"]
+        ]
 
 
 def test_every_bundle_on_disk_is_accounted_for():

@@ -53,6 +53,8 @@ from .wasm_policy import (
     _sha256,
     _verify_ed25519_raw,
     _verify_eddsa,
+    _verify_es256,
+    _verify_rs256,
     make_verify_webauthn,
 )
 
@@ -159,7 +161,7 @@ DERIVE_KIND = "derive"
 # -- and then applied it bare would get a bare boolean back from a load that
 # passed its own check.
 KEY_CONSUMING_PRIMITIVES = frozenset(
-    {"verify_eddsa", "verify_ed25519_raw", "verify_webauthn"}
+    {"verify_eddsa", "verify_es256", "verify_rs256", "verify_ed25519_raw", "verify_webauthn"}
 )
 
 # Primitives that *produce* a key rather than consuming one. ``key_from_did_key``
@@ -312,14 +314,15 @@ def default_primitives(
 ) -> dict[str, Callable[..., Any]]:
     """The primitive vocabulary a ``derive`` entry may name.
 
-    **Five of the nine are the same implementations the two policy engines
-    run as host built-ins** (:func:`~extensible_mcp.wasm_policy.default_builtins`,
+    **Seven of the eleven are the same implementations the Rego and CEL
+    engines run as host built-ins** (:func:`~extensible_mcp.wasm_policy.default_builtins`,
     :func:`~extensible_mcp.cel_policy.default_cel_functions`) under the
-    toolchain's atom names -- ``sha256``, ``verify_eddsa``,
-    ``verify_ed25519_raw``, ``key_from_did_key``, ``base64url_encode_no_pad``,
-    plus ``verify_webauthn`` when configured: one Ed25519 path, one WebAuthn
-    path, one ``did:key`` decoder, whether the check runs inside the policy or
-    ahead of it. For those the contract carries over by construction:
+    toolchain's atom names -- ``sha256``, ``verify_eddsa``, ``verify_es256``,
+    ``verify_rs256``, ``verify_ed25519_raw``, ``key_from_did_key``,
+    ``base64url_encode_no_pad``, plus ``verify_webauthn`` when configured: one
+    JWS verifier per key family (Ed25519, P-256, RSA), one raw Ed25519 path,
+    one WebAuthn path, one ``did:key`` decoder, whether the check runs inside
+    the policy or ahead of it. For those the contract carries over by construction:
     ``False`` for an evidence problem, ``HostBuiltinError`` for a system fault.
 
     **The other four are not.** ``parse_json``, ``base64url_decode``,
@@ -354,6 +357,8 @@ def default_primitives(
         "base64url_decode": _base64url_decode,
         "base64url_encode_no_pad": _b64url_encode_no_pad,
         "verify_eddsa": _verify_eddsa,
+        "verify_es256": _verify_es256,
+        "verify_rs256": _verify_rs256,
         "verify_ed25519_raw": _verify_ed25519_raw,
         "key_from_did_key": _key_from_did_key,
         "concat": _concat,

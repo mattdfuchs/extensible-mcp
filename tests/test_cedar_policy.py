@@ -20,8 +20,10 @@ Three properties of Cedar become tests here; what this file does not cover
 
 The second policy-set shape, *permit decides, forbid explains*, is tested in
 the last section over ``cedar_minimal_spend``: the loader rules it adds, the
-reserved ``probe`` key, and the two per-call guard checks that stand in for
-a static check cedarpy cannot offer.
+reserved ``probe`` key, the two per-call guard checks that stand in for a
+static check cedarpy cannot offer, and the inference that lets that shape
+ship without ``expected_ids.json`` — the teaching twin does — while the
+forbid-only shape is refused without one.
 
 The rest mirrors ``test_cel_policy.py``'s filter-level assertions, so the
 three engine test files read the same way.
@@ -200,8 +202,11 @@ def test_a_forbid_with_no_annotation_is_refused_at_load(tmp_path):
         PolicyBundle.load(_variant(tmp_path, policy=text))
 
 
-def test_missing_expected_ids_is_refused_at_load(tmp_path):
-    with pytest.raises(CedarPolicyError, match="expected_ids.json"):
+def test_a_forbid_only_set_without_expected_ids_is_refused_at_load(tmp_path):
+    """The file is optional only where the decision does not depend on the
+    forbids. The adopted bundle's bare permit says forbid-only, and nothing
+    but a declaration can say what complete means for that shape."""
+    with pytest.raises(CedarPolicyError, match="which needs the file"):
         PolicyBundle.load(_variant(tmp_path, drop_expected=True))
 
 
@@ -403,8 +408,26 @@ def _minimal_policy() -> str:
     return (MINIMAL_DIR / "policy.cedar").read_text()
 
 
+# What the teaching twin's expected_ids.json said before the file became
+# optional for this shape; written back into a variant by the tests that
+# exercise the declared path.
+MINIMAL_IDS = [
+    "solo.request_vc.signed_by",
+    "solo.request_vc.within_window",
+    "solo.request_vc.action_matches",
+    "solo.request_vc.arguments_matches",
+    "solo.arguments.amount_cents_at_most",
+]
+MINIMAL_EXPECTED = {
+    "shape": "permit-decides",
+    "ids": MINIMAL_IDS,
+    "tiers": [{"tier": "solo", "ids": MINIMAL_IDS}],
+    "assembly_tiers": ["solo"],
+}
+
+
 def _minimal_expected(**overrides) -> dict:
-    return {**json.loads((MINIMAL_DIR / "expected_ids.json").read_text()), **overrides}
+    return {**MINIMAL_EXPECTED, **overrides}
 
 
 def _permit_block(text: str) -> str:
@@ -413,21 +436,24 @@ def _permit_block(text: str) -> str:
     return m.group(0)
 
 
-def test_the_shape_is_declared_and_the_loader_reports_it():
-    assert PolicyBundle.load(MINIMAL_DIR).policy.shape == "permit-decides"
-    assert PolicyBundle.load(FIXTURES / "cedar_family_spend_compact").policy.shape == "permit-decides"
-    assert PolicyBundle.load(FIXTURE_DIR).policy.shape == "forbid-only"
+def test_the_shape_is_reported_whether_declared_or_read_off_the_policy():
+    minimal = PolicyBundle.load(MINIMAL_DIR).policy
+    assert minimal.shape == "permit-decides" and not minimal.expected_ids_declared
+    compact = PolicyBundle.load(FIXTURES / "cedar_family_spend_compact").policy
+    assert compact.shape == "permit-decides" and compact.expected_ids_declared
+    adopted = PolicyBundle.load(FIXTURE_DIR).policy
+    assert adopted.shape == "forbid-only" and adopted.expected_ids_declared
 
 
 def test_an_unknown_shape_is_refused_at_load(tmp_path):
-    with pytest.raises(CedarPolicyError, match="never infers one"):
+    with pytest.raises(CedarPolicyError, match="does not guess"):
         PolicyBundle.load(_minimal_variant(tmp_path, expected=_minimal_expected(shape="mixed")))
 
 
 def test_a_permit_without_tier_is_refused_in_the_permit_decides_shape(tmp_path):
     text = _minimal_policy().replace('@tier("solo")\npermit', "permit", 1)
     with pytest.raises(CedarPolicyError, match="carries no @tier"):
-        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text, expected=_minimal_expected()))
 
 
 def test_a_tier_with_no_permit_is_refused(tmp_path):
@@ -436,7 +462,7 @@ def test_a_tier_with_no_permit_is_refused(tmp_path):
     # so the refusal under test is the tier one, not the no-permit one.
     text += '@tier("other")\npermit (principal, action, resource) when { !(context has probe) && false };\n'
     with pytest.raises(CedarPolicyError, match=r"missing \['solo'\], unexpected \['other'\]"):
-        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text, expected=_minimal_expected()))
 
 
 def test_two_permits_for_one_tier_are_refused(tmp_path):
@@ -553,3 +579,117 @@ def test_an_evaluation_diagnostic_in_the_probe_pass_is_a_fault(tmp_path):
     assert policy.query({}, MINIMAL_ALLOW) == [{"result": False}]
     with pytest.raises(PolicyEvaluationError, match="in the probe pass"):
         policy.query({}, MINIMAL_FAILED)
+
+
+# -- the file is optional where the decision does not depend on the forbids - #
+
+COMPACT_DIR = FIXTURES / "cedar_family_spend_compact"
+
+
+def _compact_without_file(tmp_path, policy=None) -> Path:
+    d = tmp_path / "cedar_compact"
+    shutil.copytree(COMPACT_DIR, d)
+    (d / "expected_ids.json").unlink()
+    if policy is not None:
+        (d / "policy.cedar").write_text(policy)
+    return d
+
+
+def test_the_teaching_twin_ships_no_expected_ids_file():
+    assert not (MINIMAL_DIR / "expected_ids.json").exists()
+
+
+def test_inferred_structure_is_what_the_file_would_have_declared(tmp_path):
+    """Load the teaching twin as shipped (no file) and with the file it used
+    to carry written back: same ids, same tiers, same synthesised guidance,
+    same decision and same failed checks."""
+    inferred = PolicyBundle.load(MINIMAL_DIR).policy
+    declared = PolicyBundle.load(_minimal_variant(tmp_path, expected=_minimal_expected())).policy
+    assert inferred.expected_ids == declared.expected_ids == frozenset(MINIMAL_IDS)
+    assert inferred.assembly_tiers == declared.assembly_tiers == frozenset({"solo"})
+    assert inferred.inline_guidance() == declared.inline_guidance()
+    ctx = {"arguments": {"amountCents": 5000}}
+    for ep in ("allow", "failed_checks"):
+        assert (inferred.query(ctx, f"{MINIMAL_DIR.name}/{ep}")
+                == declared.query(ctx, f"cedar_variant/{ep}"))
+
+
+def test_a_mixture_of_tiered_and_bare_permits_is_refused_without_the_file(tmp_path):
+    text = _minimal_policy() + "permit (principal, action, resource) when { !(context has probe) && false };\n"
+    with pytest.raises(CedarPolicyError, match="neither shape"):
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+
+
+def test_a_bare_permit_without_the_file_is_forbid_only_and_refused(tmp_path):
+    """Dropping @tier from the teaching twin's one permit makes it a bare
+    permit: the forbid-only shape, which needs the declaration."""
+    text = _minimal_policy().replace('@tier("solo")\npermit', "permit", 1)
+    with pytest.raises(CedarPolicyError, match="which needs the file"):
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+
+
+def test_two_tier_policy_without_the_file_reads_its_tiers_off_the_permits(tmp_path):
+    """The compact adopted policy, file removed: the tiers are the @tier
+    permits in order of appearance (not the order the file listed them),
+    every @id forbid is placed by its own @tier, and the decisions and ids
+    match the declared load on every differential scenario's shape."""
+    text = (COMPACT_DIR / "policy.cedar").read_text()
+    permit_order = re.findall(r'@tier\("([^"]+)"\)\npermit', text)
+    assert sorted(permit_order) == ["full_chain", "solo"]
+    inferred = PolicyBundle.load(_compact_without_file(tmp_path)).policy
+    declared = PolicyBundle.load(COMPACT_DIR).policy
+    assert not inferred.expected_ids_declared and declared.expected_ids_declared
+    assert inferred.expected_ids == declared.expected_ids
+    assert inferred.assembly_tiers == declared.assembly_tiers
+    assert [t for t, _ in inferred._tier_ids] == permit_order
+    assert {t: set(ids) for t, ids in inferred._tier_ids} == {
+        t: set(ids) for t, ids in declared._tier_ids
+    }
+    paths = inferred.inline_guidance()["tiers"]
+    assert [t["tier"] for t in paths] == [0, 1]
+    for ctx in ({"arguments": {"amountCents": 5000}}, {}):
+        for ep in ("allow", "failed_checks"):
+            assert (inferred.query(ctx, f"cedar_compact/{ep}")
+                    == declared.query(ctx, f"{COMPACT_DIR.name}/{ep}"))
+
+
+def test_a_forbid_without_tier_in_a_two_tier_policy_is_refused_without_the_file(tmp_path):
+    text = (COMPACT_DIR / "policy.cedar").read_text()
+    new, n = re.subn(r'(@id\("solo\.request_vc\.within_window"\)\n)@tier\("solo"\)\n', r"\1", text, count=1)
+    assert n == 1
+    with pytest.raises(CedarPolicyError, match="carries no @tier .* cannot place its sentence"):
+        PolicyBundle.load(_compact_without_file(tmp_path, policy=new))
+
+
+def test_a_forbid_naming_an_undecided_tier_is_refused_without_the_file(tmp_path):
+    text = (COMPACT_DIR / "policy.cedar").read_text()
+    new, n = re.subn(r'(@id\("solo\.request_vc\.within_window"\)\n)@tier\("solo"\)\n', r'\1@tier("other")\n', text, count=1)
+    assert n == 1
+    with pytest.raises(CedarPolicyError, match="which no @tier permit decides"):
+        PolicyBundle.load(_compact_without_file(tmp_path, policy=new))
+
+
+def test_an_assembly_forbid_for_an_undecided_tier_is_refused_without_the_file(tmp_path):
+    text = _minimal_policy().replace('@assembly("solo")', '@assembly("other")', 1)
+    assert text != _minimal_policy()
+    with pytest.raises(CedarPolicyError, match="names a tier no @tier permit decides"):
+        PolicyBundle.load(_minimal_variant(tmp_path, policy=text))
+
+
+def test_an_assembly_forbid_is_optional_without_the_file_and_required_with_it(tmp_path):
+    """Its reason is dropped in either case and the renderer names an absent
+    credential from the guards, so without a declaration there is nothing
+    for it to be checked against; with one, the file says it must exist."""
+    text = _without(_minimal_policy(), '@assembly("solo")')
+    policy = PolicyBundle.load(_minimal_variant(tmp_path, policy=text)).policy
+    assert policy.expected_ids == frozenset(MINIMAL_IDS)
+    with pytest.raises(CedarPolicyError, match=r"@assembly forbid per tier .* missing \['solo'\]"):
+        PolicyBundle.load(_minimal_variant(tmp_path / "declared", policy=text, expected=_minimal_expected()))
+
+
+def test_the_file_wins_when_present(tmp_path):
+    """A declared file is checked, not merged with what the policy implies:
+    the compact policy's permits appear full_chain-first, and the file lists
+    solo first, so the declared load renders solo as Path 1."""
+    declared = PolicyBundle.load(COMPACT_DIR).policy
+    assert [t for t, _ in declared._tier_ids] == ["solo", "full_chain"]
