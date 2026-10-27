@@ -18,6 +18,7 @@ The invariants, one section each:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import sys
 from pathlib import Path
@@ -175,11 +176,13 @@ async def test_three_meta_tools_are_registered_on_a_live_proxy():
 # failed safe. Both directions of the bug class have now shipped once.
 #
 # The structural answer is `dataclasses.replace` at every request/response
-# rebuild site, which is Phase 0 (#8). The first test below is today's
-# guarantee -- the declared fields do arrive -- and guards the 0.3.2
-# regression. The second is the one Phase 0 has to satisfy: a field the
-# pipeline was not written to know about still reaches the filter. It is
-# `xfail(strict=True)`, so #8 *flips* it; it is not deleted and not relaxed.
+# rebuild site (the propagation half of Phase 0, #8). The first test below
+# is the declared-field guarantee and guards the 0.3.2 regression. The
+# second is the structural one: a field the pipeline was not written to know
+# about still reaches the filter. The third is the aliasing half, from the
+# 0.3.2 reporter's review: the shared-set bug was one client's object
+# reaching another client's filter, which a single request in flight cannot
+# see, so two run at once and each filter must have seen its own.
 # --------------------------------------------------------------------------- #
 
 _SENTINEL = object()
@@ -357,25 +360,17 @@ class _FutureServerLoadRequest(ServerLoadRequest):
     principal: str = "principal-sentinel"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "CallFilterPipeline and ResponseFilterPipeline rebuild their request "
-        "by naming the fields they know, so a field they were not written for "
-        "is dropped. Phase 0 (#8) replaces those rebuilds with "
-        "dataclasses.replace and flips this test; it does not delete it."
-    ),
-)
 async def test_every_request_field_reaches_every_filter():
-    """The invariant Phase 0 owes: field propagation is structural.
+    """Field propagation is structural.
 
     The `principal` field on each subclass stands in for the next field added
-    to a request type -- `principal` itself, in #8's plan. A pipeline that
+    to a request type -- `principal` itself, in #9's plan. A pipeline that
     rebuilds by enumerating fields cannot carry it; one that uses
     `dataclasses.replace` carries it without being told it exists. Nothing
     about `principal` is special: the test asks whether the mechanism is
     structural, and a mechanism that must be edited for each new field is a
-    control that silently loses its key.
+    control that silently loses its key. This was `xfail(strict=True)` from
+    #1 until the rebuild sites moved to `replace`.
     """
     dropped = await _run_all_four_pipelines(
         search_results=[_FutureSearchResult(tool=_tool_record(), score=0.77)],
@@ -397,6 +392,140 @@ async def test_every_request_field_reaches_every_filter():
         ),
     )
     assert dropped == {}
+
+
+class _Token:
+    """A field value with identity and no interning, so `is` means something."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __repr__(self) -> str:
+        return f"_Token({self.label!r})"
+
+
+class _YieldingCallFilter(_RecordingCallFilter):
+    async def check(self, request: CallRequest) -> CallFilterResult:
+        await asyncio.sleep(0)  # let the other request in flight interleave
+        return await super().check(request)
+
+
+class _YieldingResponseFilter(_RecordingResponseFilter):
+    async def check(self, response: CallResponse) -> ResponseFilterResult:
+        await asyncio.sleep(0)
+        return await super().check(response)
+
+
+class _YieldingLoadFilter(_RecordingLoadFilter):
+    async def check(self, request: ServerLoadRequest) -> ServerLoadResult:
+        await asyncio.sleep(0)
+        return await super().check(request)
+
+
+# The pipelines copy the one field a filter may rewrite before the first
+# filter runs, so a filter cannot mutate the caller's object in place.
+_COPIED_BY_PIPELINE = frozenset({"arguments", "content"})
+
+
+def _aliased_fields(own: Any, other: Any, seen: Any) -> list[str]:
+    """Fields of ``seen`` that are not ``own``'s, or are ``other``'s.
+
+    Every field is given a value distinguishable *between* the two requests
+    and carrying identity, so this catches both a field that leaked across
+    requests and one that was rebuilt from the wrong source. The two fields
+    a filter may rewrite -- `arguments` on a request, `content` on a
+    response -- are deliberately copied by the pipeline before the first
+    filter sees them, so for those equality to own and non-identity to other
+    is the whole claim; for every other field the object the filter saw must
+    be own's.
+    """
+    bad = []
+    for f in dataclasses.fields(own):
+        got = getattr(seen, f.name, _SENTINEL)
+        theirs = getattr(other, f.name)
+        if got is theirs or got != getattr(own, f.name):
+            bad.append(f.name)
+        elif f.name not in _COPIED_BY_PIPELINE and got is not getattr(own, f.name):
+            bad.append(f.name)
+    return bad
+
+
+async def test_two_requests_in_flight_each_reach_their_own_filters():
+    """The aliasing half: two requests at once, and each filter saw its own.
+
+    The 0.3.2 bug was aliasing, not loss -- one client's discovery set
+    reaching another client's filter -- and a field aliased to an *equal*
+    object passes a presence-and-value check on a single request. So two
+    requests go through the same pipelines concurrently, with filters that
+    yield between them, and every field each filter saw must be its own
+    request's object and not the other's. Over the three request-carrying
+    pipelines, with the future field present on each.
+    """
+    def call_request(label: str) -> CallRequest:
+        return _FutureCallRequest(
+            tool_name=f"payments__send_{label}",
+            arguments={"amountCents": _Token(f"amount-{label}")},
+            server_name=f"payments-{label}",
+            session_id=f"session-{label}",
+            principal=_Token(f"principal-{label}"),
+        )
+
+    def call_response(label: str) -> CallResponse:
+        return _FutureCallResponse(
+            tool_name=f"payments__send_{label}",
+            arguments={"amountCents": _Token(f"amount-{label}")},
+            server_name=f"payments-{label}",
+            content=[_Token(f"content-{label}")],
+            is_error=(label == "a"),
+            principal=_Token(f"principal-{label}"),
+        )
+
+    def load_request(label: str) -> ServerLoadRequest:
+        return _FutureServerLoadRequest(
+            server_name=f"payments-{label}",
+            url=f"https://payments-{label}.example/mcp",
+            principal=_Token(f"principal-{label}"),
+        )
+
+    aliased: dict[str, list[str]] = {}
+
+    c1, c2 = _YieldingCallFilter(), _YieldingCallFilter()
+    pipeline = CallFilterPipeline([c1, c2])
+    ra, rb = call_request("a"), call_request("b")
+    await asyncio.gather(pipeline.apply(ra), pipeline.apply(rb))
+    for i, f in enumerate((c1, c2)):
+        by_name = {seen.tool_name: seen for seen in f.seen}
+        assert set(by_name) == {ra.tool_name, rb.tool_name}
+        for own, other in ((ra, rb), (rb, ra)):
+            bad = _aliased_fields(own, other, by_name[own.tool_name])
+            if bad:
+                aliased[f"CallFilterPipeline[{i}]:{own.tool_name}"] = bad
+
+    r1, r2 = _YieldingResponseFilter(), _YieldingResponseFilter()
+    pipeline = ResponseFilterPipeline([r1, r2])
+    pa, pb = call_response("a"), call_response("b")
+    await asyncio.gather(pipeline.apply(pa), pipeline.apply(pb))
+    for i, f in enumerate((r1, r2)):
+        by_name = {seen.tool_name: seen for seen in f.seen}
+        assert set(by_name) == {pa.tool_name, pb.tool_name}
+        for own, other in ((pa, pb), (pb, pa)):
+            bad = _aliased_fields(own, other, by_name[own.tool_name])
+            if bad:
+                aliased[f"ResponseFilterPipeline[{i}]:{own.tool_name}"] = bad
+
+    l1, l2 = _YieldingLoadFilter(), _YieldingLoadFilter()
+    pipeline = ServerLoadFilterPipeline([l1, l2])
+    la, lb = load_request("a"), load_request("b")
+    await asyncio.gather(pipeline.apply(la), pipeline.apply(lb))
+    for i, f in enumerate((l1, l2)):
+        by_name = {seen.server_name: seen for seen in f.seen}
+        assert set(by_name) == {la.server_name, lb.server_name}
+        for own, other in ((la, lb), (lb, la)):
+            bad = _aliased_fields(own, other, by_name[own.server_name])
+            if bad:
+                aliased[f"ServerLoadFilterPipeline[{i}]:{own.server_name}"] = bad
+
+    assert aliased == {}
 
 
 # --------------------------------------------------------------------------- #

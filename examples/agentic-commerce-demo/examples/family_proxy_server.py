@@ -29,6 +29,7 @@ allowed once the parent authorizes it (both shells exercised).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -158,14 +159,10 @@ class PizzaWireAdapter(WalletBundleAdapter):
             args["amount"] = args.pop("total")
         if "store" in args:
             args["merchant"] = args.pop("store")
-        return super().adapt(
-            CallRequest(
-                tool_name=request.tool_name,
-                arguments=args,
-                server_name=request.server_name,
-                session_id=request.session_id,
-            )
-        )
+        # `replace`, not a field-by-field rebuild: a wrapper that re-types
+        # the request drops whatever field the proxy adds next (see
+        # tests/test_invariants.py, the propagation invariant).
+        return super().adapt(dataclasses.replace(request, arguments=args))
 
     def _to_vc(self, bundle, *, normalize_request: bool):
         vc = super()._to_vc(bundle, normalize_request=normalize_request)
@@ -294,12 +291,7 @@ class InvoiceGatedFilter:
         adapted_args = dict(request.arguments)
         adapted_args.pop("nonce", None)
         adapted_args["invoice"] = {"canonical": canonical, "signature": signature}
-        adapted = CallRequest(
-            tool_name=request.tool_name,
-            arguments=adapted_args,
-            server_name=request.server_name,
-            session_id=request.session_id,
-        )
+        adapted = dataclasses.replace(request, arguments=adapted_args)
         inner = WasmPolicyFilter(
             self._bundle,
             config={
