@@ -3,6 +3,116 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.3.5] - 2026-10-27
+
+Three things, and they are one thing: a third policy engine, the machinery it
+needed, and the rules written so that a person can author a bundle in any of the
+three languages without a toolchain. Forward compatible from 0.3.4: every
+bundle that loaded on 0.3.4 loads here, no export was removed, and a
+deployment on the tokens file keeps working.
+
+**Added: Cedar, as the third engine.** `policy.cedar` is accepted beside
+`policy.wasm` and `checks.cel.json`, evaluated through `cedarpy`, shipped as
+the `cedar` extra and pinned to one version because the engine reads the
+diagnostics shape. Cedar has no host-function extension point, by design, so a
+signature check cannot run inside the policy; each cryptographic leaf becomes a
+`derive` entry in the fetch plan (below), and the rule tests a relation over the
+witness set the proxy derived. A Cedar bundle is therefore *certified modulo its
+derivation contract*, a narrower claim than the other two engines make, and
+SECURITY.md says so.
+
+Two policy-set shapes load, declared in `expected_ids.json`. **Forbid-only** is
+what an external policy-authoring toolchain emits today: one unconditional
+permit and one annotated forbid per condition. An empty or half-loaded set of
+that shape allows everything, so the loader refuses a set that does not carry
+exactly the ids the file lists. **Permit decides, forbid explains** is the shape
+a person writes: one `@tier` permit per tier carries the decision and the
+forbids carry only explanations, evaluated in two passes keyed on a reserved
+`probe` context key. In that shape every degenerate case denies, the file for
+the same policy is a quarter the size (22.6 KB against 101.8 KB on the adopted
+family-spend policy, 85% of which was the other tier restated, negated, in every
+leaf), and `expected_ids.json` is optional. A raise in either pass is a fault,
+never a denial.
+
+**Added: `derive`, the fetch-plan source Cedar needed.** A fifth source kind
+beside `call`, `config`, `clock` and `wallet`: a field computed from earlier
+fields by one primitive from a registry the proxy owns. A key-consuming
+primitive may only be folded over candidate keys and project a witness, never
+applied bare to yield a verdict, because a verdict no longer carries the
+relation the rule has to keep; the shapes that would booleanize a check are
+refused at load, as is an `fn` this proxy cannot satisfy and a plan naming one
+field twice. Seven of the eleven primitives are the same implementations the
+Rego and CEL engines run as host builtins, so the contract carries over by
+construction; the Python reimplementations of OPA natives are held to OPA's
+behaviour, including undefined on an unreadable operand.
+
+**Added: the policy's rules written by hand, in any of the three languages.**
+A minimal bundle, one tier and five conditions, ships in all three engines under
+`tests/fixtures/` and the README walks through every file of it. For CEL and
+Cedar the denial text can live beside the rule — a check written as
+`{"expr": ..., "sentence": ...}`, a `@sentence` annotation on a forbid — and
+the loader synthesises the guidance it needs when `guidance.json` is absent;
+Rego's `deny_reason` rules were already that form. The README's engine table
+states what each engine accepts and what the proxy imposes, and names the
+one thing still deferred: a Cedar policy over real principals and entities,
+which waits for the proxy to have a principal.
+
+**Added: a bundle attached from `config.json`.** A `policy_bundles` block
+under `filters` maps a server to a bundle directory and the config facts its
+plan reads, so a hand-written bundle governs a server with no Python. The
+whole server is governed; a plan with a `wallet` source is refused at startup
+with a message saying that source needs a lookup written in code; single-use
+evidence is opt-in per credential field; the search-side augmenter is wired so
+the model sees the credential parameters.
+
+**Added: ES256 and RS256.** JWS verification for P-256 and RSA keys beside
+EdDSA, registered as OPA's `io.jwt.verify_es256` / `io.jwt.verify_rs256` host
+builtins, as CEL functions, and as derive primitives. A token whose algorithm
+does not match the verifier is false, not a fault.
+
+**Added: downstream credentials by OAuth grant.** A `credentials` entry is a
+client identity the proxy authenticates with, by `private_key_jwt` (RFC 7523,
+needs the new `oauth` extra) or `client_credentials` (secret named by
+environment variable; an inline secret is refused at load). The token lives
+in memory, is attached per request and refreshed in place on a 401, and is
+presented only to a URL the config names for that server, as a bearer always
+was. **The tokens file is not deprecated.** It remains supported, logs one note
+per process naming the alternative, and will be removed only after a runnable
+example of the grant path ships. A server uses one path or the other; naming
+both is refused at load rather than settled by a silent precedence rule.
+
+**Changed: check ids are named, and manifest validation is on.** The bundles
+carry the toolchain's named ids (`solo.request_vc.signed_by`) rather than
+positions, and the assembled input is validated against the manifest before the
+rules run. An input that 0.3.4 let through unvalidated is now checked; a
+conforming input is unaffected.
+
+**Changed, both in the fail-closed direction.** CEL evidence that does not
+parse is now an evidentiary denial rendered with the consuming check's own
+sentence, not an engine fault. Engine faults are logged in full and reach the
+model as a generic refusal; their detail no longer travels in the reason.
+
+**Removed: the Keycloak realm recipe** that landed during this cycle, before
+it shipped. The approval service verifies only tokens it mints itself, so the
+recipe described a swap the code could not perform. It returns with the work
+that makes it real (#47); nothing in the proxy or the demo needs an identity
+provider.
+
+**Documentation.** The Authentication section rewritten for the grant path;
+the Status, extras and test-count statements made current everywhere; the
+discovery-set scope corrected in CLAUDE.md; the GitHub example no longer
+claims a runtime-loaded server is sent a token.
+
+**Tests.** The proxy suite is 848 tests plus one expected failure: the
+field-propagation invariant that Phase 0 of 0.4.0 owes, marked
+`xfail(strict=True)` so it turns red the day it starts passing without being
+flipped. The demo suite is 133 plus one skip for a test that needs the demo's
+workspace admin key. The identity suite is 51. Fourteen directories under
+`tests/fixtures/`: eleven call-gate bundles across the three engines, four of
+them twins of one family-spend policy that a three-engine differential holds to
+one verdict and one set of failed ids on every scenario, plus the selection
+classifier and two expression-shape tables that are not bundles.
+
 ## [0.3.4] - 2026-10-10
 
 **No runtime change.** Packaging only, and the first release published to PyPI.
