@@ -215,7 +215,14 @@ class PolicyBundle:
     # -- call-field partition ----------------------------------------------- #
 
     def call_fields(self) -> list[str]:
-        """Input fields the LLM supplies on the call (``call`` source)."""
+        """Input fields the LLM supplies on the call (``call`` source).
+
+        Decided by source kind alone. An entry's ``emit`` flag says whether the
+        field reaches the assembled input, not where it came from: a ``call``
+        field with ``emit: false`` is still LLM-supplied, so it is still
+        surfaced by the augmenter and still stripped from what goes downstream.
+        Filtering this partition to emitted entries would leave a raw
+        credential in the forwarded arguments on every *allowed* call."""
         return [
             e["field"]
             for e in self.fetchplan["entries"]
@@ -225,7 +232,8 @@ class PolicyBundle:
     def credential_fields(self) -> list[str]:
         """Call fields that are LLM-supplied credentials — every ``call`` field
         except the action identifier and the native arguments. These are the
-        parameters the schema augmenter injects (e.g. ``requestVC``)."""
+        parameters the schema augmenter injects (e.g. ``requestVC``), whether
+        or not the field is emitted (see :meth:`call_fields`)."""
         return [
             f for f in self.call_fields() if f not in (_TOOL_FIELD, _ARGUMENTS_FIELD)
         ]

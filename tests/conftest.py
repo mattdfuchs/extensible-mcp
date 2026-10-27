@@ -346,3 +346,39 @@ def stub_auth_server(_auth_server):
     return _auth_server
 
 
+
+
+@pytest.fixture
+def rewritten_bundle(tmp_path):
+    """A copy of a shipped bundle directory with its ``fetchplan.json`` (and
+    optionally ``manifest.json`` / ``guidance.json``) rewritten in place by
+    the callables passed, returned as the copy's path so a test loads it
+    through ``PolicyBundle.load`` and the load-time checks run against the
+    rewritten artifacts. The fixture under ``tests/fixtures/`` is never
+    touched; each call gets its own copy, so one test may rewrite the same
+    bundle more than once."""
+    import json
+    import shutil
+    from itertools import count
+    from pathlib import Path
+
+    copies = count()
+
+    def rewrite(source_dir, *, plan=None, manifest=None, guidance=None) -> Path:
+        source = Path(source_dir)
+        d = tmp_path / str(next(copies)) / source.name
+        shutil.copytree(source, d)
+        for filename, mutate in (
+            ("fetchplan.json", plan),
+            ("manifest.json", manifest),
+            ("guidance.json", guidance),
+        ):
+            if mutate is None:
+                continue
+            path = d / filename
+            doc = json.loads(path.read_text())
+            mutate(doc)
+            path.write_text(json.dumps(doc, indent=2))
+        return d
+
+    return rewrite

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,14 +29,15 @@ def key():
     return vc.new_key()
 
 
-@pytest.fixture
-def router(key):
+def _router(key, bundle_dir: Path = FAMILY_SPEND_DIR) -> BundleRouter:
+    """A router that governs ``payments`` with the family_spend bundle loaded
+    from ``bundle_dir`` -- the shipped fixture, or a rewritten copy."""
     selector = LayeredBundleSelector(classifier=RegoClassifier(CLASSIFIER_WASM))
 
     def factory(name: str):
         if name != "family_spend":
             return None
-        bundle = PolicyBundle.load(FAMILY_SPEND_DIR, name="family_spend")
+        bundle = PolicyBundle.load(bundle_dir, name="family_spend")
         return WasmPolicyFilter(
             bundle,
             config={"trustRootDID": vc.TRUST_DID, "trustRootJwk": vc.public_jwk(key)},
@@ -44,6 +46,11 @@ def router(key):
     r = BundleRouter(selector, factory)
     r.admit(server_name="payments", url="https://payments.example", how_loaded="static")
     return r
+
+
+@pytest.fixture
+def router(key):
+    return _router(key)
 
 
 def _result(server: str, tool: str = "send") -> SearchResult:
@@ -187,3 +194,32 @@ def test_wire_schema_override_replaces_manifest_shape(router):
     assert "token" in req["properties"]
     assert "jws" not in req.get("properties", {})
     assert "Required" in req["description"]  # the requirement note still lands
+
+
+def test_an_unemitted_credential_is_still_surfaced_with_its_schema(rewritten_bundle, key):
+    """Hazard 2. The augmenter builds the parameter from the entry's own
+    ``schema``, resolving ``$ref`` into the manifest's ``definitions``. With
+    ``requestVC`` unemitted the manifest drops the property and keeps the
+    definition, and the LLM must still be shown the credential, typed, and
+    still be told it is required."""
+    def plan(p):
+        for e in p["entries"]:
+            if e["field"] == "requestVC":
+                e["emit"] = False
+
+    def manifest(m):
+        m["properties"].pop("requestVC")
+        m["required"].remove("requestVC")
+
+    d = rewritten_bundle(FAMILY_SPEND_DIR, plan=plan, manifest=manifest)
+    definitions = json.loads((d / "manifest.json").read_text())["definitions"]
+    assert "RequestVC" in definitions
+
+    aug = BundleAugmenter(_router(key, d))
+    [out] = aug.filter([_result("payments")], "q")
+    schema = out.tool.input_schema
+    assert "requestVC" in schema["required"]
+    surfaced = schema["properties"]["requestVC"]
+    assert surfaced["properties"] == definitions["RequestVC"]["properties"]
+    assert surfaced["description"].startswith("Required:")
+    assert "Always provide `requestVC`" in out.tool.description
