@@ -266,14 +266,19 @@ async def test_absent_authorization_is_explained_from_the_guard_not_a_positional
     assert re.search(r"\bpolicy\d+\b", result.reason) is None
 
 
-async def test_missing_credential_fails_closed(bundle, key, caplog):
+async def test_missing_required_credential_is_a_denial_naming_it(bundle, key, caplog):
     call = _call(key, amount=500, with_auth=False)
     del call.arguments["requestVC"]
     with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
         result = await _filter(bundle, key).check(call)
     assert result.allowed is False
-    assert "could not be assembled" in result.reason
-    _assert_fault_logged_not_leaked(caplog, result, call.tool_name)
+    # A denial, not a fault: the caller omitted a credential every path
+    # requires, and is told which one in the renderer's own words.
+    assert "provide `requestVC`" in result.reason
+    assert "could not be assembled" not in result.reason
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], [
+        r.getMessage() for r in caplog.records
+    ]
 
 
 # -- evaluation: the engine's own contract ---------------------------------- #
