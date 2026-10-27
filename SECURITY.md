@@ -87,8 +87,10 @@ Two structural consequences, in scope for reports:
 - A Cedar bundle in the **permit-decides** shape — the one a hand author
   should write — is decided by one `@tier` permit per tier, with the
   forbids guarded behind a `probe` key the proxy injects only to explain a
-  denial. An empty set denies. The shape is declared in `expected_ids.json`,
-  never inferred, and the guards are checked on every call rather than at
+  denial. An empty set denies. The shape is declared in `expected_ids.json`
+  when that file is present; without it the `@tier` permits are the
+  declaration, and a bare permit with no file is refused rather than read
+  as forbid-only. The guards are checked on every call rather than at
   load, because cedarpy exposes a policy's effect and annotations but not
   its condition. A way to make a forbid decide in the decision pass, a
   permit match in the probe pass, or a bundle evaluate in a shape other
