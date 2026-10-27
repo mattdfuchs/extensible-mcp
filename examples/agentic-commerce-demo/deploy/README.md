@@ -133,6 +133,14 @@ bounded change to the approval service rather than a redesign of the page. It
 is a change, not a configuration step: today the service verifies only tokens
 it minted itself, and no external provider is required or supported.
 
+[`keycloak/`](keycloak/) is the provider side of that change, worked out
+ahead of the code: a committed realm with the audience, role and AMR mappers
+and a WebAuthn-passwordless browser flow, carrying no secrets of any kind,
+with a test that holds the file to what its document claims. The demo does
+not start Keycloak and cannot yet sign in against it; the verifier that would
+accept its tokens is issue #47. [`keycloak/README.md`](keycloak/README.md)
+says what each mapper is for and what silently breaks without it.
+
 **What is still open.** Three endpoints on `:7500` remain unauthenticated
 because their callers are other processes rather than humans, and giving them
 service credentials is separate work: `/trust-merchant` (configuration
