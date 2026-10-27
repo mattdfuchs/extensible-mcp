@@ -25,6 +25,7 @@ from extensible_mcp.wasm_filter import VCPolicyFilter
 from tests import vc_helpers as vc
 
 PROD_DIR = Path(__file__).parent / "fixtures" / "family_spend_prod"
+CEL_PROD_DIR = Path(__file__).parent / "fixtures" / "cel_family_spend_prod"
 ADMIN_DID = "did:web:admin.example"
 
 
@@ -33,9 +34,24 @@ def keys():
     return {"kid": vc.new_key(), "parent": vc.new_key(), "admin": vc.new_key()}
 
 
+@pytest.fixture(params=["rego", "cel"])
+def bundle(request):
+    """Parametrized so every scenario below runs against both engines, the
+    same discipline as test_invoice_policy.py. The two artifacts are emitted
+    from a common core, so agreement here isn't two authors corroborating
+    each other; but their check ids come from separate expansions, and
+    neither Rego nor CEL validates an id, so the same rendered denial on
+    both engines is a real cross-check. On CEL there is no ``deny_reason``
+    entrypoint, so every reason below is rendered from ``failed_checks``
+    through the guidance layer -- the path the filter takes on either engine
+    for any bundle without one."""
+    if request.param == "rego":
+        return PolicyBundle.load(PROD_DIR, name="family_spend_prod")
+    return PolicyBundle.load(CEL_PROD_DIR, name="cel_family_spend_prod")
+
+
 @pytest.fixture
-def vc_filter(keys):
-    bundle = PolicyBundle.load(PROD_DIR, name="family_spend_prod")
+def vc_filter(keys, bundle):
     resolver = DidWebResolver(
         [ADMIN_DID], preresolved={ADMIN_DID: keys["admin"].as_dict(private=False)}
     )
@@ -233,8 +249,7 @@ async def test_unbound_extra_argument_fails_closed_via_validation(vc_filter, key
     assert "note" in result.reason
 
 
-async def test_validation_opt_out_restores_policy_verdict(keys):
-    bundle = PolicyBundle.load(PROD_DIR, name="family_spend_prod")
+async def test_validation_opt_out_restores_policy_verdict(keys, bundle):
     resolver = DidWebResolver(
         [ADMIN_DID], preresolved={ADMIN_DID: keys["admin"].as_dict(private=False)}
     )
@@ -270,8 +285,7 @@ async def test_validation_never_masks_a_policy_denial(vc_filter, keys):
     assert "manifest validation" not in result.reason
 
 
-def test_validate_input_reports_schema_paths():
-    bundle = PolicyBundle.load(PROD_DIR, name="family_spend_prod")
+def test_validate_input_reports_schema_paths(bundle):
     errors = bundle.validate_input({"tool": 42})
     assert errors  # missing required fields, wrong type
     assert any(e.startswith("tool:") for e in errors)
@@ -324,6 +338,10 @@ def test_undefined_reference_comparison_emits_no_failed_check_id():
     # `merchant`) evaluates to undefined in the wasm runtime — it fires no
     # failed_checks id, unlike the not-form conditions. The renderer's
     # placeholder path ("other conditions...") is the belt for this class.
+    # Deliberately not parametrized over the CEL twin: on the same input it
+    # raises PolicyEvaluationError (fail-closed on any exception, by design),
+    # the divergence cel_family_spend_invoice's PROVENANCE.md documents --
+    # an out-of-contract input the proxy's own assembly never produces.
     bundle = PolicyBundle.load(PROD_DIR, name="family_spend_prod")
     merchant_ids = {
         c["id"]

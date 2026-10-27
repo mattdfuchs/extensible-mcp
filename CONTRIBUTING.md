@@ -51,6 +51,17 @@ Run the relevant suite(s) before opening a PR — a change to `src/extensible_mc
 should keep both example packages' suites green too, since they depend on
 it as a workspace member.
 
+## Checking fixture adoption against upstream
+
+The adopted policy bundles under `tests/fixtures/` come from an external
+policy-authoring toolchain whose tree is not available in CI, so the check
+that nothing it ships has gone unadopted is a script run by hand:
+`uv run python scripts/check_adoption.py /path/to/upstream-checkout` lists
+every upstream bundle, on all three engines, as adopted, not adopted, or
+local-only, and exits non-zero on one that is neither adopted nor recorded
+in the script as a decision not to. Run it when re-pinning a fixture or
+after pulling upstream.
+
 ## Secret scanning
 
 A `gitleaks` job runs on every push and pull request, and a finding fails the
