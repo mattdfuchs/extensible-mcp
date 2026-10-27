@@ -87,10 +87,14 @@ positions, and the assembled input is validated against the manifest before the
 rules run. An input that 0.3.4 let through unvalidated is now checked; a
 conforming input is unaffected.
 
-**Changed, both in the fail-closed direction.** CEL evidence that does not
-parse is now an evidentiary denial rendered with the consuming check's own
-sentence, not an engine fault. Engine faults are logged in full and reach the
-model as a generic refusal; their detail no longer travels in the reason.
+**Changed, all in the direction of saying the right thing.** CEL evidence
+that does not parse is now an evidentiary denial rendered with the consuming
+check's own sentence, not an engine fault. Engine faults are logged in full and
+reach the model as a generic refusal; their detail no longer travels in the
+reason. And a call that omits a credential every path requires is refused as a
+denial that names it -- "provide `requestVC` which was not supplied" -- rather
+than as the assembly fault "Policy input could not be assembled", which read as
+a crash and withheld the one thing the caller needed to hear.
 
 **Removed: the Keycloak realm recipe** that landed during this cycle, before
 it shipped. The approval service verifies only tokens it mints itself, so the
