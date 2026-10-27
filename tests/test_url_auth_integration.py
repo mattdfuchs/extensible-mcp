@@ -444,10 +444,10 @@ async def test_an_unreachable_token_endpoint_refuses_only_that_server(
 async def test_the_tokens_file_still_works_and_warns_exactly_once(
     tmp_path, mock_mcp_server, caplog
 ):
-    """Deprecated, not removed: a deployment that has not migrated keeps
-    working. The warning says so once per process rather than per call, since
-    a credential is resolved per call and the audience is an operator reading
-    logs."""
+    """Supported, with a note: a deployment on the tokens file keeps working,
+    and is told once per process -- not per call, since a credential is
+    resolved per call and the audience is an operator reading logs -- that the
+    file remains supported, will be removed later, and what replaces it."""
     url, _store = mock_mcp_server
     tokens_file = tmp_path / "tokens"
     tokens_file.write_text("mockauth=correct-token\n")
@@ -462,9 +462,11 @@ async def test_the_tokens_file_still_works_and_warns_exactly_once(
         finally:
             await mgr.close_all()
 
-    deprecations = [r for r in caplog.records if "deprecated" in r.getMessage()]
-    assert len(deprecations) == 1, [r.getMessage() for r in deprecations]
-    assert "mockauth" in deprecations[0].getMessage()
+    notes = [r for r in caplog.records if "tokens file" in r.getMessage()]
+    assert len(notes) == 1, [r.getMessage() for r in notes]
+    assert "mockauth" in notes[0].getMessage()
+    assert "remains supported" in notes[0].getMessage()
+    assert "deprecated" not in notes[0].getMessage()
     # The token itself is not in the log.
     assert "correct-token" not in caplog.text
 

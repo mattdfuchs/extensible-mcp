@@ -33,17 +33,18 @@ logger = logging.getLogger(__name__)
 CLOSE_TIMEOUT_SECONDS = 10.0
 
 TOKENS_FILE_DEPRECATION = (
-    "The tokens file (%s) is deprecated: it keeps a long-lived bearer token on "
-    "disk, which stays valid until someone notices it has leaked. Configure a "
-    "'credentials' entry for '%s' instead and the proxy will acquire a "
-    "short-lived token by an OAuth grant. The file keeps working for now."
+    "The tokens file (%s) is in use for '%s'. It remains supported; it will be "
+    "removed in a later release, after a runnable example of the alternative "
+    "ships. The alternative is a 'credentials' entry in the config, by which the "
+    "proxy acquires a short-lived token by an OAuth grant instead of keeping a "
+    "long-lived bearer on disk."
 )
 
 
 class _OnceWarning:
     """Logs its message the first time it is asked to, and never again.
 
-    A credential is resolved per call, so warning where the deprecated file
+    A credential is resolved per call, so warning where the tokens file
     is *used* would warn per call -- noise an operator learns to scroll past.
     One warning per proxy process says the same thing once.
     """

@@ -471,15 +471,17 @@ def create_server(
             "3. You may only call tools you have previously discovered via search_tools.\n\n"
             "Dynamic servers:\n"
             "- Use `load_mcp_server` to connect to a new remote MCP server by URL.\n"
-            "- If the server requires authentication, ask the user to add a token "
-            "for that server name to the tokens file AND add the server to "
-            "the config file, since a stored token is only ever sent to a URL "
-            "named in the config.\n\n"
+            "- If the server requires authentication, ask the user to add the "
+            "server to the config file with a credential (a 'credentials' entry, "
+            "or a line in the tokens file), since a credential is only ever "
+            "presented to a URL named in the config.\n\n"
             "Authentication errors:\n"
             "- If a call_tool fails with an authentication/token error, ask the user "
-            "to update the token in the tokens file, then retry the same call.\n"
-            "- Never ask the user to provide tokens in the conversation. "
-            "Tokens are managed through the tokens file only."
+            "to fix the credential configured for that server, then retry the "
+            "same call.\n"
+            "- Never ask the user to provide tokens, secrets or keys in the "
+            "conversation. Credentials are managed in the proxy's configuration "
+            "only."
         ),
         lifespan=configured_lifespan,
     )
@@ -558,8 +560,8 @@ def create_server(
                 return (
                     f"Error: Authentication failed for server '{e.server_name}' "
                     f"(token unchanged for {e.token_age_minutes} minutes). "
-                    f"The token may have expired. Ask the user to update the token "
-                    f"for '{e.server_name}' in the tokens file, then retry the call."
+                    f"The token may have expired. Ask the user to fix the credential "
+                    f"configured for '{e.server_name}', then retry the call."
                 )
             except Exception as e:
                 return f"Error calling tool '{tool_name}': {_describe(e)}"
@@ -694,9 +696,10 @@ def _add_server_command(args: argparse.Namespace) -> int:
         # The CLI is what creates the on-disk bearer, so it is the right
         # place to say that there is now a better option.
         print(
-            "Note: the tokens file is deprecated -- it keeps a long-lived "
-            "bearer on disk. A 'credentials' entry in the config lets the "
-            "proxy acquire a short-lived token by an OAuth grant instead."
+            "Note: this wrote a long-lived bearer to the tokens file, which "
+            "remains supported and will be removed in a later release. A "
+            "'credentials' entry in the config lets the proxy acquire a "
+            "short-lived token by an OAuth grant instead."
         )
 
     print(

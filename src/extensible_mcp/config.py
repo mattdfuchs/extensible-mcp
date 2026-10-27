@@ -131,7 +131,8 @@ def _load_dotenv(config_dir: Path) -> dict[str, str]:
 def read_tokens_file(path: Path) -> dict[str, str]:
     """Read ``server_name=token`` pairs from a tokens property file.
 
-    Deprecated as a source of downstream credentials -- see
+    Supported, and to be removed in a later release in favour of the grant
+    path -- see
     ``credentials.py`` -- but still read: a deployment that has not migrated
     keeps working, and the loader needs to know which names have an entry so
     that a server with both a token and a grant can be refused.
@@ -366,7 +367,7 @@ def load_config(path: Path) -> Config:
     dotenv = _load_dotenv(path.parent)
     credentials = _load_credentials(raw, path.parent)
     tokens_file = _resolve_tokens_file(path, dotenv)
-    # Which names the deprecated tokens file holds an entry for, so that a
+    # Which names the tokens file holds an entry for, so that a
     # server configured both ways is refused rather than settled by a silent
     # precedence rule.
     tokens_entries = read_tokens_file(tokens_file) if tokens_file else {}
