@@ -9,7 +9,7 @@ A bundle is a directory the proxy consumes verbatim:
 - the enforced rules — ``policy.wasm`` (OPA/Rego, loaded into an
   :class:`~extensible_mcp.wasm_policy.OpaWasmPolicy`), ``checks.cel.json``
   (CEL, loaded into a :class:`~extensible_mcp.cel_policy.CelPolicy`) *or*
-  ``policy.cedar`` with its ``expected_ids.json`` (Cedar, loaded into a
+  ``policy.cedar`` with ``expected_ids.json`` where its shape needs one (Cedar, loaded into a
   :class:`~extensible_mcp.cedar_policy.CedarPolicy`) — the bundle format is
   engine-plural: see :mod:`extensible_mcp.policy_engine`. A conforming
   toolchain may target any of them.
@@ -89,8 +89,10 @@ class PolicyBundle:
         non-default one; it is never inferred silently. A Cedar bundle is
         also refused here, as :class:`~extensible_mcp.cedar_policy.CedarPolicyError`,
         when its policy set does not carry exactly the forbids its
-        ``expected_ids.json`` lists: forbid-only means an incomplete set
-        allows what the source policy denies.
+        ``expected_ids.json`` lists, or is forbid-only with no such file:
+        forbid-only means an incomplete set allows what the source policy
+        denies. A permit-decides set may omit the file; its ``@tier``
+        permits are then the declaration.
 
         ``primitives`` overrides the vocabulary a ``derive`` fetch-plan entry
         may name — ``default_primitives(webauthn_rp_id=...)`` for a deployment
