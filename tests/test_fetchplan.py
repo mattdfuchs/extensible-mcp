@@ -855,13 +855,15 @@ async def test_a_non_string_operand_is_still_a_fault_not_undefined():
     assert not isinstance(info.value, DeriveUndefined)
 
 
-def test_the_registry_union_claim_is_exactly_the_five():
-    """``default_primitives`` shares five implementations with the engines by
+def test_the_registry_union_claim_is_exactly_the_seven():
+    """``default_primitives`` shares seven implementations with the engines by
     construction; the other four are reimplementations of OPA natives the
     Rego engine never imports. Pinned so the docstring's count stays true."""
     derive = default_primitives()
     rego = default_builtins()
     shared = {"sha256": "crypto.sha256", "verify_eddsa": "io.jwt.verify_eddsa",
+              "verify_es256": "io.jwt.verify_es256",
+              "verify_rs256": "io.jwt.verify_rs256",
               "verify_ed25519_raw": "verify_ed25519_raw",
               "key_from_did_key": "key_from_did_key",
               "base64url_encode_no_pad": "base64url.encode_no_pad"}
@@ -870,7 +872,7 @@ def test_the_registry_union_claim_is_exactly_the_five():
     reimplemented = {"parse_json", "base64url_decode", "concat", "format_int"}
     assert set(derive) - set(shared) == reimplemented
     assert not (reimplemented | {"json.unmarshal", "base64url.decode"}) & set(rego)
-    # CEL carries the five plus the two parsers under the atom names -- as
+    # CEL carries the seven plus the two parsers under the atom names -- as
     # adapters, which is why the parsers can answer an error value there and
     # None here. `concat` and `format_int` have no CEL twin: CEL concatenates
     # with `+` natively and formats nothing, so there is no function to adapt.
