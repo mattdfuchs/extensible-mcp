@@ -76,10 +76,11 @@ needs the new `oauth` extra) or `client_credentials` (secret named by
 environment variable; an inline secret is refused at load). The token lives
 in memory, is attached per request and refreshed in place on a 401, and is
 presented only to a URL the config names for that server, as a bearer always
-was. **The tokens file is not deprecated.** It remains supported, logs one note
-per process naming the alternative, and will be removed only after a runnable
-example of the grant path ships. A server uses one path or the other; naming
-both is refused at load rather than settled by a silent precedence rule.
+was. The tokens file remains supported: it logs one note per process naming
+the alternative, and will be removed only after a runnable example of the
+grant path ships. A server uses one path or the other; naming both is refused
+at load rather than settled by a silent precedence rule. No identity provider
+is required by anything in the proxy or the demo.
 
 **Changed: check ids are named, and manifest validation is on.** The bundles
 carry the toolchain's named ids (`solo.request_vc.signed_by`) rather than
@@ -95,12 +96,6 @@ reason. And a call that omits a credential every path requires is refused as a
 denial that names it -- "provide `requestVC` which was not supplied" -- rather
 than as the assembly fault "Policy input could not be assembled", which read as
 a crash and withheld the one thing the caller needed to hear.
-
-**Removed: the Keycloak realm recipe** that landed during this cycle, before
-it shipped. The approval service verifies only tokens it mints itself, so the
-recipe described a swap the code could not perform. It returns with the work
-that makes it real (#47); nothing in the proxy or the demo needs an identity
-provider.
 
 **Documentation.** The Authentication section rewritten for the grant path;
 the Status, extras and test-count statements made current everywhere; the
