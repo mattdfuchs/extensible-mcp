@@ -367,7 +367,13 @@ async def _setup(
 
 def _admit_servers(router: BundleRouter, servers):
     """Run stage-one selection over the static servers, returning those the
-    router admits. A refused server is logged and not connected."""
+    router admits. A refused server is logged and not connected.
+
+    Logs the admission audit as it goes: one line per server naming the
+    route, the deciding layer and the composed chain, and a closing count.
+    A refused server is a warning. The point is that a gate which went
+    missing shows up here as a server admitted to no chain, or a count that
+    is one short, rather than as calls that simply succeed."""
     admitted = []
     for s in servers:
         decision = router.admit(
@@ -376,21 +382,16 @@ def _admit_servers(router: BundleRouter, servers):
             how_loaded="static",
             transport="http" if s.url else "stdio",
         )
+        record = router.admissions()[-1]
         if decision.allowed:
-            logger.info(
-                "Server %r admitted to route %r (via %s)",
-                s.name,
-                decision.route,
-                decision.source,
-            )
+            logger.info("Admission: %s", record.summary())
             admitted.append(s)
         else:
-            logger.warning(
-                "Server %r refused at load: %s (via %s)",
-                s.name,
-                decision.reason,
-                decision.source,
-            )
+            logger.warning("Admission: %s", record.summary())
+    logger.info(
+        "Admission audit: %d configured, %d admitted, %d refused",
+        len(servers), len(admitted), len(servers) - len(admitted),
+    )
     return admitted
 
 
@@ -645,6 +646,7 @@ def create_server(
                 how_loaded="runtime",
                 transport="http",
             )
+            logger.info("Admission: %s", router.admissions()[-1].summary())
             if not decision.allowed:
                 return (
                     f"Error: Server '{server_name}' refused by policy: "

@@ -217,6 +217,19 @@ def test_the_map_admits_each_server_to_its_route(tmp_path, key):
     assert router.bundle_for("payments").name == "spend"
 
 
+def test_the_audit_names_the_route_its_tools_and_the_chain(tmp_path, key):
+    router = _bound(tmp_path, key)
+    _admit(router, "payments")
+    _admit(router, "evil")
+    by_server = {r.server_name: r for r in router.admissions()}
+    assert by_server["payments"].chain == (
+        "RouteScopedFilter[payments-send: send](WasmPolicyFilter(spend))"
+    )
+    assert by_server["evil"].summary() == (
+        "'evil' (static) REFUSED via map: 'evil' explicitly banned"
+    )
+
+
 def test_a_classifier_route_the_declaration_does_not_carry_is_refused(tmp_path, key):
     """The committed classifier places a sandbox server under ``readonly``,
     which this declaration never routes: the router's existing refusal."""

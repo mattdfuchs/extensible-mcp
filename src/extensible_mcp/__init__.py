@@ -46,7 +46,7 @@ from .replay import (
 )
 from .issuer import IssuerRegistry
 from .policyset import PolicySet, PolicySetError, Route, RouteScopedFilter, ServerType
-from .routing import BundleRouter
+from .routing import AdmissionRecord, BundleRouter, describe_chain
 from .selection import (
     LayeredBundleSelector,
     RegoClassifier,
@@ -75,6 +75,7 @@ from .wasm_policy import (
 )
 
 __all__ = [
+    "AdmissionRecord",
     "BundleAugmenter",
     "BundleRouter",
     "CallFilter",
@@ -139,6 +140,7 @@ __all__ = [
     "render_denial",
     "InMemorySpentStore",
     "SingleUseEvidenceFilter",
+    "describe_chain",
     "SpentStore",
     "wallet_bundle_jti",
 ]

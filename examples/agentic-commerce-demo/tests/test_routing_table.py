@@ -114,6 +114,20 @@ class TestTheMap:
             "settlement": "invoice",
         }
 
+    def test_the_audit_reads_as_the_wiring_this_file_describes(self, router):
+        """The boot log's admission lines, asserted here so the composition
+        each rail runs is a checked fact rather than a comment: the wallet
+        rails scope-then-spend-then-decide, the invoice rail has no guard."""
+        _admit_all(router)
+        assert {r.server_name: r.chain for r in router.admissions()} == {
+            "payments": "RouteScopedFilter[payments-vc: spend]"
+                        "(SingleUseEvidenceFilter(VCPolicyFilter(family_spend_prod)))",
+            "pizza": "RouteScopedFilter[pizza-vc: order_pizza]"
+                     "(SingleUseEvidenceFilter(VCPolicyFilter(family_spend_prod)))",
+            "settlement": "RouteScopedFilter[invoice: charge_invoice]"
+                          "(InvoiceGatedFilter(family_spend_invoice))",
+        }
+
     def test_three_routes_over_two_bundles(self, router):
         """Two routes share the prod bundle and differ in adapter; the field
         that names them is a route, which is why it is not called bundle."""
