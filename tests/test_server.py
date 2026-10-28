@@ -214,6 +214,41 @@ async def test_extra_response_filter_modifies_output():
 
 
 @pytest.mark.asyncio
+async def test_response_filter_sees_the_downstreams_structured_content():
+    """The downstream's ``structuredContent`` reaches a response filter as
+    ``structured_content``, so a filter reads the result as an object rather
+    than parsing it back out of the text block. For a local tool, the
+    handler's own object return is that content."""
+    from extensible_mcp import LocalTool, ResponseFilterResult
+
+    seen: dict = {}
+
+    class Recording:
+        async def check(self, response):
+            seen[response.tool_name] = response.structured_content
+            return ResponseFilterResult(
+                allowed=True, content=response.content, is_error=response.is_error
+            )
+
+    async def lookup(arguments):
+        return {"balance": 42}
+
+    server = create_server(
+        _make_config(),
+        extra_response_filters=[Recording()],
+        local_tools=[LocalTool(name="lookup", description="look up", input_schema={}, handler=lookup)],
+    )
+    async with Client(server) as client:
+        await client.call_tool("search_tools", {"query": "add numbers look up", "top_k": 5})
+        await client.call_tool(
+            "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 10, "b": 20}}
+        )
+        await client.call_tool("call_tool", {"tool_name": "lookup", "arguments": {}})
+    assert seen["mock__add_numbers"] == {"result": 30}
+    assert seen["lookup"] == {"balance": 42}
+
+
+@pytest.mark.asyncio
 async def test_extra_response_filter_can_deny():
     """A ResponseFilter returning allowed=False replaces the result with an error."""
     from extensible_mcp import ResponseFilterResult

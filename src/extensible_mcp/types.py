@@ -196,6 +196,14 @@ class CallResponse:
     ``content`` is the list of MCP content blocks returned by the downstream
     server (typically ``mcp.types.TextContent`` and friends). Filters may
     inspect, modify, or replace these blocks.
+
+    ``structured_content`` is the downstream's ``structuredContent``: the
+    result as a JSON object, when the tool declares an ``outputSchema`` or
+    the server produces one anyway. For a local tool it is the handler's
+    return value when that is an object. A response filter that wants to
+    read a result reads this rather than parsing text out of ``content``.
+    It is forwarded to filters, not rewritten by them: ``content`` and
+    ``is_error`` are the fields a filter may replace.
     """
 
     tool_name: str
@@ -203,6 +211,7 @@ class CallResponse:
     server_name: str
     content: list[Any] = field(default_factory=list)
     is_error: bool = False
+    structured_content: dict[str, Any] | None = None
 
 
 @dataclass
