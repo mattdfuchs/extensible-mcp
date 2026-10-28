@@ -59,6 +59,22 @@ EXPECTED_COUNTS = {
 ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
            "cel_family_spend_invoice", "cel_family_spend_prod",
            "cel_family_spend_webauthn"}
+# The digest each adopted bundle is pinned at. The recomputation test below
+# holds a file to its own digest; this holds the corpus to the values that
+# were reviewed, so a re-pin has to change this table on purpose and the
+# diff says which bundle moved. A Rego bundle and its CEL twin share a value
+# because the three engine-independent files are byte-identical. Last
+# checked against upstream by scripts/check_adoption.py at upstream
+# `62c3ea0` (2026-10-28), after upstream's refusal of the fail-open negation
+# shapes (#35) landed: every adopted bundle verbatim, no regeneration.
+PINNED_DIGESTS = {
+    "family_spend_prod": "b5f8d6314061d4c3",
+    "cel_family_spend_prod": "b5f8d6314061d4c3",
+    "family_spend_webauthn": "22c0b6689dcbbc13",
+    "cel_family_spend_webauthn": "22c0b6689dcbbc13",
+    "family_spend_invoice": "f2712452315e4b1f",
+    "cel_family_spend_invoice": "f2712452315e4b1f",
+}
 # cedar_family_spend's rules are supplied, but its guidance is this repo's
 # own teaching file, so it carries no digest either.
 TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend",
@@ -215,6 +231,22 @@ def test_adopted_bundle_digest_is_recomputable(bundle):
     assert d["alg"] == "fnv1a64"
     assert re.fullmatch(r"[0-9a-f]{16}", d["value"])
     assert guidance_digest(_guidance(bundle)) == d["value"]
+
+
+def test_every_adopted_bundle_has_a_pinned_digest():
+    assert set(PINNED_DIGESTS) == ADOPTED
+
+
+@pytest.mark.parametrize("bundle", sorted(ADOPTED))
+def test_adopted_bundle_is_at_its_pinned_digest(bundle):
+    """The value, not just the shape: a regenerated bundle that changed a
+    sentence recomputes to a new digest and passes the test above, and this
+    is what makes it fail until the re-pin is reviewed and the table edited.
+    Twins must agree, since their guidance is one file."""
+    assert _guidance(bundle)["guidance_digest"]["value"] == PINNED_DIGESTS[bundle]
+    twin = CEL_TWIN.get(bundle)
+    if twin:
+        assert PINNED_DIGESTS[twin] == PINNED_DIGESTS[bundle]
 
 
 @pytest.mark.parametrize("bundle", sorted(ADOPTED))
