@@ -97,7 +97,7 @@ def _admit_all(router) -> dict[str, str | None]:
             how_loaded="config",
             transport="stdio",
         )
-        out[server] = result.bundle if result.allowed else None
+        out[server] = result.route if result.allowed else None
     return out
 
 
@@ -122,7 +122,7 @@ class TestTheMap:
             transport="http",
         )
         assert result.allowed is False
-        assert result.bundle is None
+        assert result.route is None
 
     def test_an_admitted_server_exposes_its_bundle_to_the_augmenter(self, router):
         _admit_all(router)

@@ -79,7 +79,7 @@ def _send_call(key, *, amount=500, server="payments", tool=None) -> CallRequest:
 def test_admits_payments_to_family_spend(key):
     router = _router(key)
     result = router.admit(server_name="payments", url="https://p.example", how_loaded="static")
-    assert result.allowed and result.bundle == "family_spend"
+    assert result.allowed and result.route == "family_spend"
     assert router.governs("payments")
 
 

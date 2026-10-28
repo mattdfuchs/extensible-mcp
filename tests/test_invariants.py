@@ -584,7 +584,7 @@ def _descriptor(url: str = PLACED_URL) -> dict[str, Any]:
 def test_selector_with_nothing_to_place_a_descriptor_refuses():
     """No map entry and no classifier is a refusal, not a pass."""
     result = LayeredBundleSelector().select(_descriptor())
-    assert not result.allowed and result.bundle is None
+    assert not result.allowed and result.route is None
 
 
 def test_banned_map_entry_does_not_fall_through_to_a_classifier():
@@ -595,7 +595,7 @@ def test_banned_map_entry_does_not_fall_through_to_a_classifier():
 
     banned = LayeredBundleSelector({PLACED_URL: BANNED}, classifier)
     result = banned.select(_descriptor())
-    assert not result.allowed and result.bundle is None
+    assert not result.allowed and result.route is None
     assert len(classifier.calls) == 1  # the ban short-circuited, asked nobody
 
 

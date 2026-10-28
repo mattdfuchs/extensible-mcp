@@ -378,9 +378,9 @@ def _admit_servers(router: BundleRouter, servers):
         )
         if decision.allowed:
             logger.info(
-                "Server %r admitted to bundle %r (via %s)",
+                "Server %r admitted to route %r (via %s)",
                 s.name,
-                decision.bundle,
+                decision.route,
                 decision.source,
             )
             admitted.append(s)

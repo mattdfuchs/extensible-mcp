@@ -56,13 +56,13 @@ def test_classifier_defaults_to_deny_all(classifier):
 def test_classifier_only_selects(classifier):
     sel = LayeredBundleSelector(classifier=classifier)
     r = sel.select(_desc("payments"))
-    assert r.bundle == "family_spend" and r.source == "classifier" and r.allowed
+    assert r.route == "family_spend" and r.source == "classifier" and r.allowed
 
 
 def test_classifier_deny_is_not_allowed(classifier):
     sel = LayeredBundleSelector(classifier=classifier)
     r = sel.select(_desc("unknown"))
-    assert r.bundle is None and r.source == "classifier" and not r.allowed
+    assert r.route is None and r.source == "classifier" and not r.allowed
 
 
 def test_map_override_wins_over_classifier(classifier):
@@ -70,7 +70,7 @@ def test_map_override_wins_over_classifier(classifier):
     url = "https://payments.example"
     sel = LayeredBundleSelector({url: "readonly"}, classifier)
     r = sel.select(_desc("payments", url=url))
-    assert r.bundle == "readonly" and r.source == "map"
+    assert r.route == "readonly" and r.source == "map"
 
 
 def test_map_banned_does_not_fall_through(classifier):
@@ -78,26 +78,26 @@ def test_map_banned_does_not_fall_through(classifier):
     sel = LayeredBundleSelector({url: "banned"}, classifier)
     r = sel.select(_desc("payments", url=url))
     # would have classified to family_spend, but the ban is authoritative
-    assert r.bundle is None and r.source == "map" and not r.allowed
+    assert r.route is None and r.source == "map" and not r.allowed
 
 
 def test_map_miss_falls_through_to_classifier(classifier):
     sel = LayeredBundleSelector({"https://other.example": "banned"}, classifier)
     r = sel.select(_desc("payments"))  # different url -> map miss -> classify
-    assert r.bundle == "family_spend" and r.source == "classifier"
+    assert r.route == "family_spend" and r.source == "classifier"
 
 
 def test_map_miss_no_classifier_fails_closed():
     sel = LayeredBundleSelector({"https://x.example": "family_spend"})
     r = sel.select(_desc("payments"))
-    assert r.bundle is None and r.source == "default" and not r.allowed
+    assert r.route is None and r.source == "default" and not r.allowed
 
 
 def test_map_hit_no_classifier_still_works():
     url = "https://payments.example"
     sel = LayeredBundleSelector({url: "family_spend"})
     r = sel.select(_desc("payments", url=url))
-    assert r.bundle == "family_spend" and r.source == "map"
+    assert r.route == "family_spend" and r.source == "map"
 
 
 def test_descriptor_is_proxy_constructed():
@@ -125,16 +125,16 @@ class TestKeyNormalization:
     def test_banned_entry_catches_equivalent_spellings(self, spelling):
         sel = LayeredBundleSelector({"https://evil.example/mcp": BANNED})
         result = sel.select({"url": spelling})
-        assert result.bundle is None
+        assert result.route is None
         assert result.source == "map"
 
     def test_non_url_keys_are_left_alone(self):
         sel = LayeredBundleSelector({"Payments": "family_spend"}, map_key="name")
-        assert sel.select({"name": "Payments"}).bundle == "family_spend"
-        assert sel.select({"name": "payments"}).bundle is None
+        assert sel.select({"name": "Payments"}).route == "family_spend"
+        assert sel.select({"name": "payments"}).route is None
 
     def test_path_case_is_preserved(self):
         """Only scheme and host are case-insensitive; a path is not."""
         sel = LayeredBundleSelector({"https://a.example/MCP": "b"})
-        assert sel.select({"url": "https://a.example/MCP"}).bundle == "b"
-        assert sel.select({"url": "https://a.example/mcp"}).bundle is None
+        assert sel.select({"url": "https://a.example/MCP"}).route == "b"
+        assert sel.select({"url": "https://a.example/mcp"}).route is None

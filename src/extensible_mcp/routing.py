@@ -8,7 +8,7 @@ A :class:`BundleRouter` does two jobs:
 
 - **Admission (load time).** Given a server's proxy-controlled admission facts,
   it builds a provenance descriptor, runs the :class:`LayeredBundleSelector`,
-  and — if a bundle is selected — instantiates that bundle's policy filter and
+  and — if a route is selected — instantiates that route's policy filter and
   registers it for the server. A refused server is not admitted (the caller
   does not connect it). This is the "no default servers / fail closed" rule.
 
@@ -18,11 +18,11 @@ A :class:`BundleRouter` does two jobs:
   in the call pipeline, the bundle filter's credential-stripped arguments thread
   forward to the downstream call like any other filter's.
 
-The bundle-name → filter step is deployment-supplied (``filter_factory``): a
+The route → filter step is deployment-supplied (``filter_factory``): a
 bundle's runtime needs trust-root config and a wallet lookup, which are not in
 the bundle's own artifacts (those describe the policy, not the deployment). A
-factory that returns ``None`` for a selected bundle fails closed — a
-named-but-unavailable bundle refuses the server.
+factory that returns ``None`` for a selected route fails closed — a
+named-but-unavailable route refuses the server.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from .selection import LayeredBundleSelector, SelectionResult, provenance_descri
 from .types import CallFilterResult, CallRequest
 from .wasm_filter import WasmPolicyFilter
 
-# bundle name -> a configured policy filter (or None if unavailable).
+# route id -> a configured policy filter (or None if unavailable).
 FilterFactory = Callable[[str], "WasmPolicyFilter | None"]
 
 
@@ -75,12 +75,12 @@ class BundleRouter:
         result = self._selector.select(descriptor)
 
         if result.allowed:
-            assert result.bundle is not None
-            policy_filter = self._filter_factory(result.bundle)
+            assert result.route is not None
+            policy_filter = self._filter_factory(result.route)
             if policy_filter is None:
-                # Selected a bundle the deployment cannot provide → fail closed.
+                # Selected a route the deployment cannot provide → fail closed.
                 result = SelectionResult(
-                    None, result.source, f"bundle {result.bundle!r} unavailable"
+                    None, result.source, f"route {result.route!r} unavailable"
                 )
             else:
                 self._filters[server_name] = policy_filter
