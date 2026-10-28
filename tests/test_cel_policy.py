@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -399,3 +400,54 @@ def test_boolean_check_still_evaluates(tmp_path):
     assert policy.query({"merchant": "acme"}, "policybundle.examples.nonbool/allow") == [
         {"result": True}
     ]
+
+
+# --------------------------------------------------------------------------- #
+# A fault's text never carries the input. cel-python appends its whole
+# activation to an evaluation error; the engine cuts it and the filter
+# bounds what it logs, so a signed credential does not land in the proxy
+# log on the way to a fail-closed denial (#74).
+# --------------------------------------------------------------------------- #
+
+def _bundle_with_an_undeclared_function(tmp_path):
+    """``cel_family_spend`` with its first check rewritten to call a function
+    no engine declares, so evaluation faults on the request credential."""
+    d = tmp_path / "cel_family_spend"
+    shutil.copytree(FIXTURE_DIR, d)
+    path = d / "checks.cel.json"
+    doc = json.loads(path.read_text())
+    first = next(iter(doc["checks"]))
+    doc["checks"][first] = "no_such_fn(input.requestVC.jws)"
+    path.write_text(json.dumps(doc))
+    return PolicyBundle.load(d, name="cel_family_spend"), first
+
+
+async def test_a_cel_fault_names_the_check_and_carries_no_input(tmp_path):
+    bundle, check_id = _bundle_with_an_undeclared_function(tmp_path)
+    token, key_x = "SENTINEL-TOKEN-BYTES", "SENTINEL-KEY-MATERIAL"
+    payload = {"requestVC": {"jws": token, "claims": {}}, "trustRootJwk": {"x": key_x}}
+    with pytest.raises(PolicyEvaluationError) as e:
+        await bundle.policy.query(payload, bundle.allow_entrypoint)
+    text = str(e.value)
+    assert check_id in text and "no_such_fn" in text
+    assert token not in text and key_x not in text
+    assert "Activation(" not in text
+    assert len(text) < 400, len(text)
+
+
+async def test_a_cel_fault_log_line_carries_no_credential(tmp_path, key, caplog):
+    bundle, _ = _bundle_with_an_undeclared_function(tmp_path)
+    f = _filter(bundle, key)
+    call = _call(key, amount=500, with_auth=False)
+    jws = call.arguments["requestVC"]["jws"]
+    jwk = vc.public_jwk(key)
+    jwk_x = (json.loads(jwk) if isinstance(jwk, str) else jwk)["x"]
+    with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
+        result = await f.check(call)
+    assert result.allowed is False
+    assert "failing closed" in result.reason
+    _assert_fault_logged_not_leaked(caplog, result, call.tool_name)
+    for record in caplog.records:
+        message = record.getMessage()
+        assert jws not in message and jwk_x not in message, message[:200]
+        assert "Activation(" not in message
