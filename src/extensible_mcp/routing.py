@@ -91,11 +91,22 @@ class BundleRouter:
     def governs(self, server_name: str) -> bool:
         return server_name in self._filters
 
-    def bundle_for(self, server_name: str):
+    def bundle_for(self, server_name: str, tool_name: str | None = None):
         """The policy bundle governing a server's tools, or ``None``. Lets the
-        search-side augmenter surface the same bundle the call path enforces."""
+        search-side augmenter surface the same bundle the call path enforces.
+
+        With ``tool_name``, the answer is per tool: a filter that scopes
+        itself to some of the server's tools (``governs_tool``, as a policy
+        set's :class:`~extensible_mcp.policyset.RouteScopedFilter` does)
+        governs the others not at all, so they are surfaced with no
+        credential parameters -- the same split the call path applies."""
         policy_filter = self._filters.get(server_name)
-        return policy_filter.bundle if policy_filter is not None else None
+        if policy_filter is None:
+            return None
+        governs_tool = getattr(policy_filter, "governs_tool", None)
+        if tool_name is not None and governs_tool is not None and not governs_tool(tool_name):
+            return None
+        return policy_filter.bundle
 
     def decision_for(self, server_name: str) -> SelectionResult | None:
         return self._decisions.get(server_name)

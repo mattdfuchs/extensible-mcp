@@ -135,7 +135,7 @@ class _StubRouter:
     def __init__(self, bundle: PolicyBundle) -> None:
         self._bundle = bundle
 
-    def bundle_for(self, server_name: str):
+    def bundle_for(self, server_name: str, tool_name: str | None = None):
         return self._bundle if server_name == "payments" else None
 
 

@@ -45,6 +45,7 @@ from .replay import (
     wallet_bundle_jti,
 )
 from .issuer import IssuerRegistry
+from .policyset import PolicySet, PolicySetError, Route, RouteScopedFilter, ServerType
 from .routing import BundleRouter
 from .selection import (
     LayeredBundleSelector,
@@ -99,16 +100,21 @@ __all__ = [
     "OAuthGrantAuth",
     "OpaWasmPolicy",
     "PolicyBundle",
+    "PolicySet",
+    "PolicySetError",
     "PolicyEvaluationError",
     "PrivateKeyJWTOAuthProvider",
     "PROXY_ITSELF",
     "ProxyItself",
     "RegoClassifier",
+    "Route",
+    "RouteScopedFilter",
     "ResponseFilter",
     "ResponseFilterResult",
     "SearchResult",
     "ServerScopedFilter",
     "SelectionResult",
+    "ServerType",
     "ServerLoadFilter",
     "ServerLoadRequest",
     "ServerLoadResult",
