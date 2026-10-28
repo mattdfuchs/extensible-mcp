@@ -76,12 +76,19 @@ order a pizza.
 
 ### What gets gated, and by what
 
-`family_proxy_server.py` gates three actions across two bundles:
+`family_proxy_server.py` gates three actions across two bundles, as
+[`policyset.json`](policyset.json) declares them -- three routes, each naming
+its server type, the one tool it governs and its wire adapter:
 
-| Action | Evidence | Bundle |
-|---|---|---|
-| `spend`, `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
-| `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
+| Route | Action | Evidence | Bundle |
+|---|---|---|---|
+| `payments-vc`, `pizza-vc` | `spend`, `order_pizza` | kid's request VC, plus the parent's authorization above $10 | `family_spend_prod` |
+| `invoice` | `charge_invoice` | a merchant-signed invoice plus both passkey legs | `family_spend_invoice` |
+
+The tool list per route is not tidiness. The invoice policy binds the merchant
+and the total and cannot bind a tool name, since nothing in that flow signs
+one; a second gated tool on the settlement server would accept a replayed
+approval. The declaration is what rules it out.
 
 Evidence on both rails is single-use: the proxy wraps each policy filter in `SingleUseEvidenceFilter`, which spends the request VC's `jti` on a call the policy allowed and refuses a second call carrying the same one. Without it the wallet rail would be replayable for the credential's whole validity window — one approval, as many spends as the LLM sent. The invoice rail keys settlement and fulfilment on the invoice nonce as well.
 

@@ -1,0 +1,19 @@
+{
+  "selection": {
+    "map_key": "origin_server",
+    "map": {
+      "payments": "payments-vc",
+      "pizza": "pizza-vc",
+      "settlement": "invoice"
+    }
+  },
+  "server_types": {
+    "family_spend_prod": {"path": "../../../tests/fixtures/family_spend_prod"},
+    "family_spend_invoice": {"path": "../../../tests/fixtures/family_spend_invoice"}
+  },
+  "routes": {
+    "payments-vc": {"server_type": "family_spend_prod", "tools": ["spend"], "adapter": "wallet_bundle"},
+    "pizza-vc": {"server_type": "family_spend_prod", "tools": ["order_pizza"], "adapter": "pizza_wire"},
+    "invoice": {"server_type": "family_spend_invoice", "tools": ["charge_invoice"]}
+  }
+}

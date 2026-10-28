@@ -402,6 +402,18 @@ guarded = SingleUseEvidenceFilter(policy_filter, credential_fields=("requestVC",
 
 The `jti` sits inside the signed payload, so a caller cannot vary it without invalidating the signature — which is what makes it usable as a replay key, and what a challenge derived purely from the terms lacks. It wraps rather than follows the policy filter for two reasons: the policy filter strips credential fields from the arguments it passes on, so a later filter never sees them; and evidence must be spent only when the call was actually authorized, or a call the policy refuses would burn the human's approval. The store is in memory and per process — a deployment needing replay protection across restarts or several proxies should supply its own.
 
+**Governing several servers.** A deployment with more than one downstream to gate declares a **policy set**: one `policyset.json` naming which route governs which server, where each route is a server type, the tools it governs and a wire adapter, and each server type is a bundle directory. The filter chain is not in the declaration; it attaches to the server type when the deployment registers it, so a route cannot declare a composition, let alone a wrong one. The tools are declared per route because a certified policy binds only what its evidence binds, and an invoice policy cannot bind a tool name: the route's list is what guarantees no second gated tool on that server accepts a replayed approval. `PolicySet.load` refuses a dangling reference and `bind` refuses a declared name nothing was registered for, so a gate that would be missing is a boot failure instead. The commerce demo's [`policyset.json`](examples/agentic-commerce-demo/examples/policyset.json) is the worked example: three routes over two bundles.
+
+```python
+from extensible_mcp import PolicySet, ServerType
+
+router = PolicySet.load("policyset.json").bind(
+    server_types={"family_spend_prod": ServerType(chain=lambda bundle, route, adapter: ...)},
+    adapters={"wallet_bundle": WalletBundleAdapter()},
+)
+server = create_server(config, bundle_router=router)
+```
+
 Eleven worked bundles live under [`tests/fixtures/`](tests/fixtures/), each with a `PROVENANCE.md` recording where it came from and what it is: ten call-gate policies across the three engines, from the minimal trio walked through below up to an invoice-settlement policy, plus `classifier/` — a selection classifier, which decides *which* bundle governs a server rather than whether a call is allowed. A twelfth directory, `undefined_shapes/`, is not a bundle: it is a table of Rego expression shapes, measured alongside their CEL twins, pinning how each engine treats an undefined operand. [`project-overview.md`](project-overview.md) covers the modules involved.
 
 #### Authoring a bundle

@@ -56,13 +56,16 @@ Evidence and adaptation, wired in through `extensible-mcp`'s public extension po
 ## Usage
 
 Enforcement is wired with `extensible-mcp`'s own `create_server`, giving it a
-`bundle_router` that maps each downstream server to the bundle governing it:
+`bundle_router` bound from [`examples/policyset.json`](examples/policyset.json):
+the declaration says which route governs which server, which tools each route
+gates and which adapter it speaks, and the server registers what those names
+resolve to:
 
 ```python
-from extensible_mcp import BundleRouter, LayeredBundleSelector
+from extensible_mcp import PolicySet, ServerType
 from extensible_mcp.server import create_server
 
-router = BundleRouter(selector, filter_factory)
+router = PolicySet.load(POLICYSET).bind(server_types=..., adapters=...)
 server = create_server(config, bundle_router=router, local_tools=evidence_tools)
 ```
 
