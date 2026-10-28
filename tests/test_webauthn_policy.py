@@ -6,7 +6,8 @@ family_spend_webauthn bundle — the companion rail to test_vc_policy.py's
 wallet-approved chain. Request side is the same did:key + did:web pattern;
 the authorization side is a passkey assertion checked by the
 ``verify_webauthn`` host builtin, with the challenge→action binding
-enforced in-policy."""
+enforced in-policy. Every scenario runs against the Rego bundle and its
+CEL twin, through the ``bundle`` fixture."""
 
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from extensible_mcp.wasm_policy import PolicyEvaluationError, default_builtins
 from tests import vc_helpers as vc
 
 WA_DIR = Path(__file__).parent / "fixtures" / "family_spend_webauthn"
+CEL_WA_DIR = Path(__file__).parent / "fixtures" / "cel_family_spend_webauthn"
 ADMIN_DID = "did:web:admin.example"
 RP_ID = "approval.example"
 ORIGIN = "https://approval.example"
@@ -46,6 +48,52 @@ def keys():
 @pytest.fixture(scope="module")
 def passkey():
     return ec.generate_private_key(ec.SECP256R1())
+
+
+def _cel_bundle_with_rp_id(directory: Path, *, name: str, rp_id: str) -> PolicyBundle:
+    """``PolicyBundle.load`` ignores ``builtins`` for a CEL bundle and has
+    no parameter for custom CEL functions — the webauthn relying-party id
+    has to reach ``CelPolicy`` directly, so this bundle is assembled by
+    hand rather than through ``load()``, same artifacts, same shape. The
+    same mechanism as test_invoice_policy.py's."""
+    from extensible_mcp.cel_policy import CelPolicy, default_cel_functions
+
+    policy = CelPolicy(
+        directory / "checks.cel.json",
+        functions=default_cel_functions(webauthn_rp_id=rp_id),
+    )
+    package = json.loads((directory / "checks.cel.json").read_text())["package"]
+    return PolicyBundle(
+        name=name,
+        package=package,
+        policy=policy,
+        manifest=json.loads((directory / "manifest.json").read_text()),
+        fetchplan=json.loads((directory / "fetchplan.json").read_text()),
+        guidance=json.loads((directory / "guidance.json").read_text()),
+    )
+
+
+@pytest.fixture(params=["rego", "cel"])
+def bundle(request):
+    """Parametrized so every scenario below runs against both engines, the
+    same discipline as test_invoice_policy.py and test_vc_policy.py. The
+    two artifacts are emitted from a common core, so agreement here isn't
+    two authors corroborating each other; but their check ids come from
+    separate expansions, and neither Rego nor CEL validates an id, so the
+    same rendered denial on both engines is a real cross-check. The
+    challenge canonicalization is the one place the twins' text differs for
+    a reason other than syntax -- CEL's ``+`` and ``string()`` against
+    Rego's ``concat`` and ``format_int`` -- so the challenge-binding
+    scenarios are where running both engines earns its keep. On CEL there
+    is no ``deny_reason`` entrypoint, so every reason below is rendered
+    from ``failed_checks`` through the guidance layer."""
+    if request.param == "rego":
+        return PolicyBundle.load(
+            WA_DIR, name="family_spend_webauthn",
+            builtins=default_builtins(webauthn_rp_id=RP_ID),
+            primitives=default_primitives(webauthn_rp_id=RP_ID),
+        )
+    return _cel_bundle_with_rp_id(CEL_WA_DIR, name="cel_family_spend_webauthn", rp_id=RP_ID)
 
 
 def _passkey_jwk(passkey) -> str:
@@ -91,12 +139,7 @@ def _envelope(keys, *, sub, subject_claims):
             "adminKey": vc.public_jwk(keys["admin"])}
 
 
-def _filter(keys, passkey, *, enrollment_role="parent"):
-    bundle = PolicyBundle.load(
-        WA_DIR, name="family_spend_webauthn",
-        builtins=default_builtins(webauthn_rp_id=RP_ID),
-        primitives=default_primitives(webauthn_rp_id=RP_ID),
-    )
+def _filter(keys, passkey, bundle, *, enrollment_role="parent"):
     wallets = {
         vc.did_key(keys["kid"]): _envelope(
             keys, sub=vc.did_key(keys["kid"]), subject_claims={"role": "child"}
@@ -129,58 +172,62 @@ def _call(keys, *, amount_cents, merchant="acme", approval=None) -> CallRequest:
 def test_load_without_rp_id_fails_closed():
     # The wasm imports verify_webauthn; without a configured relying party the
     # bundle must refuse to load, not evaluate with a missing builtin.
+    # Deliberately not parametrized over the CEL twin: a CEL bundle declares
+    # no imports, so there is nothing to check at load; a missing function
+    # surfaces on the first call that reaches it, as an evaluation fault
+    # the filter fails closed on. Recorded in the twin's PROVENANCE.md.
     with pytest.raises(PolicyEvaluationError, match="verify_webauthn"):
         PolicyBundle.load(WA_DIR, name="family_spend_webauthn")
 
 
-async def test_solo_allows_without_approval(keys, passkey):
-    result = await _filter(keys, passkey).check(_call(keys, amount_cents=500))
+async def test_solo_allows_without_approval(keys, passkey, bundle):
+    result = await _filter(keys, passkey, bundle).check(_call(keys, amount_cents=500))
     assert result.allowed is True
     assert result.arguments == {"amountCents": 500, "merchant": "acme"}
 
 
-async def test_webauthn_full_chain_allows(keys, passkey):
+async def test_webauthn_full_chain_allows(keys, passkey, bundle):
     approval = _approval(passkey, amount_cents=5000)
-    result = await _filter(keys, passkey).check(
+    result = await _filter(keys, passkey, bundle).check(
         _call(keys, amount_cents=5000, approval=approval)
     )
     assert result.allowed is True
 
 
-async def test_signature_for_one_action_cannot_authorize_another(keys, passkey):
+async def test_signature_for_one_action_cannot_authorize_another(keys, passkey, bundle):
     # The headline property: a valid assertion whose challenge binds a
     # different action (other merchant) must not authorize this call.
     approval = _approval(passkey, amount_cents=5000, merchant="other-shop")
-    result = await _filter(keys, passkey).check(
+    result = await _filter(keys, passkey, bundle).check(
         _call(keys, amount_cents=5000, approval=approval)
     )
     assert result.allowed is False
     assert "not bound to this exact call" in result.reason
 
 
-async def test_tampered_assertion_denies(keys, passkey):
+async def test_tampered_assertion_denies(keys, passkey, bundle):
     approval = _approval(passkey, amount_cents=5000)
     sig = approval["signature"]
     approval["signature"] = sig[:-6] + ("A" if sig[-1] != "A" else "B") * 6
-    result = await _filter(keys, passkey).check(
+    result = await _filter(keys, passkey, bundle).check(
         _call(keys, amount_cents=5000, approval=approval)
     )
     assert result.allowed is False
     assert "passkey assertion is invalid" in result.reason
 
 
-async def test_enrollment_role_enforced(keys, passkey):
+async def test_enrollment_role_enforced(keys, passkey, bundle):
     # A passkey enrolled by the admin but with the wrong role cannot approve.
     approval = _approval(passkey, amount_cents=5000)
-    result = await _filter(keys, passkey, enrollment_role="child").check(
+    result = await _filter(keys, passkey, bundle, enrollment_role="child").check(
         _call(keys, amount_cents=5000, approval=approval)
     )
     assert result.allowed is False
     assert "parent" in result.reason
 
 
-async def test_over_limit_without_approval_names_the_missing_field(keys, passkey):
-    result = await _filter(keys, passkey).check(_call(keys, amount_cents=5000))
+async def test_over_limit_without_approval_names_the_missing_field(keys, passkey, bundle):
+    result = await _filter(keys, passkey, bundle).check(_call(keys, amount_cents=5000))
     assert result.allowed is False
     assert "provide `approval`" in result.reason
 
@@ -219,12 +266,7 @@ class _ApprovalLiftAdapter(WalletBundleAdapter):
         return adapted
 
 
-def _wa_vc_filter(keys, passkey, *, with_origin=True):
-    bundle = PolicyBundle.load(
-        WA_DIR, name="family_spend_webauthn",
-        builtins=default_builtins(webauthn_rp_id=RP_ID),
-        primitives=default_primitives(webauthn_rp_id=RP_ID),
-    )
+def _wa_vc_filter(keys, passkey, bundle, *, with_origin=True):
     resolver = DidWebResolver(
         [ADMIN_DID], preresolved={ADMIN_DID: keys["admin"].as_dict(private=False)}
     )
@@ -269,8 +311,8 @@ def _wa_bundle_call(keys, *, amount_cents, approval=None) -> CallRequest:
     return CallRequest(tool_name="payments__spend", arguments=args, server_name="payments")
 
 
-async def test_vc_filter_full_webauthn_chain_allows(keys, passkey):
-    wa_filter = _wa_vc_filter(keys, passkey)
+async def test_vc_filter_full_webauthn_chain_allows(keys, passkey, bundle):
+    wa_filter = _wa_vc_filter(keys, passkey, bundle)
     result = await wa_filter.check(
         _wa_bundle_call(keys, amount_cents=5000,
                         approval=_approval(passkey, amount_cents=5000))
@@ -280,17 +322,17 @@ async def test_vc_filter_full_webauthn_chain_allows(keys, passkey):
     assert result.arguments == {"amountCents": 5000, "merchant": "acme"}
 
 
-async def test_vc_filter_solo_webauthn_allows_without_approval(keys, passkey):
-    wa_filter = _wa_vc_filter(keys, passkey)
+async def test_vc_filter_solo_webauthn_allows_without_approval(keys, passkey, bundle):
+    wa_filter = _wa_vc_filter(keys, passkey, bundle)
     result = await wa_filter.check(_wa_bundle_call(keys, amount_cents=500))
     assert result.allowed is True
 
 
-async def test_vc_filter_missing_origin_config_fails_closed(keys, passkey, caplog):
+async def test_vc_filter_missing_origin_config_fails_closed(keys, passkey, bundle, caplog):
     """A missing config key is a deployment fault. It fails closed, and the
     key's name goes where the operator looks -- the warning log -- not into
     the reason the model relays."""
-    wa_filter = _wa_vc_filter(keys, passkey, with_origin=False)
+    wa_filter = _wa_vc_filter(keys, passkey, bundle, with_origin=False)
     with caplog.at_level(logging.WARNING, logger="extensible_mcp.wasm_filter"):
         result = await wa_filter.check(_wa_bundle_call(keys, amount_cents=500))
     assert result.allowed is False
@@ -300,16 +342,17 @@ async def test_vc_filter_missing_origin_config_fails_closed(keys, passkey, caplo
     assert any("webauthnOrigin" in m and "(failing closed)" in m for m in faults), faults
 
 
-# -- the derive path's challenge against the wasm path's (#27) --------------- #
+# -- the derive path's challenge against the in-policy one (#27) ------------ #
 #
 # ``concat`` and ``format_int`` are reimplementations of OPA natives: the Rego
-# bundle computes the challenge pre-image inside the wasm, and a Cedar bundle
+# bundle computes the challenge pre-image inside the wasm, the CEL twin
+# computes it in-policy with ``+`` and ``string()``, and a Cedar bundle
 # computes it ahead of the policy with the derive copies. A disagreement
-# between the two would not fail loudly -- the hash would differ and the
+# between any two would not fail loudly -- the hash would differ and the
 # approval would be denied for a reason nobody can read. So the differential
-# is run against the real bundle: the challenge derived by the toolchain's
+# is run against the real bundles: the challenge derived by the toolchain's
 # three emitted entries, placed in a passkey assertion, must be the one the
-# wasm policy accepts, and a tampered operand must not be.
+# policy accepts on both engines, and a tampered operand must not be.
 
 _CHALLENGE_ENTRIES = [
     {"field": "tool", "source": {"kind": "call"}},
@@ -336,19 +379,20 @@ async def _derived_challenge(*, amount_cents, merchant="acme"):
     return assembled["toolFormattedConcatDigestEncoded"]
 
 
-async def test_the_derived_challenge_is_the_one_the_wasm_policy_accepts(keys, passkey):
+async def test_the_derived_challenge_is_the_one_the_policy_accepts(keys, passkey, bundle):
     challenge = await _derived_challenge(amount_cents=5000)
     approval = _approval(passkey, amount_cents=5000, challenge=challenge)
-    result = await _filter(keys, passkey).check(_call(keys, amount_cents=5000, approval=approval))
+    result = await _filter(keys, passkey, bundle).check(_call(keys, amount_cents=5000, approval=approval))
     assert result.allowed is True, result.reason
 
 
-async def test_a_challenge_derived_over_a_tampered_operand_is_denied_by_the_wasm_policy(keys, passkey):
-    """Both directions: the derive path agreeing with OPA on the right operands
-    is only meaningful if it also produces something OPA rejects on the wrong
-    ones. One cent off in the derived pre-image, same assertion otherwise."""
+async def test_a_challenge_derived_over_a_tampered_operand_is_denied_by_the_policy(keys, passkey, bundle):
+    """Both directions: the derive path agreeing with the policy on the right
+    operands is only meaningful if it also produces something the policy
+    rejects on the wrong ones. One cent off in the derived pre-image, same
+    assertion otherwise."""
     challenge = await _derived_challenge(amount_cents=5001)
     approval = _approval(passkey, amount_cents=5000, challenge=challenge)
-    result = await _filter(keys, passkey).check(_call(keys, amount_cents=5000, approval=approval))
+    result = await _filter(keys, passkey, bundle).check(_call(keys, amount_cents=5000, approval=approval))
     assert result.allowed is False
     assert "the approval is not bound to this exact call" in result.reason

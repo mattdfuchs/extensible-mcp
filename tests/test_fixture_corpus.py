@@ -37,12 +37,13 @@ PLACEHOLDER = "an unnamed condition was not met"
 
 # bundle -> (total ids, authored sentences, mechanical "required: ..." sentences).
 # The adopted rows are the toolchain's own table for the split (93 -> 126
-# upstream; the three Rego bundles here plus the two CEL twins). The teaching
-# rows are this repo's, authored here.
+# upstream; the three Rego bundles here plus their three CEL twins). The
+# teaching rows are this repo's, authored here.
 EXPECTED_COUNTS = {
     "family_spend_prod": (32, 16, 16),
     "cel_family_spend_prod": (32, 16, 16),
     "family_spend_webauthn": (30, 15, 15),
+    "cel_family_spend_webauthn": (30, 15, 15),
     "family_spend_invoice": (32, 23, 9),
     "cel_family_spend_invoice": (32, 23, 9),
     "family_spend": (29, 16, 13),
@@ -56,7 +57,8 @@ EXPECTED_COUNTS = {
     "cedar_minimal_spend": (5, 2, 3),
 }
 ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
-           "cel_family_spend_invoice", "cel_family_spend_prod"}
+           "cel_family_spend_invoice", "cel_family_spend_prod",
+           "cel_family_spend_webauthn"}
 # cedar_family_spend's rules are supplied, but its guidance is this repo's
 # own teaching file, so it carries no digest either.
 TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend",
@@ -65,7 +67,7 @@ TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend",
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
                 "family_spend_invoice", "minimal_spend"}
 CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_invoice", "cel_family_spend_prod",
-               "cel_minimal_spend"}
+               "cel_family_spend_webauthn", "cel_minimal_spend"}
 
 # Rego bundle -> its CEL twin, or the reason it has none. A missing twin that
 # is not listed here fails the pairing test rather than vanishing from it.
@@ -73,9 +75,9 @@ CEL_TWIN = {
     "family_spend": "cel_family_spend",
     "minimal_spend": "cel_minimal_spend",
     "family_spend_invoice": "cel_family_spend_invoice",
-    # No CEL artifact shipped at the d114d32 pin; upstream has since added
-    # one, which scripts/check_adoption.py reports until it is adopted.
-    "family_spend_webauthn": None,
+    # Pinned at upstream c40ca70, not the d114d32 the others are on: no CEL
+    # artifact existed at d114d32 (see the twin's PROVENANCE.md).
+    "family_spend_webauthn": "cel_family_spend_webauthn",
     "family_spend_prod": "cel_family_spend_prod",
 }
 
@@ -466,6 +468,7 @@ LOAD_CONFIG = {
     "family_spend_invoice": {"builtins": default_builtins(webauthn_rp_id=RP_ID),
                              "primitives": default_primitives(webauthn_rp_id=RP_ID)},
     "cel_family_spend_invoice": {"primitives": default_primitives(webauthn_rp_id=RP_ID)},
+    "cel_family_spend_webauthn": {"primitives": default_primitives(webauthn_rp_id=RP_ID)},
 }
 
 
