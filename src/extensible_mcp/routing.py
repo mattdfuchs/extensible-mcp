@@ -8,7 +8,7 @@ A :class:`BundleRouter` does two jobs:
 
 - **Admission (load time).** Given a server's proxy-controlled admission facts,
   it builds a provenance descriptor, runs the :class:`LayeredBundleSelector`,
-  and — if a bundle is selected — instantiates that bundle's policy filter and
+  and — if a route is selected — instantiates that route's policy filter and
   registers it for the server. A refused server is not admitted (the caller
   does not connect it). This is the "no default servers / fail closed" rule.
 
@@ -18,23 +18,83 @@ A :class:`BundleRouter` does two jobs:
   in the call pipeline, the bundle filter's credential-stripped arguments thread
   forward to the downstream call like any other filter's.
 
-The bundle-name → filter step is deployment-supplied (``filter_factory``): a
+The route → filter step is deployment-supplied (``filter_factory``): a
 bundle's runtime needs trust-root config and a wallet lookup, which are not in
 the bundle's own artifacts (those describe the policy, not the deployment). A
-factory that returns ``None`` for a selected bundle fails closed — a
-named-but-unavailable bundle refuses the server.
+factory that returns ``None`` for a selected route fails closed — a
+named-but-unavailable route refuses the server.
+
+- **Audit.** Every admission, allowed or refused, leaves an
+  :class:`AdmissionRecord`: the server, the descriptor built for it, the
+  route selected and which layer decided, and the composed chain. The call
+  path is deny-on-objection, and a control that silently loses its filter
+  *permits*, so "did every server end up under the gate it was meant to?"
+  has to be answerable from something other than the absence of denials.
+  :func:`~extensible_mcp.server._admit_servers` logs the records at boot.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from .selection import LayeredBundleSelector, SelectionResult, provenance_descriptor
 from .types import CallFilterResult, CallRequest
 from .wasm_filter import WasmPolicyFilter
 
-# bundle name -> a configured policy filter (or None if unavailable).
+# route id -> a configured policy filter (or None if unavailable).
 FilterFactory = Callable[[str], "WasmPolicyFilter | None"]
+
+
+def describe_chain(policy_filter: Any) -> str:
+    """The composed filter chain, outermost first, as one line.
+
+    Walks the wrappers by their ``inner`` (or ``_inner``) attribute, the
+    convention every shipped wrapper follows, naming each class; a filter
+    carrying a ``route`` shows its name and tools; the leaf names its
+    bundle. ``RouteScopedFilter[invoice: charge_invoice](InvoiceGatedFilter(
+    family_spend_invoice))`` is what the demo's settlement server reads as.
+    """
+    name = type(policy_filter).__name__
+    route = getattr(policy_filter, "route", None)
+    if route is not None:
+        tools = ", ".join(sorted(getattr(route, "tools", ())))
+        name = f"{name}[{getattr(route, 'name', '?')}: {tools}]"
+    inner = getattr(policy_filter, "inner", None)
+    if inner is None:
+        inner = getattr(policy_filter, "_inner", None)
+    if inner is not None:
+        return f"{name}({describe_chain(inner)})"
+    bundle = getattr(policy_filter, "bundle", None)
+    bundle_name = getattr(bundle, "name", None)
+    return f"{name}({bundle_name})" if isinstance(bundle_name, str) else name
+
+
+@dataclass(frozen=True)
+class AdmissionRecord:
+    """What one admission decided, kept for the boot-time audit."""
+
+    server_name: str
+    how_loaded: str
+    descriptor: dict[str, Any]
+    decision: SelectionResult
+    chain: str | None  # the composed filter, or None when refused
+
+    @property
+    def admitted(self) -> bool:
+        return self.chain is not None
+
+    def summary(self) -> str:
+        if self.admitted:
+            return (
+                f"{self.server_name!r} ({self.how_loaded}) -> route "
+                f"{self.decision.route!r} via {self.decision.source}: {self.chain}"
+            )
+        return (
+            f"{self.server_name!r} ({self.how_loaded}) REFUSED via "
+            f"{self.decision.source}: {self.decision.reason}"
+        )
 
 
 class BundleRouter:
@@ -52,6 +112,7 @@ class BundleRouter:
         self._default_trust_tier = default_trust_tier
         self._filters: dict[str, WasmPolicyFilter] = {}
         self._decisions: dict[str, SelectionResult] = {}
+        self._admissions: dict[str, AdmissionRecord] = {}
 
     def admit(
         self,
@@ -75,27 +136,49 @@ class BundleRouter:
         result = self._selector.select(descriptor)
 
         if result.allowed:
-            assert result.bundle is not None
-            policy_filter = self._filter_factory(result.bundle)
+            assert result.route is not None
+            policy_filter = self._filter_factory(result.route)
             if policy_filter is None:
-                # Selected a bundle the deployment cannot provide → fail closed.
+                # Selected a route the deployment cannot provide → fail closed.
                 result = SelectionResult(
-                    None, result.source, f"bundle {result.bundle!r} unavailable"
+                    None, result.source, f"route {result.route!r} unavailable"
                 )
             else:
                 self._filters[server_name] = policy_filter
 
         self._decisions[server_name] = result
+        self._admissions[server_name] = AdmissionRecord(
+            server_name=server_name,
+            how_loaded=how_loaded,
+            descriptor=descriptor,
+            decision=result,
+            chain=describe_chain(self._filters[server_name]) if result.allowed else None,
+        )
         return result
+
+    def admissions(self) -> list[AdmissionRecord]:
+        """Every admission so far, in the order they were decided."""
+        return list(self._admissions.values())
 
     def governs(self, server_name: str) -> bool:
         return server_name in self._filters
 
-    def bundle_for(self, server_name: str):
+    def bundle_for(self, server_name: str, tool_name: str | None = None):
         """The policy bundle governing a server's tools, or ``None``. Lets the
-        search-side augmenter surface the same bundle the call path enforces."""
+        search-side augmenter surface the same bundle the call path enforces.
+
+        With ``tool_name``, the answer is per tool: a filter that scopes
+        itself to some of the server's tools (``governs_tool``, as a policy
+        set's :class:`~extensible_mcp.policyset.RouteScopedFilter` does)
+        governs the others not at all, so they are surfaced with no
+        credential parameters -- the same split the call path applies."""
         policy_filter = self._filters.get(server_name)
-        return policy_filter.bundle if policy_filter is not None else None
+        if policy_filter is None:
+            return None
+        governs_tool = getattr(policy_filter, "governs_tool", None)
+        if tool_name is not None and governs_tool is not None and not governs_tool(tool_name):
+            return None
+        return policy_filter.bundle
 
     def decision_for(self, server_name: str) -> SelectionResult | None:
         return self._decisions.get(server_name)

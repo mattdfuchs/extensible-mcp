@@ -1,15 +1,16 @@
 # Copyright (c) 2026 Matthew Fuchs
 # SPDX-License-Identifier: Apache-2.0
 
-"""The live wiring: which bundle governs which server, and what that means
+"""The live wiring: which route governs which server, and what that means
 for a call.
 
 Everything else in this suite tests a filter in isolation. This tests the
-table ``family_proxy_server.main()`` actually builds — the literal map, the
-per-bundle wire adapters, and the single-use guard — by calling the same
-``build_bundle_router`` the server calls, and dispatching through
-``router.check`` the way the proxy's call handler does. A copy of the map
-inside a test would keep passing while the live wiring drifted.
+table ``family_proxy_server.main()`` actually builds — ``policyset.json``
+bound to the demo's chains and wire adapters, single-use guard included — by
+calling the same ``build_bundle_router`` the server calls, and dispatching
+through ``router.check`` the way the proxy's call handler does. A copy of
+the declaration inside a test would keep passing while the live wiring
+drifted.
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ def keys():
 def router(keys):
     """The real router, built the way main() builds it. The approval client
     points nowhere: only the invoice rail uses it, and nothing here does."""
-    r, _resolver = build_bundle_router(
+    r, _resolver, _policy_set = build_bundle_router(
         trusted=[ADMIN_DID],
         preresolved={ADMIN_DID: json.loads(_public_jwk(keys["admin"]))},
         approval_client=httpx.AsyncClient(base_url="http://approval.invalid", timeout=1.0),
@@ -97,7 +98,7 @@ def _admit_all(router) -> dict[str, str | None]:
             how_loaded="config",
             transport="stdio",
         )
-        out[server] = result.bundle if result.allowed else None
+        out[server] = result.route if result.allowed else None
     return out
 
 
@@ -106,12 +107,33 @@ class TestTheMap:
     is load-bearing: an entry that goes missing is a server that refuses to
     admit, and a wrong one is a server governed by the wrong policy."""
 
-    def test_each_server_admits_to_its_own_bundle(self, router):
+    def test_each_server_admits_to_its_own_route(self, router):
         assert _admit_all(router) == {
-            "payments": "family_spend_prod",
-            "pizza": "family_spend_pizza",
-            "settlement": "family_spend_invoice",
+            "payments": "payments-vc",
+            "pizza": "pizza-vc",
+            "settlement": "invoice",
         }
+
+    def test_the_audit_reads_as_the_wiring_this_file_describes(self, router):
+        """The boot log's admission lines, asserted here so the composition
+        each rail runs is a checked fact rather than a comment: the wallet
+        rails scope-then-spend-then-decide, the invoice rail has no guard."""
+        _admit_all(router)
+        assert {r.server_name: r.chain for r in router.admissions()} == {
+            "payments": "RouteScopedFilter[payments-vc: spend]"
+                        "(SingleUseEvidenceFilter(VCPolicyFilter(family_spend_prod)))",
+            "pizza": "RouteScopedFilter[pizza-vc: order_pizza]"
+                     "(SingleUseEvidenceFilter(VCPolicyFilter(family_spend_prod)))",
+            "settlement": "RouteScopedFilter[invoice: charge_invoice]"
+                          "(InvoiceGatedFilter(family_spend_invoice))",
+        }
+
+    def test_three_routes_over_two_bundles(self, router):
+        """Two routes share the prod bundle and differ in adapter; the field
+        that names them is a route, which is why it is not called bundle."""
+        _admit_all(router)
+        assert router.bundle_for("payments").name == "family_spend_prod"
+        assert router.bundle_for("pizza").name == "family_spend_prod"
 
     def test_an_unmapped_server_is_refused(self, router):
         """Fail closed: no map entry and no classifier means no admission."""
@@ -122,7 +144,7 @@ class TestTheMap:
             transport="http",
         )
         assert result.allowed is False
-        assert result.bundle is None
+        assert result.route is None
 
     def test_an_admitted_server_exposes_its_bundle_to_the_augmenter(self, router):
         _admit_all(router)
@@ -232,6 +254,36 @@ class TestPaymentsSpend:
             )
         )
         assert result.allowed is True, result.reason
+
+    async def test_an_ungated_tool_is_stripped_of_the_routes_own_credentials(self, router, keys):
+        """A stray wallet credential on `balance` never reaches the downstream;
+        the fields stripped are the prod bundle's, derived from its fetch plan."""
+        _admit_all(router)
+        req, auth = self._pair(keys, amount=1.00, jti="urn:routing-3")
+        result = await router.check(
+            CallRequest(
+                tool_name="payments__balance",
+                arguments={"requestVC": req, "authorizationVC": auth, "verbose": True},
+                server_name="payments",
+            )
+        )
+        assert result.allowed is True
+        assert result.arguments == {"verbose": True}
+
+    async def test_the_route_gates_only_its_own_tool_on_the_settlement_server(self, router):
+        """`charge_invoice` is the one tool the invoice route lists. The
+        certified policy cannot bind a tool name -- nothing in that flow signs
+        one -- so this list is what keeps a replayed approval from reaching a
+        second gated tool on the same server."""
+        _admit_all(router)
+        gated = await router.check(
+            CallRequest(tool_name="settlement__charge_invoice", arguments={}, server_name="settlement")
+        )
+        assert gated.allowed is False
+        other = await router.check(
+            CallRequest(tool_name="settlement__status", arguments={"invoice": {}}, server_name="settlement")
+        )
+        assert other.allowed is True and other.arguments == {}
 
     async def test_an_ungoverned_server_passes_through(self, router):
         """No bundle admitted for this server, so the router does not gate it

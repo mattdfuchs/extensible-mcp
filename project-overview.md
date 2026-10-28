@@ -88,7 +88,8 @@ Policy-bundle enforcement:
 - **`policy_engine.py`** — The `PolicyEngine` Protocol all three engines implement (`entrypoints()` / `query()`, OPA's own result shape); the bundle format is engine-plural by design, and a conforming toolchain may target any of them.
 - **`bundle.py` / `fetchplan.py`** — Loads a policy bundle (the enforced rules, in any engine's shape, + `manifest.json` + `fetchplan.json` + optional `guidance.json`, synthesised from sentences written inline in the policy file when absent) and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers (`call` / `config` / `clock` / `wallet` / `derive`). `derive` is the one kind that computes rather than fetches — a hash, or a signature check folded over candidate keys projecting the ones that verified — and the shapes it refuses at load are what keep a hoisted primitive from booleanizing the check.
 - **`wasm_filter.py`** — Call filters that enforce a bundle: the generic `WasmPolicyFilter`, and the production `VCPolicyFilter` (two-VC chain: signed request + conditional authorization, memberships chained to a did:web admin).
-- **`selection.py` / `routing.py`** — Which bundle governs a server: operator literal-map overrides layered over an optional Rego classifier, decided from proxy-controlled provenance facts at admission time (never from tool-supplied metadata), then routed per call. Unplaceable servers are refused.
+- **`selection.py` / `routing.py`** — Which route governs a server: operator literal-map overrides layered over an optional Rego classifier, decided from proxy-controlled provenance facts at admission time (never from tool-supplied metadata), then routed per call. Unplaceable servers are refused.
+- **`policyset.py`** — The `policyset.json` declaration: selection, server types (each a bundle directory) and routes (server type + governed tools + wire adapter). `load` checks every cross-reference; `bind` checks every name against the deployment's registrations, loads every bundle and builds every chain before any server is admitted; `RouteScopedFilter` runs a route's chain on its tools only. The chain attaches to the server type at registration, never to a route.
 - **`guidance.py`** — Renders a denial from the bundle's guidance layer: a policy's failed check ids become an explanation of which conditions failed and what evidence is still missing. `render_denial` is exported for embedders. The layer is `guidance.json` when shipped; a hand-written bundle may instead carry its sentences beside the rules (CEL `{"expr", "sentence"}`, Cedar `@sentence`, Rego `deny_reason`) and the loader synthesises it.
 - **`augment.py`** — Search-side augmenter: a governed tool's surfaced schema and description gain its credential parameters, marked required or required-only-when, with the deciding conditions rendered from the bundle's guidance.
 - **`didweb.py` / `wallet_bundle.py` / `issuer.py`** — did:web admin key resolution (SSRF-guarded, cached, fail-closed), adaptation of wallet `{token, membership}` bundles into the policy's input shape, and the role→wallet issuer registry.
@@ -97,7 +98,7 @@ Policy-bundle enforcement:
 
 ```
 Search path:   VectorStore.search() → SimilarityThresholdFilter → AccessControlFilter → [BundleAugmenter] → results
-Call path:     CallRequest → AccessControlFilter → DiscoveredToolsFilter → (policy filters) → BundleRouter → downstream server
+Call path:     CallRequest → AccessControlFilter → DiscoveredToolsFilter → (policy filters) → BundleRouter → [RouteScopedFilter → chain] → downstream server
 Response path: tool result → (response filters) → LLM
 Server load:   load request → ServerLoadAccessControlFilter → bundle admission (fail closed) → connect + index
 

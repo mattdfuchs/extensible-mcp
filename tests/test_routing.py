@@ -6,6 +6,7 @@ wiring stage-one selection to call-path enforcement."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -79,7 +80,7 @@ def _send_call(key, *, amount=500, server="payments", tool=None) -> CallRequest:
 def test_admits_payments_to_family_spend(key):
     router = _router(key)
     result = router.admit(server_name="payments", url="https://p.example", how_loaded="static")
-    assert result.allowed and result.bundle == "family_spend"
+    assert result.allowed and result.route == "family_spend"
     assert router.governs("payments")
 
 
@@ -150,3 +151,58 @@ def test_admit_servers_filters_refused(key):
     admitted = _admit_servers(router, servers)
     names = {s.name for s in admitted}
     assert names == {"payments"}  # weather refused (classifier → deny_all)
+
+
+# -- the admission audit ----------------------------------------------------- #
+
+
+def test_every_admission_leaves_a_record_with_its_chain(key):
+    """Allowed or refused, each server's record says what decided and what
+    chain now governs it -- the thing to read when asking whether every
+    server ended up under the gate it was meant to."""
+    router = _router(key)
+    router.admit(server_name="payments", url="https://p.example", how_loaded="static")
+    router.admit(server_name="weather", url="https://w.example", how_loaded="static")
+    router.admit(
+        server_name="other", url="https://o.example", how_loaded="runtime",
+        trust_tier="sandbox",
+    )
+    records = {r.server_name: r for r in router.admissions()}
+    assert [r.server_name for r in router.admissions()] == ["payments", "weather", "other"]
+
+    placed = records["payments"]
+    assert placed.admitted
+    assert placed.descriptor["url"] == "https://p.example"
+    assert placed.descriptor["config_trust_tier"] == "prod"
+    assert placed.decision.route == "family_spend" and placed.decision.source == "classifier"
+    assert placed.chain == "WasmPolicyFilter(family_spend)"
+    assert placed.summary() == (
+        "'payments' (static) -> route 'family_spend' via classifier: "
+        "WasmPolicyFilter(family_spend)"
+    )
+
+    assert not records["weather"].admitted and records["weather"].chain is None
+    assert "REFUSED via classifier" in records["weather"].summary()
+    # Selected, then unavailable: the record keeps the layer that selected it.
+    assert "route 'readonly' unavailable" in records["other"].summary()
+    assert records["other"].how_loaded == "runtime"
+
+
+def test_admit_servers_logs_the_audit(key, caplog):
+    router = _router(key)
+    servers = [
+        ServerConfig(name="payments", url="https://payments.example"),
+        ServerConfig(name="weather", url="https://weather.example"),
+    ]
+    with caplog.at_level(logging.INFO, logger="extensible_mcp.server"):
+        _admit_servers(router, servers)
+    lines = [r.getMessage() for r in caplog.records]
+    assert any(
+        line == "Admission: 'payments' (static) -> route 'family_spend' via classifier: "
+        "WasmPolicyFilter(family_spend)"
+        for line in lines
+    )
+    assert any(line.startswith("Admission: 'weather' (static) REFUSED") for line in lines)
+    assert "Admission audit: 2 configured, 1 admitted, 1 refused" in lines
+    refused = [r for r in caplog.records if "'weather'" in r.getMessage()]
+    assert refused and refused[0].levelno == logging.WARNING

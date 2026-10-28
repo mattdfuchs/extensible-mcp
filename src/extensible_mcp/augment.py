@@ -85,7 +85,7 @@ class BundleAugmenter:
     def filter(self, results: list[SearchResult], query: str) -> list[SearchResult]:
         out: list[SearchResult] = []
         for r in results:
-            bundle = self._router.bundle_for(r.tool.server_name)
+            bundle = self._router.bundle_for(r.tool.server_name, r.tool.qualified_name)
             if bundle is None or not bundle.credential_fields():
                 out.append(r)
                 continue

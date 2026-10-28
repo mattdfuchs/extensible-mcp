@@ -80,7 +80,7 @@ class ServerScopedFilter:
 class DeclaredBundles:
     """The server -> bundle map the search-side augmenter reads.
 
-    ``BundleAugmenter`` takes anything with ``bundle_for(server_name)``; the
+    ``BundleAugmenter`` takes anything with ``bundle_for(server_name, tool_name)``; the
     admission-time router provides it for selected bundles, this provides it
     for declared ones. Same contract, so the augmenter is shared unchanged.
     """
@@ -88,7 +88,8 @@ class DeclaredBundles:
     def __init__(self, filters: dict[str, ServerScopedFilter]) -> None:
         self._filters = dict(filters)
 
-    def bundle_for(self, server_name: str) -> PolicyBundle | None:
+    def bundle_for(self, server_name: str, tool_name: str | None = None) -> PolicyBundle | None:
+        # The whole server is governed, so the tool does not narrow the answer.
         f = self._filters.get(server_name)
         return f.bundle if f is not None else None
 

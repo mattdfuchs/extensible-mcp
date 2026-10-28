@@ -5,10 +5,17 @@
 
 Unlike ``boot_demo.py`` (same bundle authority, but keys minted in-process
 and calls scripted rather than driven by a human), this wires the
-**policy-bundle enforcement path** — ``BundleRouter`` + ``VCPolicyFilter`` over
-``family_spend_prod`` — together with the **real wallet meta-tools**, so a run
-drives the actual kid/parent shells. It is the "run against the existing
-infrastructure" server.
+**policy-bundle enforcement path** — the routes declared in ``policyset.json``
+beside this file, bound to this deployment's filter chains and wire adapters
+— together with the **real wallet meta-tools**, so a run drives the actual
+kid/parent shells. It is the "run against the existing infrastructure"
+server.
+
+The declaration says which route governs which server, which tools each
+route gates and which adapter it speaks; this file registers what those
+names resolve to. Three routes over two bundles: ``spend`` and
+``order_pizza`` both run the prod wallet-VC policy and differ only in
+adapter; ``charge_invoice`` runs the certified invoice policy.
 
 Reads wallet URLs, the trusted admin set, and the admin's DID document from a
 workspace ``vc-config.json`` (as written by ``setup.py``). The downstream
@@ -44,8 +51,10 @@ from mcp.client.stdio import get_default_environment
 from extensible_mcp import (
     BundleRouter,
     DidWebResolver,
-    LayeredBundleSelector,
     PolicyBundle,
+    PolicySet,
+    Route,
+    ServerType,
     SingleUseEvidenceFilter,
     VCPolicyFilter,
     WalletBundleAdapter,
@@ -66,15 +75,12 @@ from extensible_mcp_vc.meta_tools import (
     register_vc_callback_route,
 )
 
-_FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures"
-BUNDLE_DIR = _FIXTURES / "family_spend_prod"
-# The Rego bundle, certified by the external
-# policy-authoring toolchain. A CEL twin exists
-# (tests/fixtures/cel_family_spend_invoice) and is proven equivalent by
-# tests/test_invoice_policy.py, but only the Rego bundle is wired into this
-# live demo — matching how the other two rails have only ever run Rego here
-# too; CEL has so far only ever been proven via tests, not live traffic.
-INVOICE_BUNDLE_DIR = _FIXTURES / "family_spend_invoice"
+# The declaration: selection map, server types (each a bundle directory under
+# the root tests/fixtures/) and routes. Both bundles are the Rego ones,
+# certified by the external policy-authoring toolchain. CEL twins exist
+# (tests/fixtures/cel_family_spend_*) and are proven equivalent by the root
+# suite, but only Rego has ever run live traffic here.
+POLICYSET = Path(__file__).resolve().parent / "policyset.json"
 PROJECT = Path(__file__).resolve().parent.parent
 
 # The WebAuthn approval surface (approval_service.py). Its URL fixes both
@@ -95,8 +101,9 @@ SETTLEMENT_SERVER = Path(__file__).resolve().parent / "settlement_server.py"
 
 # The demo governs specific actions, not whole servers: informational tools
 # on the same downstream (list_stores, get_menu, balance) stay credential-free.
-GATED_ACTIONS = {"spend", "order_pizza", "charge_invoice"}
-_CREDENTIAL_FIELDS = ("requestVC", "authorizationVC", "invoice", "childApproval", "parentApproval")
+# Which actions is each route's `tools` list in policyset.json, and which
+# fields are stripped from an ungoverned call is derived from each route's
+# own bundle; neither is a constant here any more.
 
 # `spend` and `order_pizza` are gated by the wallet-VC rail (request_action_vc
 # posts to the kid/parent wallet *web pages* for human approval). In a
@@ -111,34 +118,6 @@ _CREDENTIAL_FIELDS = ("requestVC", "authorizationVC", "invoice", "childApproval"
 # (default) for the manual walkthrough in examples/README.md, where the
 # wallet pages really are reachable.
 HIDE_WALLET_GATED_TOOLS = os.environ.get("HIDE_WALLET_GATED_TOOLS", "false").lower() == "true"
-
-
-def _action(tool_name: str) -> str:
-    return tool_name.split("__", 1)[1] if "__" in tool_name else tool_name
-
-
-class ToolScopedFilter:
-    """Apply the bundle filter only to the gated actions; other tools on the
-    governed server pass through (with any stray credential args stripped, so
-    the downstream never sees arguments its schema does not declare)."""
-
-    def __init__(self, inner: VCPolicyFilter) -> None:
-        self._inner = inner
-
-    @property
-    def bundle(self):  # the augmenter reads router.bundle_for() -> filter.bundle
-        return self._inner.bundle
-
-    async def check(self, request: CallRequest) -> CallFilterResult:
-        if _action(request.tool_name) not in GATED_ACTIONS:
-            args = {
-                k: v for k, v in request.arguments.items()
-                if k not in _CREDENTIAL_FIELDS
-            }
-            return CallFilterResult(
-                allowed=True, tool_name=request.tool_name, arguments=args
-            )
-        return await self._inner.check(request)
 
 
 class PizzaWireAdapter(WalletBundleAdapter):
@@ -313,52 +292,59 @@ class InvoiceGatedFilter:
         return result
 
 
-class ToolScopedAugmenter:
-    """Augment only the gated tools' definitions — an ungated tool on a
-    governed server must not advertise credential parameters."""
-
-    def __init__(self, inner: BundleAugmenter) -> None:
-        self._inner = inner
-
-    def filter(self, results, query):
-        out = []
-        for r in results:
-            if _action(r.tool.qualified_name) in GATED_ACTIONS:
-                out.extend(self._inner.filter([r], query))
-            else:
-                out.append(r)
-        return out
-
-
 def build_bundle_router(
     *,
     trusted: list[str],
     preresolved: dict[str, Any],
     approval_client: httpx.AsyncClient,
-) -> tuple[BundleRouter, DidWebResolver]:
-    """Assemble the server -> bundle -> filter wiring this demo runs on.
+) -> tuple[BundleRouter, DidWebResolver, PolicySet]:
+    """Bind ``policyset.json`` to this deployment: the filter chain of each
+    server type, the adapter behind each name a route uses.
 
     A module-level function rather than inline in ``main()`` so a test can
-    build the real thing -- the same literal map, the same adapters, the same
+    build the real thing -- the same declaration, the same adapters, the same
     replay guard -- instead of a copy that passes while the live wiring
     drifts. Returns the resolver too, since callers need it to mint evidence
-    the same admin key vouches for.
+    the same admin key vouches for, and the policy set, for what it says.
     """
-    bundle = PolicyBundle.load(BUNDLE_DIR, name="family_spend_prod")
+    policy_set = PolicySet.load(POLICYSET)
     resolver = DidWebResolver(trusted, preresolved=preresolved)
 
-    # -- the invoice rail: bundle, origin/rpId, enrollment lookup ----------- #
+    # -- the wallet-VC server type: prod bundle, single-use evidence -------- #
+    def wallet_vc_chain(bundle: PolicyBundle, route: Route, adapter: WalletBundleAdapter):
+        # Single-use, because the policy cannot be: it is a pure function
+        # of the evidence and the call, so the same VC pair re-sent with
+        # the same arguments decides the same way and the spend happens
+        # again. Keyed on the request VC's jti, which is inside what the
+        # kid signed. Wrapping rather than appending is deliberate --
+        # VCPolicyFilter strips the credentials from the arguments it
+        # passes on, and a guard must spend the evidence only when the
+        # policy actually allowed the call.
+        #
+        # The order is also load-bearing in the other direction. The route
+        # scopes this chain to its own tools, *outside* the guard: an
+        # informational call that happens to carry a stray requestVC never
+        # reaches the guard, so it cannot burn the jti without the policy
+        # having run. Invert the two and nothing errors; the next legitimate
+        # call with that evidence is simply refused. A chain is registered
+        # per server type, never declared per route, so a route cannot
+        # get this wrong; the root suite's composition test is what holds
+        # it. Making the constraint structural needs a composition language,
+        # which is tracked and not in this release.
+        return SingleUseEvidenceFilter(
+            VCPolicyFilter(
+                bundle,
+                adapter=adapter,  # LLM passes requestVC / authorizationVC
+                resolver=resolver,
+                trusted_admin_dids=trusted,
+                # validate_input defaults on — re-pinned 2026-09-09 to the
+                # manifest (wallet-supplied claim bodies open).
+            ),
+            credential_fields=(adapter.request_field,),
+        )
+
+    # -- the invoice server type: origin/rpId, enrollment lookup ----------- #
     approval_origin = urlparse(APPROVAL_URL)
-    # The engine and the derive registry are configured together: the bundle
-    # declares verify_webauthn in its fetch plan's vocabulary, so the
-    # registry must know the name too, or the load warns about missing
-    # configuration on a deployment that has none missing.
-    invoice_bundle = PolicyBundle.load(
-        INVOICE_BUNDLE_DIR,
-        name="family_spend_invoice",
-        builtins=default_builtins(webauthn_rp_id=approval_origin.hostname),
-        primitives=default_primitives(webauthn_rp_id=approval_origin.hostname),
-    )
     approval_http = approval_client
 
     async def enrollment_lookup(subject: str):
@@ -372,70 +358,47 @@ def build_bundle_router(
             return None
         return await resolver.attach_admin_key(r.json())
 
-    def filter_factory(name: str):
-        # Four routes, three bundles: pizza and payments-VC share the prod
-        # policy with different wire adapters; settlement runs the
-        # certified invoice bundle (no wallet VC at all — see
+    def invoice_chain(bundle: PolicyBundle, route: Route, adapter: None):
+        # No wallet VC anywhere in this flow, so no adapter and no
+        # single-use guard: the invoice nonce keys settlement instead (see
         # InvoiceGatedFilter).
-        if name == "family_spend_invoice":
-            return ToolScopedFilter(
-                InvoiceGatedFilter(
-                    invoice_bundle,
-                    base_config={
-                        "webauthnOrigin":
-                            f"{approval_origin.scheme}://{approval_origin.netloc}",
-                        "trustedAdminDids": trusted,
-                        # trustedMerchants deliberately absent here — fetched
-                        # fresh per call (see InvoiceGatedFilter), not baked
-                        # in as a static snapshot.
-                    },
-                    wallet_lookup=enrollment_lookup,
-                    trusted_merchants_client=approval_http,
-                )
-            )
-        adapters = {
-            "family_spend_pizza": PizzaWireAdapter(),
+        return InvoiceGatedFilter(
+            bundle,
+            base_config={
+                "webauthnOrigin":
+                    f"{approval_origin.scheme}://{approval_origin.netloc}",
+                "trustedAdminDids": trusted,
+                # trustedMerchants deliberately absent here — fetched
+                # fresh per call (see InvoiceGatedFilter), not baked
+                # in as a static snapshot.
+            },
+            wallet_lookup=enrollment_lookup,
+            trusted_merchants_client=approval_http,
+        )
+
+    router = policy_set.bind(
+        server_types={
+            "family_spend_prod": ServerType(chain=wallet_vc_chain),
+            # The engine and the derive registry are configured together:
+            # the bundle declares verify_webauthn in its fetch plan's
+            # vocabulary, so the registry must know the name too, or the
+            # load warns about missing configuration on a deployment that
+            # has none missing.
+            "family_spend_invoice": ServerType(
+                chain=invoice_chain,
+                builtins=default_builtins(webauthn_rp_id=approval_origin.hostname),
+                primitives=default_primitives(webauthn_rp_id=approval_origin.hostname),
+            ),
+        },
+        adapters={
             # payments__spend speaks the policy's own vocabulary already, so
             # the base adapter (dollars -> amountCents, membership harvest)
             # is all it needs.
-            "family_spend_prod": WalletBundleAdapter(),
-        }
-        adapter = adapters.get(name)
-        if adapter is None:
-            return None
-        return ToolScopedFilter(
-            # Single-use, because the policy cannot be: it is a pure function
-            # of the evidence and the call, so the same VC pair re-sent with
-            # the same arguments decides the same way and the spend happens
-            # again. Keyed on the request VC's jti, which is inside what the
-            # kid signed. Wrapping rather than appending is deliberate --
-            # VCPolicyFilter strips the credentials from the arguments it
-            # passes on, and a guard must spend the evidence only when the
-            # policy actually allowed the call.
-            SingleUseEvidenceFilter(
-                VCPolicyFilter(
-                    bundle,
-                    adapter=adapter,  # LLM passes requestVC / authorizationVC
-                    resolver=resolver,
-                    trusted_admin_dids=trusted,
-                    # validate_input defaults on — re-pinned 2026-09-09 to the
-                    # manifest (wallet-supplied claim bodies open).
-                ),
-                credential_fields=(adapter.request_field,),
-            )
-        )
-
-    selector = LayeredBundleSelector(
-        literal_map={
-            "payments": "family_spend_prod",
-            "pizza": "family_spend_pizza",
-            "settlement": "family_spend_invoice",
+            "wallet_bundle": WalletBundleAdapter(),
+            "pizza_wire": PizzaWireAdapter(),
         },
-        map_key="origin_server",
     )
-    router = BundleRouter(selector, filter_factory)
-
-    return router, resolver
+    return router, resolver, policy_set
 
 
 def main() -> None:
@@ -459,7 +422,7 @@ def main() -> None:
             preresolved[did] = jwk
 
     approval_http = httpx.AsyncClient(base_url=APPROVAL_URL, timeout=310.0)
-    router, resolver = build_bundle_router(
+    router, resolver, policy_set = build_bundle_router(
         trusted=trusted,
         preresolved=preresolved,
         approval_client=approval_http,
@@ -565,7 +528,9 @@ def main() -> None:
         search_filters.append(
             AccessControlFilter(deny=["payments__spend", "pizza__order_pizza"])
         )
-    search_filters.append(ToolScopedAugmenter(augmenter))
+    # Per-tool: the augmenter asks the router per tool, so an ungated tool
+    # on a governed server advertises no credential parameters.
+    search_filters.append(augmenter)
 
     originator = httpx.AsyncClient(base_url=vc["originator_wallet_url"], timeout=300.0)
     approver = httpx.AsyncClient(base_url=vc["approver_wallet_url"], timeout=300.0)
@@ -587,13 +552,14 @@ def main() -> None:
     )
     register_vc_callback_route(server, callback_base_url="", pending=pending)
 
+    routes = ", ".join(
+        f"{r.name}={r.server_type}{sorted(r.tools)}" for r in policy_set.routes.values()
+    )
     print(f"family-authority proxy on http://{args.host}:{args.port}/mcp/  "
           f"(downstreams: {DOWNSTREAM.name} + {PIZZA_SERVER.name} + "
           f"{SETTLEMENT_SERVER.name}; "
-          f"gated: {sorted(GATED_ACTIONS)}; "
-          f"rails: spend + order_pizza=VC wallets "
-          f"({vc['originator_wallet_url']} , {vc['approver_wallet_url']}) , "
-          f"charge_invoice=certified policy ({INVOICE_BUNDLE_DIR.name})")
+          f"routes: {routes}; "
+          f"VC wallets: {vc['originator_wallet_url']} , {vc['approver_wallet_url']})")
     server.run(transport="http", host=args.host, port=args.port)
 
 
