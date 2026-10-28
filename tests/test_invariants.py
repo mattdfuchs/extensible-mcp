@@ -699,3 +699,97 @@ async def test_refused_server_is_never_connected_or_callable():
             {"tool_name": "refused__add_numbers", "arguments": {"a": 1, "b": 2}},
         )
         assert "not been discovered" in call.content[0].text.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Composition: scoping sits outside the single-use guard.
+#
+# A route's chain is `RouteScoped(SingleUse(Policy))`. The order of the two
+# wrappers is not structural -- a chain is registered per server type, and
+# nothing refuses the inverted one -- and getting it wrong fails silently:
+# `SingleUse(RouteScoped(Policy))` would see a stray credential on an
+# informational call, get a pass-through verdict from the scoping wrapper
+# (which never ran the policy), and mark the evidence spent. Nothing errors.
+# The next legitimate call carrying that evidence is refused. This test is
+# the assertion that silent failure would break, so it is what guards the
+# composition until a constraint language can.
+# --------------------------------------------------------------------------- #
+
+
+def _single_use_minimal_spend(key):
+    from extensible_mcp.bundle import PolicyBundle
+    from extensible_mcp.declared_bundles import credential_jti
+    from extensible_mcp.replay import SingleUseEvidenceFilter
+    from extensible_mcp.wasm_filter import WasmPolicyFilter
+    from tests import vc_helpers as vc
+
+    bundle = PolicyBundle.load(Path(__file__).parent / "fixtures" / "minimal_spend", name="spend")
+    policy = WasmPolicyFilter(bundle, config={"requesterJwk": vc.public_jwk(key)})
+    return bundle, SingleUseEvidenceFilter(
+        policy, credential_fields=("requestVC",), extract_id=credential_jti
+    )
+
+
+def _calls_sharing_one_credential(key):
+    from tests import vc_helpers as vc
+
+    args = {"amountCents": 500, "merchant": "acme"}
+    credential = vc.request_vc(args=args, key=key, jti="urn:composition-1")
+    informational = CallRequest(
+        tool_name="payments__balance",
+        arguments={"requestVC": credential},  # stray: balance takes none
+        server_name="payments",
+    )
+    gated = CallRequest(
+        tool_name="payments__send",
+        arguments={**args, "requestVC": credential},
+        server_name="payments",
+    )
+    return informational, gated
+
+
+async def test_an_informational_call_with_a_stray_credential_does_not_spend_it():
+    from extensible_mcp.policyset import Route, RouteScopedFilter
+    from tests import vc_helpers as vc
+
+    key = vc.new_key()
+    bundle, guarded = _single_use_minimal_spend(key)
+    route = Route(name="payments-send", server_type="spend", tools=frozenset({"send"}))
+    chain = RouteScopedFilter(route, guarded, bundle.credential_fields())
+    informational, gated = _calls_sharing_one_credential(key)
+
+    passed = await chain.check(informational)
+    assert passed.allowed and passed.arguments == {}  # stripped, never judged
+
+    allowed = await chain.check(gated)
+    assert allowed.allowed, allowed.reason  # the evidence is still spendable
+    assert allowed.arguments == {"amountCents": 500, "merchant": "acme"}
+
+    replay = await chain.check(gated)
+    assert not replay.allowed and "already been used" in replay.reason
+
+
+async def test_the_inverted_composition_is_the_silent_failure_this_guards():
+    """Negative control: with the guard outside the scoping, the stray
+    credential on `balance` is spent by a call the policy never saw, and the
+    legitimate `send` that follows is refused. Nothing errored on the way."""
+    from extensible_mcp.policyset import Route, RouteScopedFilter
+    from extensible_mcp.declared_bundles import credential_jti
+    from extensible_mcp.replay import SingleUseEvidenceFilter
+    from tests import vc_helpers as vc
+
+    key = vc.new_key()
+    bundle, guarded = _single_use_minimal_spend(key)
+    route = Route(name="payments-send", server_type="spend", tools=frozenset({"send"}))
+    inverted = SingleUseEvidenceFilter(
+        RouteScopedFilter(route, guarded._inner, bundle.credential_fields()),
+        credential_fields=("requestVC",),
+        extract_id=credential_jti,
+    )
+    informational, gated = _calls_sharing_one_credential(key)
+
+    passed = await inverted.check(informational)
+    assert passed.allowed  # looks fine
+
+    burned = await inverted.check(gated)
+    assert not burned.allowed and "already been used" in burned.reason
