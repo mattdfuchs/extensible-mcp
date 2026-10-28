@@ -93,6 +93,22 @@ bundle this is not related to.
   the full-chain tier's `approval` / `approverEnrollment` checks when
   those are genuinely absent at or under the $10 threshold — exercised by
   `test_webauthn_policy.py`'s solo-tier scenarios on both engines.
+- **Cross-engine divergence, not a defect in this bundle:** loaded with no
+  relying-party id configured, the Rego twin refuses to load — the wasm
+  module imports `verify_webauthn`, and a missing import is a load-time
+  `PolicyEvaluationError`. A CEL bundle declares no imports, so this twin
+  loads, and the absence surfaces on the first call that reaches
+  `full_chain.approval.webauthn_verified`: an undeclared-reference
+  evaluation fault, which the filter fails closed on with the rendered
+  "could not be evaluated" denial, the detail going to the proxy log.
+  The solo tier, which never reaches the function, still decides
+  normally. Same fail-closed outcome, different moment; measured at
+  adoption, and `test_webauthn_policy.py::test_load_without_rp_id_fails_closed`
+  is therefore Rego-only and says so. Every scenario in that file runs on
+  both engines, the challenge canonicalization included, and none
+  diverged: the invoice and prod twins' undefined-reference divergence
+  has no counterpart here, because this file never feeds the policy an
+  out-of-contract input.
 
 ## Rebuild
 
