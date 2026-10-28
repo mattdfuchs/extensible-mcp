@@ -253,6 +253,29 @@ def _check_value(check_id: str, value: Any) -> tuple[str, str | None]:
     return expr, sentence
 
 
+# cel-python reports an evaluation error with its whole activation -- the
+# assembled input, signed credentials and keys included -- appended as
+# ``(in activation 'Activation(...)')``. A fault's text goes to the proxy log
+# (wasm_filter._log_fault), and a log is a less guarded store than the
+# evidence path, so the activation is cut and the rest bounded before the
+# text leaves this module. The exception itself is chained, for a debugger.
+_ACTIVATION_MARKER = "(in activation"
+_FAULT_TEXT_LIMIT = 200
+
+
+def _fault_text(e: BaseException) -> str:
+    """``TypeName: first line of the message``, without the activation and
+    within a bound; never the input."""
+    text = str(e).splitlines()[0] if str(e) else ""
+    cut = text.find(_ACTIVATION_MARKER)
+    if cut != -1:
+        text = text[:cut]
+    text = text.strip().strip("(").strip("\"'").rstrip()
+    if len(text) > _FAULT_TEXT_LIMIT:
+        text = text[:_FAULT_TEXT_LIMIT] + "..."
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
+
+
 class CelPolicy:
     """Loads one CEL-authored bundle (``checks.cel.json``) and evaluates it
     in-process. Implements the :class:`~extensible_mcp.policy_engine.PolicyEngine`
@@ -383,7 +406,8 @@ class CelPolicy:
                 continue
             except Exception as e:  # noqa: BLE001 - see docstring: unconditional
                 raise PolicyEvaluationError(
-                    f"check {check_id!r} could not be evaluated (failing closed): {e}"
+                    f"check {check_id!r} could not be evaluated (failing closed): "
+                    f"{_fault_text(e)}"
                 ) from e
             if isinstance(result, undefined_evidence()):
                 # The same condition, returned rather than raised.

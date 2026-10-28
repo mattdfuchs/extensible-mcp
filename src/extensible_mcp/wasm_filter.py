@@ -46,6 +46,21 @@ from .wasm_policy import PolicyEvaluationError
 logger = logging.getLogger("extensible_mcp.wasm_filter")
 
 
+# How much of an engine's error text the log line carries. An engine that
+# formats its errors with state -- cel-python appends its whole activation,
+# the assembled input included -- would otherwise put signed credentials in
+# the proxy log; the engines trim their own text, and this is the bound that
+# holds regardless of how a future engine formats. The first line only.
+_LOGGED_EXCEPTION_LIMIT = 500
+
+
+def _bounded(exc: BaseException) -> str:
+    text = str(exc).splitlines()[0] if str(exc) else ""
+    if len(text) > _LOGGED_EXCEPTION_LIMIT:
+        text = text[:_LOGGED_EXCEPTION_LIMIT] + "..."
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def _fault(tool_name: str, stage: str, exc: BaseException, *, detail: str | None = None) -> str:
     """An engine fault: logged for the operator, and turned into the caller's
     reason. The two texts differ on purpose.
@@ -66,7 +81,9 @@ def _fault(tool_name: str, stage: str, exc: BaseException, *, detail: str | None
     token -- stays in the reason, because that message's audience is the
     model, not the operator.
     """
-    logger.warning("%s on call %r (failing closed): %s", stage, tool_name, exc)
+    logger.warning(
+        "%s on call %r (failing closed): %s", stage, tool_name, _bounded(exc)
+    )
     if detail is not None:
         return f"{stage}: {detail}"
     return f"{stage} (failing closed; the detail is in the proxy log)."
