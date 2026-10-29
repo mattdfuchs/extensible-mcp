@@ -276,3 +276,95 @@ async def test_a_verified_token_naming_nobody_is_an_error_not_an_anonymous_call(
         )
     assert result.content[0].text.startswith("Error: the verified token carries no 'sub'")
     assert recording.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# require_principal, and the session bound to its principal
+# --------------------------------------------------------------------------- #
+
+
+def test_require_principal_without_a_verifier_is_a_startup_error():
+    with pytest.raises(ValueError, match="require_principal=True needs an inbound verifier"):
+        create_server(_config(), require_principal=True)
+
+
+async def test_require_principal_refuses_a_request_with_no_principal_ahead_of_every_pipeline():
+    """The in-memory client carries no bearer, which is the stdio shape: with
+    a verifier configured and the flag set, every handler refuses before any
+    filter runs. Not a filter, so there is no unset-filter-permits path."""
+    recording = _Recording()
+    server = create_server(
+        _config(),
+        auth=StaticTokenVerifier(tokens=TOKENS),
+        require_principal=True,
+        extra_search_filters=[recording],
+        extra_call_filters=[recording],
+        extra_load_filters=[recording],
+    )
+    async with Client(server) as client:
+        for tool, args in (
+            ("search_tools", {"query": "add numbers", "top_k": 3}),
+            ("call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}),
+            ("load_mcp_server", {"server_name": "x", "url": "http://x.invalid/mcp"}),
+        ):
+            result = await client.call_tool(tool, args)
+            assert result.content[0].text.startswith("Error: this proxy requires an authenticated principal")
+    assert recording.search == [] and recording.calls == [] and recording.loads == []
+
+
+async def test_unset_or_false_leaves_a_single_tenant_proxy_as_it_was():
+    recording = _Recording()
+    for flag in (None, False):
+        server = create_server(_config(), require_principal=flag, extra_call_filters=[recording])
+        async with Client(server) as client:
+            await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+            result = await client.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+            )
+            assert "3" in result.content[0].text
+    assert recording.calls == [None, None]
+
+
+class _SwitchableBearer:
+    """An httpx auth whose token can change between calls on one session."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+
+    def __call__(self, request):
+        request.headers["Authorization"] = f"Bearer {self.token}"
+        return request
+
+
+async def test_a_session_is_bound_to_the_principal_that_opened_it():
+    recording = _Recording()
+    tokens = dict(TOKENS)
+    tokens["child-token"] = {"client_id": "console", "scopes": [], "sub": "child-1", "iss": ISSUER, "roles": ["child"]}
+    server = create_server(_config(), auth=StaticTokenVerifier(tokens=tokens), extra_call_filters=[recording])
+    async with run_server_async(server) as url:
+        bearer = _SwitchableBearer("parent-token")
+        async with Client(StreamableHttpTransport(url, auth=bearer)) as client:
+            await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+            first = await client.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+            )
+            assert "3" in first.content[0].text
+            bearer.token = "child-token"  # same MCP session, another person's token
+            second = await client.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+            )
+            assert second.content[0].text.startswith("Error: this session is bound to a different principal")
+            bearer.token = "parent-token"  # the original principal, refreshed, still works
+            third = await client.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+            )
+            assert "3" in third.content[0].text
+        # A new session for the other principal is the way in.
+        async with Client(StreamableHttpTransport(url, auth="child-token")) as client:
+            await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+            result = await client.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+            )
+            assert "3" in result.content[0].text
+    subs = [p.sub for p in recording.calls if p is not None]
+    assert subs == ["parent-1", "parent-1", "child-1"]

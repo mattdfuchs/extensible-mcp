@@ -133,6 +133,53 @@ def principal_from_claims(
     )
 
 
+# Same bound as DiscoveredToolsFilter, and for the same reason it is an LRU
+# rather than a refusal: the thing a binding protects is the session's
+# discovery set, which is evicted on the same bound, so an evicted binding
+# guards nothing that still exists.
+MAX_BOUND_SESSIONS = 4096
+
+
+class SessionPrincipals:
+    """Each MCP session acts for one principal, fixed on its first
+    authenticated request.
+
+    FastMCP verifies the bearer per request, so without this a session could
+    change hands mid-conversation: the discovery set scoped to it, and
+    anything else a filter keyed on the session, would belong to someone
+    else. A later request on a bound session carrying a different ``sub``
+    is refused; the same ``sub`` with a refreshed token is the normal case
+    and passes. Keyed on ``sub`` and ``iss`` together, since two issuers may
+    both have a ``user-1``.
+    """
+
+    def __init__(self, max_sessions: int = MAX_BOUND_SESSIONS) -> None:
+        self._by_session: dict[str, tuple[str, str]] = {}
+        self._max_sessions = max_sessions
+
+    def bind(self, session_id: str | None, principal: Principal | None) -> None:
+        """Bind, or check against the existing binding. Raises
+        :class:`PrincipalError` on a mismatch. No session (stdio) or no
+        principal (no inbound auth) binds nothing."""
+        if session_id is None or principal is None:
+            return
+        who = (principal.iss, principal.sub)
+        bound = self._by_session.pop(session_id, None)
+        if bound is not None and bound != who:
+            self._by_session[session_id] = bound  # the original binding stands
+            raise PrincipalError(
+                "this session is bound to a different principal; a session acts "
+                "for the principal that opened it. Open a new session for the "
+                "new principal."
+            )
+        self._by_session[session_id] = who  # re-inserted => most recent
+        while len(self._by_session) > self._max_sessions:
+            self._by_session.pop(next(iter(self._by_session)))
+
+    def bound_to(self, session_id: str) -> tuple[str, str] | None:
+        return self._by_session.get(session_id)
+
+
 def principal_from_token(token: Any, mapping: PrincipalMapping | None = None) -> Principal | None:
     """The principal behind FastMCP's ``AccessToken``, or ``None`` when there
     is no token (stdio, or an HTTP deployment with no ``auth``)."""
