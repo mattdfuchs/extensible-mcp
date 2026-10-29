@@ -53,6 +53,7 @@ from extensible_mcp.types import (
     ServerLoadResult,
     ToolRecord,
 )
+from extensible_mcp.types import Principal
 
 MOCK_SERVER_PATH = str(Path(__file__).parent / "mock_server.py")
 
@@ -242,6 +243,11 @@ class _RecordingLoadFilter:
         return ServerLoadResult(allowed=True)
 
 
+def _principal(label: str) -> Principal:
+    """A distinct, frozen Principal per request; `is` is meaningful on it."""
+    return Principal(sub=f"sub-{label}", iss="https://idp.example", roles=frozenset({label}))
+
+
 def _tool_record() -> ToolRecord:
     """A ToolRecord with every field set to something distinguishable."""
     return ToolRecord(
@@ -325,6 +331,7 @@ async def test_declared_request_fields_reach_every_filter():
             arguments={"amountCents": 500},
             server_name="payments",
             session_id="session-sentinel",
+            principal=_principal("sentinel"),
         ),
         call_response=CallResponse(
             tool_name="payments__send",
@@ -333,9 +340,11 @@ async def test_declared_request_fields_reach_every_filter():
             content=["content-sentinel"],
             is_error=True,
             structured_content={"result": "structured-sentinel"},
+            principal=_principal("sentinel"),
         ),
         load_request=ServerLoadRequest(
-            server_name="payments", url="https://payments.example/mcp"
+            server_name="payments", url="https://payments.example/mcp",
+            principal=_principal("sentinel"),
         ),
     )
     assert dropped == {}
@@ -343,35 +352,37 @@ async def test_declared_request_fields_reach_every_filter():
 
 @dataclasses.dataclass
 class _FutureSearchResult(SearchResult):
-    principal: str = "principal-sentinel"
+    future_field: str = "future-sentinel"
 
 
 @dataclasses.dataclass
 class _FutureCallRequest(CallRequest):
-    principal: str = "principal-sentinel"
+    future_field: str = "future-sentinel"
 
 
 @dataclasses.dataclass
 class _FutureCallResponse(CallResponse):
-    principal: str = "principal-sentinel"
+    future_field: str = "future-sentinel"
 
 
 @dataclasses.dataclass
 class _FutureServerLoadRequest(ServerLoadRequest):
-    principal: str = "principal-sentinel"
+    future_field: str = "future-sentinel"
 
 
 async def test_every_request_field_reaches_every_filter():
     """Field propagation is structural.
 
-    The `principal` field on each subclass stands in for the next field added
-    to a request type -- `principal` itself, in #9's plan. A pipeline that
-    rebuilds by enumerating fields cannot carry it; one that uses
-    `dataclasses.replace` carries it without being told it exists. Nothing
-    about `principal` is special: the test asks whether the mechanism is
-    structural, and a mechanism that must be edited for each new field is a
-    control that silently loses its key. This was `xfail(strict=True)` from
-    #1 until the rebuild sites moved to `replace`.
+    The `future_field` on each subclass stands in for the next field added
+    to a request type. (It was named `principal` while that was the next
+    field; `principal` has since landed and is covered by the declared-fields
+    test above, so the stand-in moved on.) A pipeline that rebuilds by
+    enumerating fields cannot carry it; one that uses `dataclasses.replace`
+    carries it without being told it exists. Nothing about the field is
+    special: the test asks whether the mechanism is structural, and a
+    mechanism that must be edited for each new field is a control that
+    silently loses its key. This was `xfail(strict=True)` from #1 until the
+    rebuild sites moved to `replace`.
     """
     dropped = await _run_all_four_pipelines(
         search_results=[_FutureSearchResult(tool=_tool_record(), score=0.77)],
@@ -469,7 +480,8 @@ async def test_two_requests_in_flight_each_reach_their_own_filters():
             arguments={"amountCents": _Token(f"amount-{label}")},
             server_name=f"payments-{label}",
             session_id=f"session-{label}",
-            principal=_Token(f"principal-{label}"),
+            principal=_principal(label),
+            future_field=_Token(f"future-{label}"),
         )
 
     def call_response(label: str) -> CallResponse:
@@ -480,14 +492,16 @@ async def test_two_requests_in_flight_each_reach_their_own_filters():
             content=[_Token(f"content-{label}")],
             is_error=(label == "a"),
             structured_content={"result": _Token(f"structured-{label}")},
-            principal=_Token(f"principal-{label}"),
+            principal=_principal(label),
+            future_field=_Token(f"future-{label}"),
         )
 
     def load_request(label: str) -> ServerLoadRequest:
         return _FutureServerLoadRequest(
             server_name=f"payments-{label}",
             url=f"https://payments-{label}.example/mcp",
-            principal=_Token(f"principal-{label}"),
+            principal=_principal(label),
+            future_field=_Token(f"future-{label}"),
         )
 
     aliased: dict[str, list[str]] = {}
