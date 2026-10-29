@@ -275,6 +275,32 @@ An existing server name is never re-pointed: repointing a name at another host i
 
 **Credential expiry.** If a downstream call returns 401/403 (or an error message containing "unauthorized"/"forbidden") and the proxy cannot recover by acquiring a fresh token, it translates the failure into a clear error to the LLM naming the server and reporting how long the credential has been unchanged. The proxy's system instructions tell the LLM to ask the user to fix the credential and retry — never to request one in the conversation. Credentials stay out of the chat transcript by design.
 
+### Inbound identity: who a session acts for
+
+Everything above is the proxy authenticating *to* downstream servers. The other direction is who is calling the proxy. Over Streamable HTTP, the MCP client obtains a token from an authorization server with the proxy as its audience and presents it on every request; FastMCP verifies it, and the proxy turns the verified claims into a **principal** — `sub`, `iss`, roles, the `client_id` of the agent the token was issued to, and the issuer's `auth_time`, `amr` and `acr` when it sent them — that rides on every call, response and server-load request and reaches every filter. Never the raw token: the principal is a fact about identity, not a credential. The LLM is never the party that authenticates; the host application is, and the model cannot name itself.
+
+```json
+{
+  "auth": {
+    "issuer": "https://idp.example/realms/household",
+    "audience": "extensible-mcp",
+    "jwks_uri": "https://idp.example/realms/household/protocol/openid-connect/certs"
+  },
+  "principal": {
+    "roles_claim": "roles",
+    "role_map": {"household-parent": "parent", "household-child": "child"}
+  }
+}
+```
+
+`auth` is resource-server mode and the only mode the config can express: `issuer`, `audience`, and either `jwks_uri` or a `public_key_file`, with `algorithm` defaulting to RS256. The proxy is never an OAuth client here, so there is no client secret to put in the file, and a block that carries one is refused. A proxy that fronts an identity provider as an authorization server — FastMCP's `OIDCProxy` — is wired from an entry point with `create_server(auth=...)`, which takes any FastMCP `AuthProvider`.
+
+`principal` says which claim holds the roles, by dotted path (`roles` by default, which is what the Keycloak recipe's mapper emits; `realm_access.roles` for a stock realm; a single-string `role` claim reads as one role), and optionally how to map its values. **No `role_map` means the issuer already speaks your role names** and they are read verbatim. With a map, the map is total: a value it does not name is dropped and logged once, never passed through under a foreign name.
+
+`create_server(require_principal=...)` is the deployment-mode selector. `True` refuses every request that carries no principal before any pipeline runs, and requires `auth`. `False` is an operator saying "single tenant on purpose": one proxy per person on loopback, where every principal is `None`. Unset is what the HTTP transport's gate keys on. Either way a session is bound to the principal of its first authenticated request, since the token is verified per request, and a later request on that session for a different principal is refused.
+
+A policy can read the caller the way it reads the clock: a fetch-plan entry with `"source": {"kind": "caller", "params": {"field": "sub"}}` assembles the principal's `sub` (or `roles`, `iss`, `client_id`, `auth_time`, `amr`, `acr`) into the input. It is never a `call` field, so the model cannot supply it and the augmenter advertises nothing for it, and with no principal the lookup fails closed as a denial.
+
 ### Filter pipelines
 
 Four independent pipelines — search, call (request), response, and server-load — each pass through an ordered chain of filters before (or in the response case, after) the operation runs. The proxy enforces one structural guarantee: **the LLM can only call tools it has previously surfaced via `search_tools`.** That gate is built into the call pipeline, and nothing reaching a tool through `call_tool` can get around it.
