@@ -41,7 +41,7 @@ from .wasm_filter import WasmPolicyFilter
 
 # The fetch-plan source kinds a declared bundle may use. ``wallet`` is the
 # one that needs code.
-_CONFIGURABLE_SOURCES = frozenset({"call", "config", "clock", "derive"})
+_CONFIGURABLE_SOURCES = frozenset({"call", "config", "clock", "derive", "caller"})
 
 
 class ServerScopedFilter:

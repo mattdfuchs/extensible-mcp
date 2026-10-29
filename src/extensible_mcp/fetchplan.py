@@ -26,6 +26,9 @@ Source-kind → field, for the family-spend example:
 - ``config`` — a deployment constant (trust root)
 - ``clock``  — the current time
 - ``wallet`` — an attestation the proxy fetches by subject DID (membership)
+- ``caller`` — a fact about who the session acts for, from the verified
+  inbound token's principal (``sub``, ``roles``, ...): never from the call,
+  so the model cannot name itself
 - ``derive`` — a field computed from earlier ones by one primitive (a hash, a
   signature check folded over candidate keys), for a policy language that
   cannot evaluate the primitive itself
@@ -93,6 +96,9 @@ class FetchContext:
     config: dict[str, Any] = field(default_factory=dict)
     now: int = 0
     wallet: WalletLookup | None = None
+    # ``caller``: the principal the verified inbound token established for
+    # the session, or ``None`` when the deployment has no inbound auth.
+    principal: Any = None
 
 
 class Resolver(Protocol):
@@ -126,6 +132,41 @@ class ConfigResolver:
         if name not in ctx.config:
             raise FetchError(f"no deployment config for {name!r}")
         return ctx.config[name]
+
+
+#: The fields a ``caller`` entry may name: the Principal's, by name. Fixed
+#: here so a bundle's vocabulary is the proxy's and not an issuer's.
+CALLER_FIELDS = frozenset({"sub", "iss", "roles", "client_id", "auth_time", "amr", "acr"})
+
+
+class CallerResolver:
+    """``caller``: a fact about who the session acts for.
+
+    Read from the :class:`~extensible_mcp.types.Principal` the verified
+    inbound token established, never from the call: a caller fact that the
+    model could supply would be the model naming itself, and the search-side
+    augmenter would make it look identical to a real one. ``params.field``
+    names which fact; the vocabulary is :data:`CALLER_FIELDS`, checked at
+    load. With no principal the lookup fails closed, which renders as a
+    denial: a rule that reads the caller cannot be satisfied by a session
+    nobody vouched for. ``roles`` and ``amr`` arrive as sorted lists, so the
+    assembled input stays JSON.
+    """
+
+    async def resolve(self, name, params, assembled, ctx):
+        principal = ctx.principal
+        if principal is None:
+            raise FetchError(
+                f"{name!r} is read from the caller, and this request carries no "
+                "authenticated principal"
+            )
+        which = params.get("field")
+        value = getattr(principal, which)
+        if isinstance(value, (frozenset, set, tuple)):
+            value = sorted(value)
+        if value is None:
+            raise FetchError(f"{name!r}: the caller's token carries no {which!r}")
+        return value
 
 
 class ClockResolver:
@@ -677,6 +718,21 @@ def _input_roots(node: Any) -> set[str]:
     return roots
 
 
+def validate_caller_sources(plan: dict[str, Any]) -> None:
+    """Refuse, at load, a ``caller`` entry naming a field the
+    :class:`~extensible_mcp.types.Principal` does not have, or none."""
+    for entry in plan.get("entries") or []:
+        source = entry.get("source") or {}
+        if source.get("kind") != "caller":
+            continue
+        which = (source.get("params") or {}).get("field")
+        if which not in CALLER_FIELDS:
+            raise DerivePlanError(
+                f"fetch plan entry {entry.get('field')!r}: a 'caller' source must name "
+                f"one of {sorted(CALLER_FIELDS)} in params.field, got {which!r}"
+            )
+
+
 def validate_wallet_subjects(plan: dict[str, Any]) -> None:
     """Refuse, at load, a ``wallet`` lookup keyed on model-typed data.
 
@@ -1080,6 +1136,7 @@ def default_resolvers(
         "config": ConfigResolver(),
         "clock": ClockResolver(),
         "wallet": WalletResolver(),
+        "caller": CallerResolver(),
         DERIVE_KIND: DeriveResolver(primitives),
     }
 
