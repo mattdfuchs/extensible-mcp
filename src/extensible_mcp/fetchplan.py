@@ -654,6 +654,76 @@ def _validate_emit_flags(plan: dict[str, Any]) -> None:
             )
 
 
+# The call fields the model types directly. A credential field is also
+# ``call``-sourced, but what the plan reads out of it (``requestVC.claims.iss``)
+# is bound to a signature the policy verifies; these two are bound to nothing.
+_MODEL_TYPED_FIELDS = frozenset({"tool", "arguments"})
+
+
+def _input_roots(node: Any) -> set[str]:
+    """The root field of every ``$input`` reference under ``node``, at any
+    depth: the fields a source reads."""
+    roots: set[str] = set()
+    if isinstance(node, dict):
+        ref = node.get("$input")
+        if isinstance(ref, str) and set(node) == {"$input"}:
+            roots.add(ref.split(".", 1)[0])
+        else:
+            for value in node.values():
+                roots |= _input_roots(value)
+    elif isinstance(node, list):
+        for value in node:
+            roots |= _input_roots(value)
+    return roots
+
+
+def validate_wallet_subjects(plan: dict[str, Any]) -> None:
+    """Refuse, at load, a ``wallet`` lookup keyed on model-typed data.
+
+    A wallet source fetches an attestation **about a subject**, and the
+    policy then trusts what it fetched: a membership says which role the
+    admin vouched for, an enrollment says which key a human registered.
+    Every shipped bundle keys that lookup on a field inside a signed
+    credential -- ``requestVC.claims.iss``, ``childApproval.credentialId`` --
+    so the policy's signature check binds the fetched attestation to the
+    evidence. Key it on ``arguments.payee`` instead and the lookup becomes a
+    confused-deputy fetch: the model names any subject, the proxy fetches an
+    authority's statement about them, and the rule reads it as if it were
+    about the caller. That is the ``get_payment_methods(user_email=
+    <victim>)`` shape; a plan already declares every field's source, so the
+    loader can make it unexpressible rather than merely absent.
+
+    Refused: a wallet ``subject`` whose ``$input`` path roots at ``tool`` or
+    ``arguments``, directly or through a ``derive`` entry that reads either.
+    A literal subject is an author's constant and passes.
+    """
+    tainted = set(_MODEL_TYPED_FIELDS)
+    for entry in plan.get("entries") or []:
+        source = entry.get("source") or {}
+        kind = source.get("kind")
+        field = entry.get("field")
+        if kind == "derive":
+            if _input_roots(source) & tainted:
+                tainted.add(field)
+            continue
+        if kind != "wallet":
+            continue
+        subject = (source.get("params") or {}).get("subject")
+        roots = _input_roots(subject)
+        bad = sorted(roots & tainted)
+        if bad:
+            via = "" if bad[0] in _MODEL_TYPED_FIELDS else " (derived from the call's own arguments)"
+            raise DerivePlanError(
+                f"fetch plan entry {field!r}: a 'wallet' lookup's subject is "
+                f"read from {bad[0]!r}{via}, which the model types. An "
+                "attestation fetched for a subject the model names is a "
+                "confused-deputy fetch; key the lookup on a field inside a "
+                "signed credential (e.g. 'requestVC.claims.iss') so the "
+                "policy's signature check binds what was fetched to the "
+                "evidence."
+            )
+
+
 def validate_derive_plan(
     plan: dict[str, Any], *, primitives: dict[str, Callable[..., Any]] | None = None
 ) -> None:

@@ -552,6 +552,7 @@ def create_server(
             text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
             content: list[Any] = [mcp_types.TextContent(type="text", text=text)]
             is_error = False
+            structured_content = raw_result if isinstance(raw_result, dict) else None
         elif tool_name in client_mgr.get_qualified_names():
             try:
                 result: mcp_types.CallToolResult = await client_mgr.call_tool(
@@ -568,6 +569,7 @@ def create_server(
                 return f"Error calling tool '{tool_name}': {_describe(e)}"
             content = list(result.content)
             is_error = result.isError
+            structured_content = result.structuredContent
         else:
             return f"Error: Unknown tool '{tool_name}'. Use search_tools to find available tools."
 
@@ -577,6 +579,7 @@ def create_server(
             server_name=server_name,
             content=content,
             is_error=is_error,
+            structured_content=structured_content,
         )
         response_result = await response_pipeline.apply(response_request)
         if not response_result.allowed:

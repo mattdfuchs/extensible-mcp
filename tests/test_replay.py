@@ -186,6 +186,39 @@ class TestGuard:
         refused = [r for r in results if not r.allowed]
         assert all("already been used" in r.reason for r in refused)
 
+    async def test_the_loser_of_a_race_is_told_the_approval_may_still_be_live(self):
+        """Two concurrent calls on one credential; the winner is then refused
+        by the policy and releases the reservation. The loser was refused
+        while the winner still held it, so "already used" alone would be
+        false: the message names the in-flight case and says a retry is the
+        way out, and the retry succeeds."""
+
+        class _SlowRefuse:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def check(self, request: CallRequest) -> CallFilterResult:
+                self.calls += 1
+                await asyncio.sleep(0)
+                if self.calls == 1:
+                    return CallFilterResult(
+                        allowed=False, reason="amount over the cap",
+                        tool_name=request.tool_name, arguments=dict(request.arguments),
+                    )
+                return CallFilterResult(
+                    allowed=True, tool_name=request.tool_name, arguments=dict(request.arguments),
+                )
+
+        f = SingleUseEvidenceFilter(_SlowRefuse())
+        b = _bundle("urn:race")
+        first, second = await asyncio.gather(f.check(_call(b)), f.check(_call(b)))
+        winner, loser = (first, second) if "cap" in first.reason else (second, first)
+        assert winner.reason == "amount over the cap"
+        assert "still in flight" in loser.reason and "retry this one" in loser.reason
+
+        retry = await f.check(_call(b))
+        assert retry.allowed is True, retry.reason
+
     async def test_a_chain_sharing_one_jti_does_not_refuse_itself(self):
         """A bundle's authorization credential carries the same ``jti`` as the
         request credential it signs over -- the policy requires it

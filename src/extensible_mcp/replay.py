@@ -161,10 +161,13 @@ class SingleUseEvidenceFilter:
     passed the test before either recorded, and one approval authorized both --
     the replay this filter exists to prevent, reached by concurrency rather
     than by sequence. Reserving first closes that while keeping a refused
-    call's credential spendable. The cost is one narrow false denial: of two
-    concurrent calls on a single credential, the one that loses the race is
-    told the approval is used even if the winner is then refused and releases
-    it. Refusing wrongly is the safe direction and a retry succeeds.
+    call's credential spendable. The cost is one narrow refusal that may be
+    wrong: of two concurrent calls on a single credential, the one that loses
+    the race is refused even if the winner is then refused and releases it.
+    Refusing wrongly is the safe direction and a retry succeeds -- and the
+    refusal says so, because at that moment the guard cannot tell a spent
+    reservation from one still in flight, and a denial that states a cause
+    it does not know is worse than one that names both.
 
     The default store is in memory and per process, the same scope as
     ``DiscoveredToolsFilter``'s, so a restart forgets what has been spent and
@@ -251,9 +254,11 @@ class SingleUseEvidenceFilter:
                 if outcome == ALREADY_SPENT:
                     return self._deny(
                         request,
-                        "that approval has already been used. A signed approval "
-                        "authorizes one call; ask for a new one rather than "
-                        "re-sending this one.",
+                        "that approval has already been used, or is held by "
+                        "another call still in flight. A signed approval "
+                        "authorizes one call: if the other call was refused, "
+                        "retry this one; otherwise ask for a new approval "
+                        "rather than re-sending this one.",
                     )
                 return self._deny(
                     request,

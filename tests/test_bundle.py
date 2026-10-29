@@ -151,3 +151,79 @@ def test_a_cedar_bundle_accepts_the_flag_at_load(rewritten_bundle):
         PolicyBundle.load(
             rewritten_bundle(CEDAR_MINIMAL_SPEND, plan=_add_entry({**extra, "emit": "no"}))
         )
+
+
+# --------------------------------------------------------------------------- #
+# A wallet lookup is never keyed on what the model typed.
+# --------------------------------------------------------------------------- #
+
+FAMILY_SPEND = FIXTURES / "family_spend"
+
+
+def _wallet_subject(field, subject):
+    def mutate(plan):
+        for e in plan["entries"]:
+            if e["field"] == field:
+                e["source"]["params"]["subject"] = subject
+    return mutate
+
+
+def test_every_shipped_wallet_lookup_is_keyed_inside_a_credential():
+    """The invariant the loader now holds was an authoring convention first:
+    every wallet subject in the corpus roots at a credential field."""
+    from extensible_mcp.fetchplan import validate_wallet_subjects
+
+    found = 0
+    for path in SHIPPED_PLANS:
+        plan = json.loads(path.read_text())
+        validate_wallet_subjects(plan)
+        for e in plan["entries"]:
+            if e["source"].get("kind") == "wallet":
+                found += 1
+                root = e["source"]["params"]["subject"]["$input"].split(".")[0]
+                assert root not in ("tool", "arguments"), f"{path}: {e['field']}"
+    assert found > 0
+
+
+@pytest.mark.parametrize(
+    "subject, needle",
+    [
+        ({"$input": "arguments.merchant"}, r"read from 'arguments'"),
+        ({"$input": "tool"}, r"read from 'tool'"),
+    ],
+)
+def test_load_refuses_a_wallet_subject_the_model_types(rewritten_bundle, subject, needle):
+    """``get_payment_methods(user_email=<victim>)``: the lookup would fetch
+    an authority's statement about whoever the model named. Unexpressible,
+    not merely absent from the corpus."""
+    d = rewritten_bundle(FAMILY_SPEND, plan=_wallet_subject("requesterMembership", subject))
+    with pytest.raises(DerivePlanError, match=needle) as e:
+        PolicyBundle.load(d)
+    assert "requesterMembership" in str(e.value) and "requestVC.claims.iss" in str(e.value)
+
+
+def test_load_refuses_a_wallet_subject_derived_from_the_arguments(rewritten_bundle):
+    """Laundering the argument through a ``derive`` entry does not help: the
+    taint follows the ``$input`` references."""
+    laundered = {
+        "field": "payeeDigest",
+        "source": {"kind": "derive", "fn": "sha256", "args": [{"$input": "arguments.merchant"}]},
+        "schema": {"type": "string"},
+    }
+
+    def mutate(plan):
+        plan["primitives"] = {"sha256": {"class": "pure"}}
+        entries = plan["entries"]
+        at = next(i for i, e in enumerate(entries) if e["field"] == "requesterMembership")
+        entries.insert(at, laundered)
+        entries[at + 1]["source"]["params"]["subject"] = {"$input": "payeeDigest"}
+
+    with pytest.raises(DerivePlanError, match=r"'payeeDigest' \(derived from the call's own arguments\)"):
+        PolicyBundle.load(rewritten_bundle(FAMILY_SPEND, plan=mutate))
+
+
+def test_a_literal_wallet_subject_is_an_authors_constant(rewritten_bundle):
+    bundle = PolicyBundle.load(
+        rewritten_bundle(FAMILY_SPEND, plan=_wallet_subject("requesterMembership", "did:key:fixed"))
+    )
+    assert bundle.name == "family_spend"

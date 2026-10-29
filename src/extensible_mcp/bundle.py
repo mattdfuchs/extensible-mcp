@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from .fetchplan import validate_derive_plan
+from .fetchplan import validate_derive_plan, validate_wallet_subjects
 from .policy_engine import PolicyEngine, inline_guidance
 from .wasm_policy import OpaWasmPolicy
 
@@ -143,6 +143,9 @@ class PolicyBundle:
         # A plan whose derived fields are shaped wrong is a bundle that must
         # never reach a call, so this is a load-time refusal, not a runtime one.
         validate_derive_plan(fetchplan, primitives=primitives)
+        # An authority lookup keyed on what the model typed is a confused
+        # deputy; the plan declares every source, so this is checkable here.
+        validate_wallet_subjects(fetchplan)
         _refuse_required_but_unemitted(fetchplan, manifest, d / "fetchplan.json")
         guidance_path = d / "guidance.json"
         guidance = (

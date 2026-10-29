@@ -332,6 +332,7 @@ async def test_declared_request_fields_reach_every_filter():
             server_name="payments",
             content=["content-sentinel"],
             is_error=True,
+            structured_content={"result": "structured-sentinel"},
         ),
         load_request=ServerLoadRequest(
             server_name="payments", url="https://payments.example/mcp"
@@ -386,6 +387,7 @@ async def test_every_request_field_reaches_every_filter():
             server_name="payments",
             content=["content-sentinel"],
             is_error=True,
+            structured_content={"result": "structured-sentinel"},
         ),
         load_request=_FutureServerLoadRequest(
             server_name="payments", url="https://payments.example/mcp"
@@ -477,6 +479,7 @@ async def test_two_requests_in_flight_each_reach_their_own_filters():
             server_name=f"payments-{label}",
             content=[_Token(f"content-{label}")],
             is_error=(label == "a"),
+            structured_content={"result": _Token(f"structured-{label}")},
             principal=_Token(f"principal-{label}"),
         )
 
