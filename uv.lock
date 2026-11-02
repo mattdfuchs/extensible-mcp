@@ -530,7 +530,7 @@ wheels = [
 
 [[package]]
 name = "extensible-mcp"
-version = "0.3.5"
+version = "0.3.6"
 source = { editable = "." }
 dependencies = [
     { name = "fastembed" },
@@ -575,12 +575,12 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'oauth'", specifier = ">=42.0" },
     { name = "cryptography", marker = "extra == 'wasm'", specifier = ">=42.0" },
     { name = "fastembed", specifier = ">=0.6.0" },
-    { name = "fastmcp", specifier = ">=2.0.0" },
+    { name = "fastmcp", specifier = ">=2.0.0,<4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "joserfc", marker = "extra == 'oauth'", specifier = ">=1.6.5" },
     { name = "joserfc", marker = "extra == 'wasm'", specifier = ">=1.6.5" },
     { name = "jsonschema", marker = "extra == 'wasm'", specifier = ">=4.18" },
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "regopy", marker = "extra == 'rego'", specifier = ">=0.4.0" },
     { name = "wasmtime", marker = "extra == 'wasm'", specifier = ">=24.0" },

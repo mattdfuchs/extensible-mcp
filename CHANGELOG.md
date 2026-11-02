@@ -3,6 +3,28 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.3.6] - 2026-11-02
+
+One change, and it is urgent for anyone installing fresh: the dependency
+ranges are bounded to the majors this line was built and tested on,
+`fastmcp>=2.0.0,<4` and `mcp>=1.0.0,<2`. No code changes.
+
+**Why.** FastMCP 4 shipped on 2026-08-31 on MCP SDK 2, which speaks the
+2026-07-28 protocol revision. That revision removes the protocol session, and
+under FastMCP 4's default sessionless mode `ctx.session_id` is a fresh value
+on every request. This proxy scopes discovered tools per session (0.3.2), so
+on FastMCP 4 every `call_tool` after a `search_tools` is refused as "not
+discovered". 0.3.5 declared `fastmcp>=2.0.0` and `mcp>=1.0.0`, so a fresh
+install today resolves to FastMCP 4.1.5 / SDK 2.3.0 and the proxy denies every
+call. It fails closed, which is the right direction, but it is unusable.
+
+An existing installation on FastMCP 3.x is unaffected and needs nothing. A
+fresh install, or one that re-resolved to FastMCP 4, should upgrade to 0.3.6 or
+pin `fastmcp<4` by hand.
+
+Adopting the 2026-07-28 revision, where discovery scoping has to key on
+something other than the session, is a later release; it is not a patch.
+
 ## [0.3.5] - 2026-10-27
 
 Three things, and they are one thing: a third policy engine, the machinery it
