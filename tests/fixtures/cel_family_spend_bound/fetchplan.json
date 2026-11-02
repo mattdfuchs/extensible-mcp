@@ -1,0 +1,170 @@
+{
+  "input": "SpendInput",
+  "entries": [
+    {
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "type": "string"
+      },
+      "guard": {
+        "required_in_tiers": [
+          0,
+          1
+        ],
+        "field": "tool",
+        "deciding_checks": [],
+        "always": true
+      },
+      "field": "tool"
+    },
+    {
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/SpendRequest"
+      },
+      "guard": {
+        "required_in_tiers": [
+          0,
+          1
+        ],
+        "field": "arguments",
+        "deciding_checks": [],
+        "always": true
+      },
+      "field": "arguments"
+    },
+    {
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/RequestVC"
+      },
+      "guard": {
+        "required_in_tiers": [
+          0,
+          1
+        ],
+        "field": "requestVC",
+        "deciding_checks": [],
+        "always": true
+      },
+      "field": "requestVC"
+    },
+    {
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/AuthorizationVC"
+      },
+      "guard": {
+        "required_in_tiers": [
+          1
+        ],
+        "field": "authorizationVC",
+        "deciding_checks": [
+          "full_chain.arguments.amount_cents_above",
+          "full_chain.arguments.amount_cents_at_most"
+        ],
+        "always": false
+      },
+      "field": "authorizationVC"
+    },
+    {
+      "source": {
+        "kind": "config"
+      },
+      "schema": {
+        "$ref": "#/definitions/DID"
+      },
+      "field": "trustRootDID"
+    },
+    {
+      "source": {
+        "kind": "config"
+      },
+      "schema": {
+        "type": "string"
+      },
+      "field": "trustRootJwk"
+    },
+    {
+      "source": {
+        "kind": "clock"
+      },
+      "schema": {
+        "$ref": "#/definitions/Timestamp"
+      },
+      "field": "now"
+    },
+    {
+      "source": {
+        "params": {
+          "subject": {
+            "$input": "requestVC.claims.iss"
+          }
+        },
+        "kind": "wallet"
+      },
+      "schema": {
+        "$ref": "#/definitions/Membership"
+      },
+      "field": "requesterMembership"
+    },
+    {
+      "source": {
+        "params": {
+          "subject": {
+            "$input": "authorizationVC.claims.iss"
+          }
+        },
+        "kind": "wallet"
+      },
+      "schema": {
+        "$ref": "#/definitions/Membership"
+      },
+      "field": "approverMembership"
+    },
+    {
+      "field": "callerIdp",
+      "source": {
+        "kind": "caller",
+        "params": {
+          "field": "iss"
+        }
+      },
+      "schema": {
+        "type": "string"
+      },
+      "guard": {
+        "field": "callerIdp",
+        "always": false,
+        "required_in_tiers": [],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "callerAccount",
+      "source": {
+        "kind": "caller",
+        "params": {
+          "field": "sub"
+        }
+      },
+      "schema": {
+        "type": "string"
+      },
+      "guard": {
+        "field": "callerAccount",
+        "always": false,
+        "required_in_tiers": [],
+        "deciding_checks": []
+      }
+    }
+  ]
+}

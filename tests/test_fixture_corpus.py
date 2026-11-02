@@ -48,6 +48,8 @@ EXPECTED_COUNTS = {
     "cel_family_spend_invoice": (32, 23, 9),
     "family_spend": (29, 16, 13),
     "cel_family_spend": (29, 16, 13),
+    # The teaching bundle plus the token/evidence seam: two account_bound checks.
+    "cel_family_spend_bound": (31, 18, 13),
     "cedar_family_spend": (29, 16, 13),
     # The adopted Cedar policy re-shaped by this repo: permit decides, forbid explains.
     "cedar_family_spend_compact": (29, 16, 13),
@@ -77,13 +79,13 @@ PINNED_DIGESTS = {
 }
 # cedar_family_spend's rules are supplied, but its guidance is this repo's
 # own teaching file, so it carries no digest either.
-TEACHING = {"family_spend", "cel_family_spend", "cedar_family_spend",
-            "cedar_family_spend_compact",
+TEACHING = {"family_spend", "cel_family_spend", "cel_family_spend_bound",
+            "cedar_family_spend", "cedar_family_spend_compact",
             "minimal_spend", "cel_minimal_spend", "cedar_minimal_spend"}
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
                 "family_spend_invoice", "minimal_spend"}
-CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_invoice", "cel_family_spend_prod",
-               "cel_family_spend_webauthn", "cel_minimal_spend"}
+CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_bound", "cel_family_spend_invoice",
+               "cel_family_spend_prod", "cel_family_spend_webauthn", "cel_minimal_spend"}
 
 # Rego bundle -> its CEL twin, or the reason it has none. A missing twin that
 # is not listed here fails the pairing test rather than vanishing from it.
@@ -488,6 +490,7 @@ RP_ID = "approval.example"
 LOAD_CONFIG = {
     "family_spend": {},
     "cel_family_spend": {},
+    "cel_family_spend_bound": {},
     "cedar_family_spend": {},
     "cedar_family_spend_compact": {},
     "minimal_spend": {},
