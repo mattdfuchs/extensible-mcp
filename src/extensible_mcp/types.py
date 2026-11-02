@@ -142,6 +142,31 @@ class SearchResult:
     score: float
 
 
+@dataclass(frozen=True)
+class Principal:
+    """Who a session acts for, as the verified inbound token asserts it.
+
+    Built from a token's claims by :mod:`extensible_mcp.principal` and never
+    from anything the model supplies. ``sub`` and ``iss`` identify the user
+    at the issuer; ``roles`` are the deployment's own role names, after the
+    configured mapping; ``client_id`` is the agent the token was issued to,
+    so "user U via agent A" is one value and not two. ``auth_time``, ``amr``
+    and ``acr`` are what the issuer said about how the user authenticated,
+    ``None`` when it said nothing.
+
+    **Never the raw token.** Requests are rebuilt and logged, and a principal
+    is a fact about identity, not a credential that could be replayed.
+    """
+
+    sub: str
+    iss: str
+    roles: frozenset[str] = frozenset()
+    client_id: str | None = None
+    auth_time: int | None = None
+    amr: tuple[str, ...] | None = None
+    acr: str | None = None
+
+
 @dataclass
 class CallRequest:
     """Input to the call filter pipeline.
@@ -153,14 +178,19 @@ class CallRequest:
     ``DiscoveredToolsFilter``.
 
     It is deliberately *not* an identity claim. It says which connection this
-    came from, not who the connection acts for. Nothing about the principal
-    behind a session is established anywhere in the proxy today.
+    came from, not who the connection acts for. That is ``principal``: the
+    :class:`Principal` the verified inbound token established for the session,
+    or ``None`` when the deployment has no inbound auth (stdio, where the
+    process serves one person, or an HTTP deployment that opted out with
+    ``require_principal=False``). A filter that keys on identity treats
+    ``None`` as "no principal", never as "anyone".
     """
 
     tool_name: str
     arguments: dict[str, Any]
     server_name: str
     session_id: str | None = None
+    principal: Principal | None = None
 
 
 @dataclass
@@ -175,10 +205,12 @@ class CallFilterResult:
 
 @dataclass
 class ServerLoadRequest:
-    """Input to the server load filter pipeline."""
+    """Input to the server load filter pipeline. ``principal`` as on
+    :class:`CallRequest`."""
 
     server_name: str
     url: str
+    principal: Principal | None = None
 
 
 @dataclass
@@ -212,6 +244,7 @@ class CallResponse:
     content: list[Any] = field(default_factory=list)
     is_error: bool = False
     structured_content: dict[str, Any] | None = None
+    principal: Principal | None = None
 
 
 @dataclass

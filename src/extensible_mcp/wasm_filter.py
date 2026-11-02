@@ -225,6 +225,7 @@ class WasmPolicyFilter:
             config=self._config,
             now=self._clock(),
             wallet=self._wallet,
+            principal=request.principal,
         )
 
         # Stripping the credential fields is correct whatever the verdict: the
@@ -374,6 +375,7 @@ class VCPolicyFilter:
             config={**self._extra_config, "trustedAdminDids": self._trusted},
             now=self._clock(),
             wallet=wallet_lookup,
+            principal=request.principal,
         )
 
         absent = _absent_required_credentials(self.bundle, adapted.envelope)

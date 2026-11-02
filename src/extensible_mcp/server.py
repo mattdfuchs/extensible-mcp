@@ -22,6 +22,13 @@ from . import admin
 from .client_manager import ClientManager, TokenExpiredError
 from .config import Config, find_config_path, load_config
 from .declared_bundles import build_declared_bundle_filters
+from .principal import (
+    PrincipalError,
+    PrincipalMapping,
+    SessionPrincipals,
+    build_auth_provider,
+    principal_from_token,
+)
 from .filters import (
     AccessControlFilter,
     CallFilter,
@@ -38,7 +45,7 @@ from .filters import (
     ToolFilter,
 )
 from .routing import BundleRouter
-from .types import CallRequest, CallResponse, LocalTool, ServerLoadRequest, ToolRecord
+from .types import CallRequest, CallResponse, LocalTool, Principal, ServerLoadRequest, ToolRecord
 from .vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -293,6 +300,8 @@ async def _setup(
     extra_load_filters: Sequence[ServerLoadFilter] = (),
     bundle_router: BundleRouter | None = None,
     local_tools: Sequence[LocalTool] = (),
+    principal_mapping: PrincipalMapping | None = None,
+    require_principal: bool | None = None,
 ) -> dict[str, Any]:
     """Connect to downstream servers, build vector index, return lifespan context."""
     (
@@ -362,7 +371,36 @@ async def _setup(
         "discovered_filter": discovered_filter,
         "bundle_router": bundle_router,
         "local_tools": local_registry,
+        "principal_mapping": principal_mapping,
+        "require_principal": bool(require_principal),
+        "session_principals": SessionPrincipals(),
     }
+
+
+def _current_principal(ctx: Context) -> Principal | None:
+    """The principal behind this request, from the token FastMCP verified on
+    it. Read per request, never cached per session: on Streamable HTTP the
+    bearer travels on every message and FastMCP verifies each one.
+
+    Raises :class:`PrincipalError`, which the handler returns as an error,
+    when the deployment requires a principal and the request carries none,
+    or when the session is already bound to a different one. Enforced here,
+    ahead of every pipeline and not as a filter, because an unset filter
+    permits -- the 0.3.2 shape."""
+    from fastmcp.server.dependencies import get_access_token
+
+    lifespan_context = ctx.lifespan_context
+    mapping: PrincipalMapping | None = lifespan_context.get("principal_mapping")
+    principal = principal_from_token(get_access_token(), mapping)
+    if principal is None and lifespan_context.get("require_principal"):
+        raise PrincipalError(
+            "this proxy requires an authenticated principal and the request "
+            "carries none"
+        )
+    sessions: SessionPrincipals | None = lifespan_context.get("session_principals")
+    if sessions is not None:
+        sessions.bind(ctx.session_id, principal)
+    return principal
 
 
 def _admit_servers(router: BundleRouter, servers):
@@ -405,6 +443,9 @@ def create_server(
     bundle_router: BundleRouter | None = None,
     local_tools: Sequence[LocalTool] = (),
     reload_config: Callable[[], Config] | None = None,
+    auth: Any | None = None,
+    principal_mapping: PrincipalMapping | None = None,
+    require_principal: bool | None = None,
 ) -> FastMCP:
     """Create a configured FastMCP proxy server for the given config.
 
@@ -428,6 +469,26 @@ def create_server(
     bypasses this — that asymmetry between "local" and "downstream" tools is
     exactly what ``local_tools`` exists to remove.
 
+    ``auth`` is FastMCP's ``AuthProvider``, passed straight through: FastMCP
+    verifies the bearer on each HTTP request against it, and the handlers
+    turn the verified claims into the :class:`~extensible_mcp.types.Principal`
+    every pipeline carries. Absent, ``config.auth`` builds a ``JWTVerifier``
+    (resource-server mode: issuer, audience, JWKS or one public key); absent
+    both, there is no inbound auth and every principal is ``None``.
+    ``principal_mapping`` says which claim holds the roles and how its values
+    map; absent, ``config.principal`` does, and absent that, ``roles`` read
+    verbatim.
+
+    ``require_principal`` is the deployment-mode selector, not a safety flag.
+    ``True`` refuses every request that carries no principal, ahead of every
+    pipeline, and requires ``auth``. ``False`` is an operator saying "single
+    tenant on purpose": a per-person proxy on loopback, where every principal
+    is ``None``. ``None`` is unset, which is what the HTTP transport's gate
+    keys on (it refuses to serve HTTP with no ``auth`` and the flag unset).
+    Either way a session is bound to the principal of its first
+    authenticated request, and a later request on it for a different
+    principal is refused.
+
     ``config.filters.policy_bundles`` — bundles declared in the config file
     rather than wired in code — are loaded here, before the lifespan exists,
     so a bundle that cannot be loaded raises from this call with the
@@ -441,6 +502,20 @@ def create_server(
     extra_call_filters = [*declared_call_filters, *extra_call_filters]
     extra_search_filters = [*declared_search_filters, *extra_search_filters]
 
+    if auth is None and config.auth is not None:
+        auth = build_auth_provider(config.auth)
+    if require_principal and auth is None:
+        raise ValueError(
+            "require_principal=True needs an inbound verifier: pass auth=, or "
+            "configure an 'auth' block. With neither, no request could ever "
+            "carry a principal and every call would be refused."
+        )
+    if principal_mapping is None:
+        principal_mapping = PrincipalMapping(
+            roles_claim=config.principal.roles_claim,
+            role_map=config.principal.role_map,
+        )
+
     @lifespan
     async def configured_lifespan(server: FastMCP):
         ctx = await _setup(
@@ -451,6 +526,8 @@ def create_server(
             extra_load_filters=extra_load_filters,
             bundle_router=bundle_router,
             local_tools=local_tools,
+            principal_mapping=principal_mapping,
+            require_principal=require_principal,
         )
         remove_handler = _install_reload_handler(ctx, reload_config)
         try:
@@ -485,6 +562,7 @@ def create_server(
             "only."
         ),
         lifespan=configured_lifespan,
+        auth=auth,
     )
 
     @server.tool(
@@ -499,8 +577,12 @@ def create_server(
         vs: VectorStore = ctx.lifespan_context["vector_store"]
         pipeline: FilterPipeline = ctx.lifespan_context["filter_pipeline"]
         discovered_filter: DiscoveredToolsFilter = ctx.lifespan_context["discovered_filter"]
+        try:
+            principal = _current_principal(ctx)
+        except PrincipalError as e:
+            return f"Error: {e}"
         results = vs.search(query, top_k=top_k)
-        results = pipeline.apply(results, query)
+        results = pipeline.apply(results, query, principal=principal)
         # Registered against this session, so what one conversation surfaced
         # does not become callable by another.
         discovered_filter.register(
@@ -530,12 +612,17 @@ def create_server(
 
         parts = tool_name.split("__", 1)
         server_name = parts[0] if len(parts) == 2 else ""
+        try:
+            principal = _current_principal(ctx)
+        except PrincipalError as e:
+            return f"Error: {e}"
 
         request = CallRequest(
             tool_name=tool_name,
             arguments=arguments,
             server_name=server_name,
             session_id=ctx.session_id,
+            principal=principal,
         )
         filter_result = await call_pipeline.apply(request)
         if not filter_result.allowed:
@@ -580,6 +667,7 @@ def create_server(
             content=content,
             is_error=is_error,
             structured_content=structured_content,
+            principal=principal,
         )
         response_result = await response_pipeline.apply(response_request)
         if not response_result.allowed:
@@ -633,7 +721,11 @@ def create_server(
                 "with it would be routed as a different server."
             )
 
-        load_request = ServerLoadRequest(server_name=server_name, url=url)
+        try:
+            principal = _current_principal(ctx)
+        except PrincipalError as e:
+            return f"Error: {e}"
+        load_request = ServerLoadRequest(server_name=server_name, url=url, principal=principal)
         load_result = await server_load_pipeline.apply(load_request)
         if not load_result.allowed:
             return f"Error: {load_result.reason}"

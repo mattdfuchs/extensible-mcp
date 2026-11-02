@@ -61,11 +61,41 @@ class FiltersConfig:
 
 
 @dataclass
+class AuthConfig:
+    """The ``auth`` block: inbound bearer verification, resource-server mode.
+
+    The token presented to the proxy was issued by ``issuer`` to the MCP
+    client, with the proxy as ``audience``; it is verified against the
+    issuer's JWKS or one public key. That is all the block can express. The
+    proxy fronting an identity provider as an authorization server is an
+    embedder's choice, because it carries a client secret.
+    """
+
+    issuer: str
+    audience: str
+    jwks_uri: Optional[str] = None
+    public_key_file: Optional[Path] = None
+    algorithm: str = "RS256"
+
+
+@dataclass
+class PrincipalConfig:
+    """The ``principal`` block: which claim holds the roles, by dotted path,
+    and an optional total map from the issuer's values to the deployment's
+    role names. No map means the values are our names already."""
+
+    roles_claim: str = "roles"
+    role_map: Optional[dict[str, str]] = None
+
+
+@dataclass
 class Config:
     servers: list[ServerConfig] = field(default_factory=list)
     filters: FiltersConfig = field(default_factory=FiltersConfig)
     tokens_file: Optional[Path] = None
     credentials: dict[str, CredentialConfig] = field(default_factory=dict)
+    auth: Optional[AuthConfig] = None
+    principal: PrincipalConfig = field(default_factory=PrincipalConfig)
 
 
 def _default_config_paths() -> list[Path]:
@@ -360,6 +390,88 @@ def _resolve_tokens_file(path: Path, dotenv: dict[str, str]) -> Optional[Path]:
     return tokens_path if tokens_path.exists() else None
 
 
+_AUTH_KEYS = ("issuer", "audience", "jwks_uri", "public_key_file", "algorithm")
+_PRINCIPAL_KEYS = ("roles_claim", "role_map")
+
+
+def _load_auth(raw: dict[str, Any], config_dir: Path) -> Optional[AuthConfig]:
+    """Parse the ``auth`` block, refusing anything ambiguous."""
+    if "auth" not in raw:
+        return None
+    block = raw["auth"]
+    if not isinstance(block, dict):
+        raise ValueError("'auth' must be an object")
+    unknown = sorted(set(block) - set(_AUTH_KEYS))
+    if unknown:
+        if "client_secret" in unknown or "client_secret_env" in unknown:
+            raise ValueError(
+                "'auth' carries a client secret. The config form verifies tokens "
+                "an authorization server issued to the client, with the proxy as "
+                "audience; it is never an OAuth client itself. A proxy that fronts "
+                "an identity provider is wired from an entry point: "
+                "create_server(auth=OIDCProxy(...))."
+            )
+        raise ValueError(f"'auth' has unexpected field(s) {unknown}; allowed: {list(_AUTH_KEYS)}")
+    for key in ("issuer", "audience"):
+        if not isinstance(block.get(key), str) or not block[key]:
+            raise ValueError(f"'auth' must have a non-empty '{key}'")
+    jwks_uri = block.get("jwks_uri")
+    key_file = block.get("public_key_file")
+    if (jwks_uri is None) == (key_file is None):
+        raise ValueError(
+            "'auth' must name exactly one of 'jwks_uri' (the issuer's key set) or "
+            "'public_key_file' (one PEM public key)"
+        )
+    if jwks_uri is not None and (not isinstance(jwks_uri, str) or not jwks_uri):
+        raise ValueError("'auth.jwks_uri' must be a URL")
+    public_key_file: Optional[Path] = None
+    if key_file is not None:
+        if not isinstance(key_file, str) or not key_file:
+            raise ValueError("'auth.public_key_file' must be a path")
+        public_key_file = _resolve_relative(key_file, config_dir)
+        if not public_key_file.is_file():
+            raise ValueError(f"'auth.public_key_file' {str(public_key_file)!r} is not a file")
+    algorithm = block.get("algorithm", "RS256")
+    if not isinstance(algorithm, str) or not algorithm:
+        raise ValueError("'auth.algorithm' must be a string")
+    return AuthConfig(
+        issuer=block["issuer"],
+        audience=block["audience"],
+        jwks_uri=jwks_uri,
+        public_key_file=public_key_file,
+        algorithm=algorithm,
+    )
+
+
+def _load_principal(raw: dict[str, Any]) -> PrincipalConfig:
+    """Parse the ``principal`` block. Absent, roles are read from ``roles``
+    verbatim."""
+    if "principal" not in raw:
+        return PrincipalConfig()
+    block = raw["principal"]
+    if not isinstance(block, dict):
+        raise ValueError("'principal' must be an object")
+    unknown = sorted(set(block) - set(_PRINCIPAL_KEYS))
+    if unknown:
+        raise ValueError(
+            f"'principal' has unexpected field(s) {unknown}; allowed: {list(_PRINCIPAL_KEYS)}"
+        )
+    roles_claim = block.get("roles_claim", "roles")
+    if not isinstance(roles_claim, str) or not roles_claim:
+        raise ValueError("'principal.roles_claim' must be a dotted claim path")
+    role_map = block.get("role_map")
+    if role_map is not None:
+        if not isinstance(role_map, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in role_map.items()
+        ):
+            raise ValueError(
+                "'principal.role_map' must map the issuer's role values (strings) to "
+                "this deployment's role names (strings)"
+            )
+        role_map = dict(role_map)
+    return PrincipalConfig(roles_claim=roles_claim, role_map=role_map)
+
+
 def load_config(path: Path) -> Config:
     with open(path) as f:
         raw: dict[str, Any] = json.load(f)
@@ -449,4 +561,6 @@ def load_config(path: Path) -> Config:
         filters=filters,
         tokens_file=tokens_file,
         credentials=credentials,
+        auth=_load_auth(raw, path.parent),
+        principal=_load_principal(raw),
     )

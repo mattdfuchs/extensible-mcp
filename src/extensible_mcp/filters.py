@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import inspect
 import json
 import re
 from typing import Any, Protocol
@@ -14,6 +15,7 @@ from .types import (
     CallFilterResult,
     CallRequest,
     CallResponse,
+    Principal,
     ResponseFilterResult,
     SearchResult,
     ServerLoadRequest,
@@ -82,16 +84,44 @@ class AccessControlFilter:
         )
 
 
+def _takes_principal(f: ToolFilter) -> bool:
+    """Whether ``f.filter`` declares a ``principal`` parameter.
+
+    Decided once, when the filter joins the pipeline, never per call.
+    ``ToolFilter.filter(results, query)`` is a documented extension point
+    with raw positional arguments, so a third positional argument would
+    break every third-party filter on its first call; a filter that wants
+    the principal declares it by name instead, and one that does not is
+    called exactly as before.
+    """
+    try:
+        return "principal" in inspect.signature(f.filter).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 class FilterPipeline:
     def __init__(self, filters: list[ToolFilter] | None = None) -> None:
-        self.filters: list[ToolFilter] = list(filters or [])
+        self.filters: list[ToolFilter] = []
+        self._takes_principal: list[bool] = []
+        for f in filters or []:
+            self.add(f)
 
     def add(self, f: ToolFilter) -> None:
         self.filters.append(f)
+        self._takes_principal.append(_takes_principal(f))
 
-    def apply(self, results: list[SearchResult], query: str) -> list[SearchResult]:
-        for f in self.filters:
-            results = f.filter(results, query)
+    def apply(
+        self,
+        results: list[SearchResult],
+        query: str,
+        principal: Principal | None = None,
+    ) -> list[SearchResult]:
+        for f, wants_principal in zip(self.filters, self._takes_principal):
+            if wants_principal:
+                results = f.filter(results, query, principal=principal)
+            else:
+                results = f.filter(results, query)
         return results
 
 

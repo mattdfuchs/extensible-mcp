@@ -162,6 +162,33 @@ class TestFilterPipeline:
         filtered = pipeline.apply(results, "query")
         assert len(filtered) == 1
 
+    def test_a_filter_that_declares_principal_receives_it(self):
+        """Signature dispatch, decided once at add(): a filter whose
+        ``filter`` names a ``principal`` parameter gets the session's
+        principal; one with the documented two-argument signature is called
+        exactly as before, so no third-party filter breaks on its first call."""
+        from extensible_mcp.types import Principal
+
+        seen: list = []
+
+        class Legacy:
+            def filter(self, results, query):
+                seen.append(("legacy", query))
+                return results
+
+        class Aware:
+            def filter(self, results, query, *, principal=None):
+                seen.append(("aware", principal))
+                return [r for r in results if principal is not None and "kid" in principal.roles]
+
+        results = [make_result(make_tool("a"))]
+        pipeline = FilterPipeline([Legacy(), Aware()])
+        kid = Principal(sub="u1", iss="https://idp.example", roles=frozenset({"kid"}))
+
+        assert pipeline.apply(results, "q", principal=kid) == results
+        assert pipeline.apply(results, "q") == []  # no principal: the aware filter sees None
+        assert seen == [("legacy", "q"), ("aware", kid), ("legacy", "q"), ("aware", None)]
+
     def test_add_filter(self):
         pipeline = FilterPipeline()
         pipeline.add(SimilarityThresholdFilter(min_score=0.5))

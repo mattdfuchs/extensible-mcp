@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from .fetchplan import validate_derive_plan, validate_wallet_subjects
+from .fetchplan import validate_caller_sources, validate_derive_plan, validate_wallet_subjects
 from .policy_engine import PolicyEngine, inline_guidance
 from .wasm_policy import OpaWasmPolicy
 
@@ -146,6 +146,7 @@ class PolicyBundle:
         # An authority lookup keyed on what the model typed is a confused
         # deputy; the plan declares every source, so this is checkable here.
         validate_wallet_subjects(fetchplan)
+        validate_caller_sources(fetchplan)
         _refuse_required_but_unemitted(fetchplan, manifest, d / "fetchplan.json")
         guidance_path = d / "guidance.json"
         guidance = (

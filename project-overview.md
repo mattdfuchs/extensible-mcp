@@ -78,7 +78,8 @@ The policy needs to be evaluated at call time against the actual request, not fr
 - **`vector_store.py`** — In-memory vector index using FastEmbed (ONNX runtime). Cosine similarity via normalized dot product.
 - **`filters.py`** — Pluggable pipelines for all four paths: search (`ToolFilter`), call (`CallFilter`), response (`ResponseFilter`), and server load (`ServerLoadFilter`). `AccessControlFilter` implements both search and call.
 - **`config.py`** — JSON config in Claude Desktop's `mcpServers` format plus `filters` section, including `policy_bundles`: a bundle declared per server by path, attached by `declared_bundles.py` as a server-scoped call filter plus the search-side augmenter, with no Python written; a plan needing a `wallet` lookup is refused at startup and pointed at the embedding API.
-- **`types.py`** — the shared dataclasses: `ServerConfig`, `ToolRecord`, `LocalTool`, `SearchResult`, and the per-pipeline request/result pairs (`CallRequest`/`CallFilterResult`, `CallResponse`/`ResponseFilterResult`, `ServerLoadRequest`/`ServerLoadResult`).
+- **`types.py`** — the shared dataclasses: `ServerConfig`, `ToolRecord`, `LocalTool`, `SearchResult`, `Principal`, and the per-pipeline request/result pairs (`CallRequest`/`CallFilterResult`, `CallResponse`/`ResponseFilterResult`, `ServerLoadRequest`/`ServerLoadResult`), each request carrying the session's `principal`.
+- **`principal.py`** — inbound identity: the `auth` config block builds FastMCP's `JWTVerifier`, a verified token's claims become a frozen `Principal` through the `principal` block's roles claim and optional total `role_map`, each session is bound to the principal that opened it, and `require_principal` is enforced in the handlers ahead of every pipeline. The `caller` fetch-plan source exposes the principal's fields to a policy.
 
 Policy-bundle enforcement:
 
