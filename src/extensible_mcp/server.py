@@ -194,6 +194,7 @@ def _build_pipelines(
     extra_response_filters: Sequence[ResponseFilter] = (),
     extra_load_filters: Sequence[ServerLoadFilter] = (),
     bundle_router: BundleRouter | None = None,
+    single_session: bool = False,
 ) -> tuple[
     FilterPipeline,
     CallFilterPipeline,
@@ -214,7 +215,7 @@ def _build_pipelines(
     for f in extra_search_filters:
         search_pipeline.add(f)
 
-    discovered_filter = DiscoveredToolsFilter()
+    discovered_filter = DiscoveredToolsFilter(single_session=single_session)
     call_pipeline = CallFilterPipeline([ac, discovered_filter])
 
     if config.filters.rego_policy:
@@ -293,6 +294,7 @@ async def _setup(
     extra_load_filters: Sequence[ServerLoadFilter] = (),
     bundle_router: BundleRouter | None = None,
     local_tools: Sequence[LocalTool] = (),
+    single_session: bool = False,
 ) -> dict[str, Any]:
     """Connect to downstream servers, build vector index, return lifespan context."""
     (
@@ -308,6 +310,7 @@ async def _setup(
         extra_response_filters=extra_response_filters,
         extra_load_filters=extra_load_filters,
         bundle_router=bundle_router,
+        single_session=single_session,
     )
 
     client_mgr = ClientManager(
@@ -404,6 +407,7 @@ def create_server(
     bundle_router: BundleRouter | None = None,
     local_tools: Sequence[LocalTool] = (),
     reload_config: Callable[[], Config] | None = None,
+    single_session: bool = False,
 ) -> FastMCP:
     """Create a configured FastMCP proxy server for the given config.
 
@@ -426,6 +430,11 @@ def create_server(
     unfiltered way to register a tool directly on the returned server that
     bypasses this — that asymmetry between "local" and "downstream" tools is
     exactly what ``local_tools`` exists to remove.
+
+    ``single_session`` says this process serves exactly one client, as the
+    stdio CLI does, so the discovered-tools guarantee keys on one bucket
+    rather than on the transport's session id. Leave it off when embedding
+    over HTTP for several clients.
 
     ``config.filters.policy_bundles`` — bundles declared in the config file
     rather than wired in code — are loaded here, before the lifespan exists,
@@ -450,6 +459,7 @@ def create_server(
             extra_load_filters=extra_load_filters,
             bundle_router=bundle_router,
             local_tools=local_tools,
+            single_session=single_session,
         )
         remove_handler = _install_reload_handler(ctx, reload_config)
         try:
@@ -731,7 +741,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # reload_config is what arms SIGHUP. The CLI supplies it -- and with it the
     # policy that "the config" means this file -- while the lifespan supplies
     # the machinery, since only it holds the live manager and index.
-    server = create_server(config, reload_config=lambda: load_config(config_path))
+    # The CLI serves stdio, so this process serves exactly one client, and
+    # the discovered-tools guarantee is keyed on that fact rather than on the
+    # framework's session id. See DiscoveredToolsFilter: on the 2026-07-28
+    # protocol revision the id is fresh on every request, and a stdio proxy
+    # keyed on it would refuse every call it had just surfaced.
+    server = create_server(
+        config, reload_config=lambda: load_config(config_path), single_session=True
+    )
     try:
         pid_file = admin.write_pid_file(config_path)
     except admin.AdminError as e:

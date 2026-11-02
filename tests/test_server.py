@@ -523,3 +523,32 @@ def test_a_sessionless_transport_still_works():
     f.register(["a__x"])
     assert f.discovered_for() == {"a__x"}
     assert f.discovered_for(None) == {"a__x"}
+
+
+@pytest.mark.asyncio
+async def test_single_session_shares_discoveries_across_connections():
+    """The stdio CLI's shape: one process, one client. With ``single_session``
+    the guarantee keys on that fact, so what one connection surfaced is
+    callable on another, whatever session id the transport reports --
+    including a fresh one per request, which is what the 2026-07-28 protocol
+    revision gives."""
+    server = create_server(_make_config(), single_session=True)
+    async with Client(server) as first, Client(server) as second:
+        await first.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        result = await second.call_tool(
+            "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 10, "b": 20}}
+        )
+        assert "30" in result.content[0].text
+
+
+def test_the_single_session_filter_ignores_the_session_id():
+    from extensible_mcp.filters import DiscoveredToolsFilter
+
+    f = DiscoveredToolsFilter(single_session=True)
+    f.register(["mock__add_numbers"], "session-a")
+    assert f.discovered_for("session-b") == {"mock__add_numbers"}
+    assert f.discovered_for(None) == {"mock__add_numbers"}
+    # The default is still per session: the embedding contract is unchanged.
+    g = DiscoveredToolsFilter()
+    g.register(["mock__add_numbers"], "session-a")
+    assert g.discovered_for("session-b") == set()

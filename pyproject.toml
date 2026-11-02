@@ -1,6 +1,6 @@
 [project]
 name = "extensible-mcp"
-version = "0.3.5"
+version = "0.3.6"
 description = "MCP proxy that replaces tool definitions with semantic search"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,8 +8,15 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Matthew Fuchs" }]
 dependencies = [
-    "fastmcp>=2.0.0",
-    "mcp>=1.0.0",
+    # FastMCP 3.x on the 1.x SDK, deliberately. FastMCP 4 (2026-08-31) is
+    # built on MCP SDK 2, which speaks the 2026-07-28 protocol revision: the
+    # protocol session is gone, and under it ctx.session_id is a fresh value
+    # on every request. This proxy scopes discovered tools per session, so
+    # on FastMCP 4 every call_tool after a search_tools is refused. A fresh
+    # install must resolve to the majors this release was built and tested
+    # on; the move to the new revision is 0.5 work.
+    "fastmcp>=2.0.0,<4",
+    "mcp>=1.0.0,<2",
     "fastembed>=0.6.0",
     "numpy>=1.24.0",
     # Imported at module scope by client_manager for URL-transport downstreams

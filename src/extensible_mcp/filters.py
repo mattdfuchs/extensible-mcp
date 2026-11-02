@@ -156,16 +156,32 @@ class DiscoveredToolsFilter:
 
     Note what this filter does *not* do: it scopes state to a connection, not
     to a principal. Nothing here establishes who a session acts for.
+
+    ``single_session`` says the process serves exactly one client, so the
+    session id is not the key: every call shares the one bucket whatever id
+    the transport reports. That is what stdio means, and the CLI, which
+    serves stdio only, sets it. It also makes the CLI independent of how
+    the framework labels a connection: under the 2026-07-28 protocol
+    revision there is no session, and the id is fresh on every request --
+    keyed on it, a stdio proxy would refuse every call it had just surfaced.
+    An embedder serving several clients over HTTP leaves it off.
     """
 
-    def __init__(self, max_sessions: int = MAX_TRACKED_SESSIONS) -> None:
+    def __init__(
+        self, max_sessions: int = MAX_TRACKED_SESSIONS, *, single_session: bool = False
+    ) -> None:
         # Ordered, so the oldest entry is the first key: dicts preserve
         # insertion order, and a re-registration moves its session to the end.
         self._by_session: dict[str | None, set[str]] = {}
         self._max_sessions = max_sessions
+        self._single_session = single_session
+
+    def _bucket(self, session_id: str | None) -> str | None:
+        return None if self._single_session else session_id
 
     def register(self, tool_names: list[str], session_id: str | None = None) -> None:
         """Record tools surfaced to ``session_id``'s conversation."""
+        session_id = self._bucket(session_id)
         discovered = self._by_session.pop(session_id, set())
         discovered.update(tool_names)
         self._by_session[session_id] = discovered  # re-inserted => most recent
@@ -174,10 +190,10 @@ class DiscoveredToolsFilter:
 
     def discovered_for(self, session_id: str | None = None) -> set[str]:
         """What ``session_id`` has surfaced. A copy; mutating it changes nothing."""
-        return set(self._by_session.get(session_id, ()))
+        return set(self._by_session.get(self._bucket(session_id), ()))
 
     async def check(self, request: CallRequest) -> CallFilterResult:
-        if request.tool_name in self._by_session.get(request.session_id, ()):
+        if request.tool_name in self._by_session.get(self._bucket(request.session_id), ()):
             return CallFilterResult(
                 allowed=True,
                 tool_name=request.tool_name,
