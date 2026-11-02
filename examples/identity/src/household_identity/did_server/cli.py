@@ -33,6 +33,17 @@ def main(argv: list[str] | None = None) -> int:
     p_issue.add_argument("--member", required=True, help="member's did:key")
     p_issue.add_argument("--role", required=True)
     p_issue.add_argument("--ttl-days", type=int, default=365)
+    p_issue.add_argument(
+        "--account",
+        action="append",
+        default=[],
+        metavar="IDP=ACCOUNT",
+        help=(
+            "bind the member's account at an identity provider, as the token "
+            "issuer and the member's subject there (repeatable), e.g. "
+            "--account https://idp.example/realms/household=a3f1-..."
+        ),
+    )
 
     p_run = sub.add_parser("run", help="Serve did.json over HTTP")
     p_run.add_argument("--did", required=True)
@@ -45,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args.did, args.keys_dir, args.public_dir)
     if args.cmd == "issue-membership":
         return _cmd_issue(
-            args.did, args.keys_dir, args.member, args.role, args.ttl_days
+            args.did, args.keys_dir, args.member, args.role, args.ttl_days,
+            accounts=args.account,
         )
     if args.cmd == "run":
         return _cmd_run(args.did, args.public_dir, args.host, args.port)
@@ -77,8 +89,17 @@ def _cmd_init(did: str, keys_dir: Path, public_dir: Path) -> int:
     return 0
 
 
+def _parse_account(spec: str) -> tuple[str, str]:
+    """``IDP=ACCOUNT``, split on the last ``=`` so an issuer URL may carry one."""
+    idp, sep, account = spec.rpartition("=")
+    if not sep or not idp or not account:
+        raise ValueError(f"--account expects IDP=ACCOUNT, got {spec!r}")
+    return idp, account
+
+
 def _cmd_issue(
-    did: str, keys_dir: Path, member: str, role: str, ttl_days: int
+    did: str, keys_dir: Path, member: str, role: str, ttl_days: int,
+    accounts: list[str] | None = None,
 ) -> int:
     key_path = _admin_key_path(keys_dir)
     if not key_path.exists():
@@ -87,11 +108,17 @@ def _cmd_issue(
         )
         return 1
     key = keys.load_private_jwk(key_path)
+    try:
+        bound = [_parse_account(a) for a in accounts or []]
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     payload = make_membership_vc(
         admin_did=did,
         member_did=member,
         role=role,
         ttl_seconds=ttl_days * 24 * 3600,
+        accounts=bound or None,
     )
     token = jws.sign_jwt(payload, key=key, kid=did)
     print(token)
