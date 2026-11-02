@@ -8,6 +8,7 @@ import fnmatch
 import inspect
 import json
 import re
+from collections.abc import Mapping
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -37,22 +38,67 @@ class SimilarityThresholdFilter:
         return [r for r in results if r.score >= self.min_score]
 
 
+#: ``by_role`` value meaning "every downstream server not globally denied".
+ALL_SERVERS = "*"
+
+
+def visible_servers(by_role: Mapping[str, Any], principal: Principal | None) -> set[str] | None:
+    """The downstream servers a principal's roles may see, under ``by_role``.
+
+    The union over the principal's roles (roles are privileges, so a second
+    role never narrows the first), ``None`` for "every server", and the
+    empty set for a principal whose roles match no entry -- or no principal
+    at all, since no principal means no roles. Each entry is anything with
+    ``allow_servers`` (a list of names or :data:`ALL_SERVERS`).
+    """
+    roles = principal.roles if principal is not None else frozenset()
+    out: set[str] = set()
+    for role in roles:
+        scope = by_role.get(role)
+        if scope is None:
+            continue
+        servers = getattr(scope, "allow_servers", scope)
+        if servers == ALL_SERVERS:
+            return None
+        out.update(servers)
+    return out
+
+
+def may_load(by_role: Mapping[str, Any], principal: Principal | None) -> bool:
+    """Whether any of a principal's roles carries ``may_load``."""
+    roles = principal.roles if principal is not None else frozenset()
+    return any(getattr(by_role[r], "may_load", False) for r in roles if r in by_role)
+
+
 class AccessControlFilter:
     def __init__(
         self,
         deny: list[str] | None = None,
         deny_patterns: list[str] | None = None,
         allow_servers: list[str] | None = None,
+        by_role: Mapping[str, Any] | None = None,
     ) -> None:
         """``allow_servers`` scopes downstream MCP servers only — a local
         tool (``server_name == ""``) is always exempt from it, since it was
         never connected to any server in the first place. ``deny`` and
-        ``deny_patterns`` still apply to local tools by qualified name."""
+        ``deny_patterns`` still apply to local tools by qualified name.
+
+        ``by_role`` scopes the catalogue per principal: role -> the servers
+        that role may see (see :func:`visible_servers`). The global lists
+        stay a floor for everyone. **Present, it fails closed**: a principal
+        whose roles match no entry, or no principal, sees nothing -- local
+        tools included -- and every call is refused. A catalogue filter that
+        loses its principal would otherwise leak another caller's tools.
+        Absent, nothing is keyed on the principal: the single-tenant shape.
+        """
         self.deny: set[str] = set(deny or [])
         self.deny_patterns: list[str] = list(deny_patterns or [])
         self.allow_servers: set[str] = set(allow_servers) if allow_servers else set()
+        self.by_role: dict[str, Any] | None = dict(by_role) if by_role is not None else None
 
-    def is_allowed(self, qualified_name: str, server_name: str) -> bool:
+    def is_allowed(
+        self, qualified_name: str, server_name: str, principal: Principal | None = None
+    ) -> bool:
         if qualified_name in self.deny:
             return False
         for pattern in self.deny_patterns:
@@ -60,17 +106,30 @@ class AccessControlFilter:
                 return False
         if self.allow_servers and server_name and server_name not in self.allow_servers:
             return False
+        if self.by_role is not None:
+            visible = visible_servers(self.by_role, principal)
+            if visible is not None:
+                if not visible:
+                    return False  # no role placed this principal: nothing at all
+                if server_name and server_name not in visible:
+                    return False
         return True
 
-    def filter(self, results: list[SearchResult], query: str) -> list[SearchResult]:
+    def filter(
+        self,
+        results: list[SearchResult],
+        query: str,
+        *,
+        principal: Principal | None = None,
+    ) -> list[SearchResult]:
         return [
             r
             for r in results
-            if self.is_allowed(r.tool.qualified_name, r.tool.server_name)
+            if self.is_allowed(r.tool.qualified_name, r.tool.server_name, principal)
         ]
 
     async def check(self, request: CallRequest) -> CallFilterResult:
-        if self.is_allowed(request.tool_name, request.server_name):
+        if self.is_allowed(request.tool_name, request.server_name, request.principal):
             return CallFilterResult(
                 allowed=True,
                 tool_name=request.tool_name,
@@ -388,13 +447,24 @@ class ServerLoadAccessControlFilter:
         deny_name_patterns: list[str] | None = None,
         deny_url_patterns: list[str] | None = None,
         allow_url_patterns: list[str] | None = None,
+        by_role: Mapping[str, Any] | None = None,
     ) -> None:
+        """``by_role`` is the same map :class:`AccessControlFilter` takes;
+        here only ``may_load`` is read. Present, a principal none of whose
+        roles carries it may not load a server -- a loaded server is indexed
+        once for the process, so who may add one is a scoping question."""
         self.deny_names: set[str] = set(deny_names or [])
         self.deny_name_patterns: list[str] = list(deny_name_patterns or [])
         self.deny_url_patterns: list[str] = list(deny_url_patterns or [])
         self.allow_url_patterns: list[str] = list(allow_url_patterns or [])
+        self.by_role: dict[str, Any] | None = dict(by_role) if by_role is not None else None
 
     async def check(self, request: ServerLoadRequest) -> ServerLoadResult:
+        if self.by_role is not None and not may_load(self.by_role, request.principal):
+            return ServerLoadResult(
+                allowed=False,
+                reason="Loading a server at runtime is not permitted for this principal's roles.",
+            )
         if request.server_name in self.deny_names:
             return ServerLoadResult(
                 allowed=False,

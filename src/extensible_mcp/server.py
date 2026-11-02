@@ -212,6 +212,7 @@ def _build_pipelines(
         deny=config.filters.access_control.deny,
         deny_patterns=config.filters.access_control.deny_patterns,
         allow_servers=config.filters.access_control.allow_servers or None,
+        by_role=config.filters.access_control.by_role,
     )
 
     search_pipeline = FilterPipeline([
@@ -242,13 +243,18 @@ def _build_pipelines(
         response_pipeline.add(f)
 
     lc = config.filters.load_control
+    by_role = config.filters.access_control.by_role
     server_load_pipeline = ServerLoadFilterPipeline()
-    if lc.deny_names or lc.deny_name_patterns or lc.deny_url_patterns or lc.allow_url_patterns:
+    if (
+        lc.deny_names or lc.deny_name_patterns or lc.deny_url_patterns
+        or lc.allow_url_patterns or by_role is not None
+    ):
         server_load_pipeline.add(ServerLoadAccessControlFilter(
             deny_names=lc.deny_names,
             deny_name_patterns=lc.deny_name_patterns,
             deny_url_patterns=lc.deny_url_patterns,
             allow_url_patterns=lc.allow_url_patterns,
+            by_role=by_role,
         ))
 
     for f in extra_load_filters:
