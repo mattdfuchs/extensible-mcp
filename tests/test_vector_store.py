@@ -125,3 +125,55 @@ class TestNonPositiveTopK:
 
     def test_zero_top_k_returns_nothing(self):
         assert _store.search("tool", top_k=0) == []
+
+
+# -- the fastembed boundary --------------------------------------------------- #
+#
+# Reported by the maintainer of a downstream fork: the whole catalogue went to
+# fastembed as one batch (its default is 256), padded to the longest
+# description, and the build peaked around 1 GB for 120 tools against ~260 MB
+# resident. Nothing but a memory profiler would notice these regressing, so
+# the two settings are pinned where they cross into fastembed.
+
+
+class TestEmbeddingBoundary:
+    def test_texts_go_to_the_model_in_small_batches(self, monkeypatch):
+        from extensible_mcp import vector_store as vs_mod
+
+        seen: dict = {}
+
+        class _Model:
+            def __init__(self, **kwargs):
+                seen["init"] = kwargs
+
+            def embed(self, texts, batch_size=256, **_):
+                seen["batch_size"] = batch_size
+                import numpy as np
+                for _ in texts:
+                    yield np.ones(4, dtype=np.float32)
+
+        monkeypatch.setattr(vs_mod, "TextEmbedding", _Model)
+        store = vs_mod.VectorStore()
+        store.index([ToolRecord(name=f"t{i}", qualified_name=f"s__t{i}", description="d",
+                                input_schema={}, server_name="s") for i in range(3)])
+        assert seen["batch_size"] == vs_mod.DEFAULT_EMBED_BATCH_SIZE == 8
+        assert seen["init"]["enable_cpu_mem_arena"] is False
+
+        vs_mod.VectorStore(embed_batch_size=1, cpu_mem_arena=True).index(
+            [ToolRecord(name="t", qualified_name="s__t", description="d", input_schema={}, server_name="s")]
+        )
+        assert seen["batch_size"] == 1 and seen["init"]["enable_cpu_mem_arena"] is True
+
+    def test_a_batch_size_below_one_is_refused(self):
+        with pytest.raises(ValueError, match="at least 1"):
+            VectorStore(embed_batch_size=0)
+
+    def test_batching_does_not_change_a_tools_embedding(self):
+        """A text's embedding must not depend on what it was batched with, or
+        the batch size would be a search-relevance knob rather than a memory one."""
+        import numpy as np
+
+        texts = ["send an email to a contact", "create a calendar event " * 30, "list drive files", "x"]
+        one = VectorStore(embed_batch_size=1)._encode(texts)
+        all_at_once = VectorStore(embed_batch_size=256)._encode(texts)
+        assert np.abs(one - all_at_once).max() < 1e-5

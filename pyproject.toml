@@ -14,7 +14,7 @@ dependencies = [
     # revision this proxy has not been run against cannot arrive by resolution.
     "fastmcp>=4.1,<5",
     "mcp>=2.3,<3",
-    "fastembed>=0.6.0",
+    "fastembed>=0.8.1",
     "numpy>=1.24.0",
     # Imported at module scope by client_manager for URL-transport downstreams
     # and token headers. Arrives transitively via mcp/fastmcp today, but a
