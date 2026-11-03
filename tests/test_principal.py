@@ -251,13 +251,19 @@ async def test_the_verified_token_reaches_every_pipeline_as_a_principal(served):
             "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
         )
         assert "3" in result.content[0].text
-        await client.call_tool("load_mcp_server", {"server_name": "x", "url": "http://x.invalid/mcp"})
+        load = await client.call_tool(
+            "load_mcp_server", {"server_name": "x", "url": "http://x.invalid/mcp"}
+        )
 
     expected = Principal(sub="parent-1", iss=ISSUER, roles=frozenset({"parent"}), client_id="console")
     assert recording.search == [expected]
     assert recording.calls == [expected]
     assert recording.responses == [expected]
-    assert recording.loads == [expected]
+    # Runtime loading is a stdio capability in this release: over HTTP the
+    # handler refuses ahead of the load pipeline, so no principal reaches it.
+    # The loading principal, and what it may see, is a later release.
+    assert "not available over HTTP" in load.content[0].text
+    assert recording.loads == []
 
 
 async def test_a_request_with_no_token_never_reaches_a_handler(served):
