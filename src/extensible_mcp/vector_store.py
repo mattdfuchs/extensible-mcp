@@ -10,15 +10,44 @@ from .types import SearchResult, ToolRecord
 
 _DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
+# fastembed's own default batch is 256, which for a catalogue of ordinary size
+# means the whole index is one batch, padded to its longest description, and
+# the build's peak memory scales with batch size times padded length squared:
+# ~1 GB for 120 tools against ~260 MB resident. Eight is the measured knee --
+# the fastest size, 60 MB above the one-at-a-time floor. Search is unchanged:
+# a text's embedding does not depend on what it was batched with.
+DEFAULT_EMBED_BATCH_SIZE = 8
+
 
 class VectorStore:
-    def __init__(self, model_name: str = _DEFAULT_MODEL) -> None:
-        self._model = TextEmbedding(model_name=model_name)
+    """In-memory index over the tool catalogue: cosine similarity on normalised
+    embeddings from a local ONNX model.
+
+    ``embed_batch_size`` is how many texts go to the model per call (see
+    :data:`DEFAULT_EMBED_BATCH_SIZE`). ``cpu_mem_arena`` is ONNX Runtime's CPU
+    allocator arena, off by default: with it on, the memory the build peaks at
+    stays resident for the life of the process on Linux, where the proxy is
+    deployed, rather than returning once the index is built.
+    """
+
+    def __init__(
+        self,
+        model_name: str = _DEFAULT_MODEL,
+        *,
+        embed_batch_size: int = DEFAULT_EMBED_BATCH_SIZE,
+        cpu_mem_arena: bool = False,
+    ) -> None:
+        if embed_batch_size < 1:
+            raise ValueError("embed_batch_size must be at least 1")
+        self._model = TextEmbedding(model_name=model_name, enable_cpu_mem_arena=cpu_mem_arena)
+        self._batch_size = embed_batch_size
         self._tools: list[ToolRecord] = []
         self._embeddings: np.ndarray | None = None
 
     def _encode(self, texts: list[str]) -> np.ndarray:
-        embeddings = np.array(list(self._model.embed(texts)), dtype=np.float32)
+        embeddings = np.array(
+            list(self._model.embed(texts, batch_size=self._batch_size)), dtype=np.float32
+        )
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms = np.where(norms == 0, 1, norms)
         return embeddings / norms
