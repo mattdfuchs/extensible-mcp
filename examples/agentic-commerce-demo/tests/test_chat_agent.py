@@ -34,7 +34,7 @@ class StubSession:
 
 def _tool(name, description="", input_schema=None):
     return SimpleNamespace(
-        name=name, description=description, inputSchema=input_schema or {}
+        name=name, description=description, input_schema=input_schema or {}
     )
 
 

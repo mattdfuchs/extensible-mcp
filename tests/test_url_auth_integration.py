@@ -107,7 +107,7 @@ async def test_token_rotation_via_file_picks_up_new_value(tmp_path, mock_mcp_ser
         tokens_file.write_text("mockauth=new-token\n")
 
         result = await mgr.call_tool("mockauth__echo", {"message": "ping"})
-        assert not result.isError
+        assert not result.is_error
         assert "ping" in result.content[0].text
     finally:
         await mgr.close_all()

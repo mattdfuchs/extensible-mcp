@@ -75,14 +75,14 @@ class AnthropicMessages(Protocol):
 
 
 def _mcp_tools_to_anthropic(list_tools_result: Any) -> list[dict[str, Any]]:
-    """MCP's Tool objects (``name``/``description``/``inputSchema``) to
+    """MCP's Tool objects (``name``/``description``/``input_schema``) to
     Anthropic's tool dicts (``name``/``description``/``input_schema``) —
     same shape, different key."""
     return [
         {
             "name": t.name,
             "description": t.description or "",
-            "input_schema": t.inputSchema,
+            "input_schema": t.input_schema,
         }
         for t in list_tools_result.tools
     ]

@@ -220,53 +220,77 @@ class CallFilterPipeline:
         )
 
 
-# How many sessions' discovery sets a single proxy remembers. Reaching it
+# How many principals' discovery sets a single proxy remembers. Reaching it
 # evicts the least recently used, which is the *safe* direction: forgetting a
 # discovery denies a call that would have been allowed, so an attacker who
-# floods the proxy with sessions restricts other sessions rather than freeing
-# them. (Contrast SingleUseEvidenceFilter, where eviction would let a replay
-# through and so refuses instead.)
-MAX_TRACKED_SESSIONS = 4096
+# floods the proxy with principals restricts other principals rather than
+# freeing them. (Contrast SingleUseEvidenceFilter, where eviction would let a
+# replay through and so refuses instead.)
+MAX_TRACKED_SCOPES = 4096
+
+# The bucket for requests that carry no principal: stdio and in-memory
+# transports, where the process serves one client, and an HTTP deployment
+# that opted into single tenancy with ``require_principal=False``.
+_PROCESS_SCOPE: tuple[str, str] | None = None
+
+
+def discovery_scope(principal: Principal | None) -> tuple[str, str] | None:
+    """The key a discovery set is kept under: the principal, or the process.
+
+    The protocol's 2026-07-28 revision has no session -- every request is its
+    own connection and the id the framework reports is fresh each time -- so
+    a per-connection key would refuse every call the model had just been
+    shown the tool for. What does persist across a person's requests is who
+    they are, which is what the inbound token establishes. FastMCP keys its
+    own cross-request state the same way: the authenticated user on a modern
+    connection, the process on stdio. A model-supplied conversation handle
+    was considered and rejected: under one principal it moves nothing across
+    a trust boundary, so it adds no isolation, only a way to shed history.
+    """
+    if principal is None:
+        return _PROCESS_SCOPE
+    return (principal.iss, principal.sub)
 
 
 class DiscoveredToolsFilter:
     """Call-side filter: only allows tools previously returned by search_tools.
 
-    Scoped per MCP session, not per process. A single shared set turns the
-    guarantee from "this conversation surfaced it" into "anyone connected to
-    this proxy has ever surfaced it" -- a monotonically growing global
-    allowlist. On stdio that is a distinction without a difference, because one
-    process serves one client; on an HTTP transport serving several sessions it
-    is a real bypass, and it was reported as one.
+    Scoped per **principal**, not per process. A single shared set turns the
+    guarantee from "this person surfaced it" into "anyone connected to this
+    proxy has ever surfaced it" -- a monotonically growing global allowlist.
+    On stdio that is a distinction without a difference, because one process
+    serves one client; on an HTTP transport serving several people it is a
+    real bypass, and it was reported as one (0.3.2). The key was the MCP
+    session until the 2026-07-28 revision removed sessions; see
+    :func:`discovery_scope` for what replaced it and why.
 
-    ``session_id`` is ``None`` on transports without sessions, and those calls
-    share one bucket -- which is exactly right for stdio and no weaker than the
-    single-client case it describes.
-
-    Note what this filter does *not* do: it scopes state to a connection, not
-    to a principal. Nothing here establishes who a session acts for.
+    A request with no principal lands in the one process bucket, which is
+    exactly right for stdio and for an operator who chose single tenancy,
+    and is unreachable on an HTTP deployment that requires a principal,
+    since such a request is refused before any pipeline runs.
     """
 
-    def __init__(self, max_sessions: int = MAX_TRACKED_SESSIONS) -> None:
+    def __init__(self, max_scopes: int = MAX_TRACKED_SCOPES) -> None:
         # Ordered, so the oldest entry is the first key: dicts preserve
-        # insertion order, and a re-registration moves its session to the end.
-        self._by_session: dict[str | None, set[str]] = {}
-        self._max_sessions = max_sessions
+        # insertion order, and a re-registration moves its scope to the end.
+        self._by_scope: dict[tuple[str, str] | None, set[str]] = {}
+        self._max_scopes = max_scopes
 
-    def register(self, tool_names: list[str], session_id: str | None = None) -> None:
-        """Record tools surfaced to ``session_id``'s conversation."""
-        discovered = self._by_session.pop(session_id, set())
+    def register(self, tool_names: list[str], principal: Principal | None = None) -> None:
+        """Record tools surfaced to ``principal`` (or to the process)."""
+        scope = discovery_scope(principal)
+        discovered = self._by_scope.pop(scope, set())
         discovered.update(tool_names)
-        self._by_session[session_id] = discovered  # re-inserted => most recent
-        while len(self._by_session) > self._max_sessions:
-            self._by_session.pop(next(iter(self._by_session)))
+        self._by_scope[scope] = discovered  # re-inserted => most recent
+        while len(self._by_scope) > self._max_scopes:
+            self._by_scope.pop(next(iter(self._by_scope)))
 
-    def discovered_for(self, session_id: str | None = None) -> set[str]:
-        """What ``session_id`` has surfaced. A copy; mutating it changes nothing."""
-        return set(self._by_session.get(session_id, ()))
+    def discovered_for(self, principal: Principal | None = None) -> set[str]:
+        """What ``principal`` has surfaced. A copy; mutating it changes nothing."""
+        return set(self._by_scope.get(discovery_scope(principal), ()))
 
     async def check(self, request: CallRequest) -> CallFilterResult:
-        if request.tool_name in self._by_session.get(request.session_id, ()):
+        if request.tool_name in self._by_scope.get(discovery_scope(request.principal), ()):
             return CallFilterResult(
                 allowed=True,
                 tool_name=request.tool_name,

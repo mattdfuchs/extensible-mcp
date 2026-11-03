@@ -579,7 +579,7 @@ class ClientManager:
                     name=tool.name,
                     qualified_name=qualified,
                     description=tool.description or "",
-                    input_schema=tool.inputSchema,
+                    input_schema=tool.input_schema,
                     server_name=server_name,
                 )
             )
