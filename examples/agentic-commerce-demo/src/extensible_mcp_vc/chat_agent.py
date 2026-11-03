@@ -172,7 +172,7 @@ class ChatAgent:
             try:
                 result = await self.session.call_tool(block.name, block.input)
                 content = _tool_result_text(result)
-                is_error = bool(getattr(result, "isError", False))
+                is_error = bool(getattr(result, "is_error", False))
             except Exception as e:  # noqa: BLE001 - surfaced to the model, not swallowed
                 content, is_error = f"error: {e}", True
             self.log(f"<- {block.name}: {_truncate(content)}")

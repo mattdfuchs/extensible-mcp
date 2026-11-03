@@ -15,6 +15,7 @@ import logging
 import socket
 
 import httpx
+import httpx2
 import pytest
 
 from extensible_mcp.credentials import (
@@ -383,12 +384,76 @@ class TestThePrincipalParameter:
                 return "t"
 
         auth = OAuthGrantAuth(RecordingProvider())
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda r: httpx.Response(200)), auth=auth
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(lambda r: httpx2.Response(200)), auth=auth
         ) as client:
             await client.get("http://downstream.invalid/mcp")
 
         assert seen == [PROXY_ITSELF]
+
+
+class TestBuildProvider:
+    def test_private_key_jwt(self, tmp_path):
+        provider = build_provider(
+            CredentialConfig(
+                name="corp-as",
+                grant="private_key_jwt",
+                token_endpoint="https://as.example.com/oauth/token",
+                client_id=CLIENT_ID,
+                private_key_file=tmp_path / "k.pem",
+            ),
+            scope="payments.invoke",
+            audience="https://payments.example.com",
+        )
+        assert isinstance(provider, PrivateKeyJWTOAuthProvider)
+        assert provider.scope == "payments.invoke"
+        assert provider.audience == "https://payments.example.com"
+
+    def test_client_credentials(self):
+        provider = build_provider(
+            CredentialConfig(
+                name="legacy-as",
+                grant="client_credentials",
+                token_endpoint="https://legacy.example.com/oauth/token",
+                client_id=CLIENT_ID,
+                client_secret_env="LEGACY_CLIENT_SECRET",
+            )
+        )
+        assert isinstance(provider, ClientCredentialsOAuthProvider)
+        assert provider.client_secret_env == "LEGACY_CLIENT_SECRET"
+
+    def test_an_unimplemented_grant_fails_closed(self):
+        """A config naming a grant this build does not implement -- a workload
+        identity, say -- is refused, not approximated with another grant."""
+        with pytest.raises(CredentialError, match="unsupported grant"):
+            build_provider(
+                CredentialConfig(
+                    name="k8s",
+                    grant="workload_identity",
+                    token_endpoint="https://as.example.com/oauth/token",
+                    client_id=CLIENT_ID,
+                )
+            )
+
+    def test_a_grant_missing_its_own_field_fails_closed(self):
+        with pytest.raises(CredentialError, match="needs 'private_key_file'"):
+            build_provider(
+                CredentialConfig(
+                    name="corp-as",
+                    grant="private_key_jwt",
+                    token_endpoint="https://as.example.com/oauth/token",
+                    client_id=CLIENT_ID,
+                )
+            )
+        with pytest.raises(CredentialError, match="needs 'client_secret_env'"):
+            build_provider(
+                CredentialConfig(
+                    name="legacy-as",
+                    grant="client_credentials",
+                    token_endpoint="https://legacy.example.com/oauth/token",
+                    client_id=CLIENT_ID,
+                )
+            )
 
 
 class TestBuildProvider:
@@ -462,11 +527,11 @@ class TestOAuthGrantAuthRefresh:
         # The header is read here rather than from a stored Request: httpx
         # retries by re-sending the *same* request object, so a later
         # inspection would see only the header it was last given.
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             presented.append(request.headers["authorization"])
             if len(presented) == 1:
-                return httpx.Response(401, text="Bad bearer")
-            return httpx.Response(200, text="ok")
+                return httpx2.Response(401, text="Bad bearer")
+            return httpx2.Response(200, text="ok")
 
         return handler
 
@@ -477,8 +542,8 @@ class TestOAuthGrantAuthRefresh:
         stub_auth_server.issue = ["stale-token", "fresh-token"]
         presented: list[str] = []
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(self._refusing_once(presented)),
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(self._refusing_once(presented)),
             auth=OAuthGrantAuth(provider),
         ) as client:
             response = await client.post("http://downstream.invalid/mcp")
@@ -495,19 +560,23 @@ class TestOAuthGrantAuthRefresh:
         server and the resource server disagree, and a third token will not
         settle it."""
         provider = key_provider(stub_auth_server, tmp_path)
-        requests: list[httpx.Request] = []
+        requests: list[httpx2.Request] = []
 
-        def always_401(request: httpx.Request) -> httpx.Response:
+        def always_401(request: httpx2.Request) -> httpx2.Response:
             requests.append(request)
-            return httpx.Response(401, text="Bad bearer")
+            return httpx2.Response(401, text="Bad bearer")
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(always_401),
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(always_401),
             auth=OAuthGrantAuth(provider),
         ) as client:
-            response = await client.post("http://downstream.invalid/mcp")
+            # The second refusal surfaces as the status it was, raised from
+            # the auth flow: SDK 2's transport would otherwise fold it into a
+            # generic error with the 401 gone.
+            with pytest.raises(httpx2.HTTPStatusError) as info:
+                await client.post("http://downstream.invalid/mcp")
 
-        assert response.status_code == 401
+        assert info.value.response.status_code == 401
         assert len(requests) == 2
         assert len(stub_auth_server.token_requests) == 2
 
@@ -515,14 +584,14 @@ class TestOAuthGrantAuthRefresh:
         self, stub_auth_server, tmp_path
     ):
         provider = key_provider(stub_auth_server, tmp_path)
-        requests: list[httpx.Request] = []
+        requests: list[httpx2.Request] = []
 
-        def ok(request: httpx.Request) -> httpx.Response:
+        def ok(request: httpx2.Request) -> httpx2.Response:
             requests.append(request)
-            return httpx.Response(200, text="ok")
+            return httpx2.Response(200, text="ok")
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(ok), auth=OAuthGrantAuth(provider)
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(ok), auth=OAuthGrantAuth(provider)
         ) as client:
             await client.post("http://downstream.invalid/mcp")
             await client.post("http://downstream.invalid/mcp")
