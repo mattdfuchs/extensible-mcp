@@ -8,14 +8,21 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Matthew Fuchs" }]
 dependencies = [
-    "fastmcp>=2.0.0",
-    "mcp>=1.0.0",
+    # FastMCP 4 on MCP SDK 2: the 2026-07-28 protocol revision, sessionless.
+    # Per-session state in this proxy keys on the principal (HTTP) or the
+    # process (stdio); see DiscoveredToolsFilter. Below the next majors, so a
+    # revision this proxy has not been run against cannot arrive by resolution.
+    "fastmcp>=4.1,<5",
+    "mcp>=2.3,<3",
     "fastembed>=0.6.0",
     "numpy>=1.24.0",
     # Imported at module scope by client_manager for URL-transport downstreams
     # and token headers. Arrives transitively via mcp/fastmcp today, but a
     # core module importing it directly must declare it.
     "httpx>=0.27",
+    # The SDK's streamable transport is built on httpx2: the authenticated
+    # client it is handed, and the auth flow on it, must be httpx2 too.
+    "httpx2>=2",
 ]
 
 [project.urls]
