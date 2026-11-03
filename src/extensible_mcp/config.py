@@ -19,10 +19,24 @@ from .types import CredentialConfig, ServerConfig
 
 
 @dataclass
+class RoleScope:
+    """What one role may see: the downstream servers (or ``"*"`` for every
+    server not globally denied) and whether it may load a server at
+    runtime."""
+
+    allow_servers: list[str] | str = field(default_factory=list)
+    may_load: bool = False
+
+
+@dataclass
 class AccessControlConfig:
     deny: list[str] = field(default_factory=list)
     deny_patterns: list[str] = field(default_factory=list)
     allow_servers: list[str] = field(default_factory=list)
+    # Per-role scoping, keyed on the principal's roles. ``None`` means the
+    # deployment-wide rules alone -- the single-tenant shape. Present, a
+    # principal whose roles match no entry sees nothing.
+    by_role: Optional[dict[str, RoleScope]] = None
 
 
 @dataclass
@@ -394,6 +408,43 @@ _AUTH_KEYS = ("issuer", "audience", "jwks_uri", "public_key_file", "algorithm")
 _PRINCIPAL_KEYS = ("roles_claim", "role_map")
 
 
+_ROLE_SCOPE_KEYS = ("allow_servers", "may_load")
+
+
+def _load_by_role(raw: Any) -> Optional[dict[str, RoleScope]]:
+    """Parse ``access_control.by_role``: role -> what that role may see."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            "'access_control.by_role' must be a non-empty object mapping a role "
+            "name to {allow_servers, may_load}; omit it for no per-role scoping"
+        )
+    out: dict[str, RoleScope] = {}
+    for role, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"'access_control.by_role.{role}' must be an object")
+        unknown = sorted(set(entry) - set(_ROLE_SCOPE_KEYS))
+        if unknown:
+            raise ValueError(
+                f"'access_control.by_role.{role}' has unexpected field(s) {unknown}; "
+                f"allowed: {list(_ROLE_SCOPE_KEYS)}"
+            )
+        servers = entry.get("allow_servers")
+        if servers != "*" and not (
+            isinstance(servers, list) and all(isinstance(x, str) and x for x in servers)
+        ):
+            raise ValueError(
+                f"'access_control.by_role.{role}.allow_servers' must be a list of server "
+                "names, or \"*\" for every server not globally denied"
+            )
+        may_load = entry.get("may_load", False)
+        if not isinstance(may_load, bool):
+            raise ValueError(f"'access_control.by_role.{role}.may_load' must be a boolean")
+        out[role] = RoleScope(allow_servers=servers if servers == "*" else list(servers), may_load=may_load)
+    return out
+
+
 def _load_auth(raw: dict[str, Any], config_dir: Path) -> Optional[AuthConfig]:
     """Parse the ``auth`` block, refusing anything ambiguous."""
     if "auth" not in raw:
@@ -523,6 +574,7 @@ def load_config(path: Path) -> Config:
         deny=ac_raw.get("deny", []),
         deny_patterns=ac_raw.get("deny_patterns", []),
         allow_servers=ac_raw.get("allow_servers", []),
+        by_role=_load_by_role(ac_raw.get("by_role")),
     )
     lc_raw = filters_raw.get("load_control", {})
     load_control = LoadControlConfig(

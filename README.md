@@ -175,7 +175,11 @@ The config file uses the same `mcpServers` format as Claude Desktop, plus an opt
     "access_control": {
       "deny": ["github__delete_repo"],
       "deny_patterns": ["*__drop_*", "*__delete_*"],
-      "allow_servers": ["filesystem", "github"]
+      "allow_servers": ["filesystem", "github"],
+      "by_role": {
+        "engineer": {"allow_servers": ["filesystem", "github"], "may_load": true},
+        "reviewer": {"allow_servers": ["github"]}
+      }
     },
     "load_control": {
       "deny_url_patterns": ["http://*"],
@@ -299,6 +303,8 @@ Everything above is the proxy authenticating *to* downstream servers. The other 
 
 `create_server(require_principal=...)` is the deployment-mode selector. `True` refuses every request that carries no principal before any pipeline runs, and requires `auth`. `False` is an operator saying "single tenant on purpose": one proxy per person on loopback, where every principal is `None`. Unset is what the HTTP transport's gate keys on. Either way a session is bound to the principal of its first authenticated request, since the token is verified per request, and a later request on that session for a different principal is refused.
 
+**Scoping the catalogue per principal.** One proxy on HTTP serves several people over one index, and without a rule they all see the same catalogue. `access_control.by_role` is that rule: each role names the downstream servers it may see, or `"*"` for every server not globally denied, and whether it may `load_mcp_server`. Roles are additive, so a principal with two roles sees the union, and the global `deny` lists stay a floor for everyone. The block fails closed when present: a principal whose roles match no entry, or a request with no principal, sees nothing, local tools included, and every call is refused. A catalogue filter that lost its principal would otherwise show one caller another's tools, so losing it has to deny. A server loaded at runtime is indexed once for the process and is visible only to roles that name it or see everything. Leave the block out and nothing is keyed on the principal, which is the single-tenant shape.
+
 A policy can read the caller the way it reads the clock: a fetch-plan entry with `"source": {"kind": "caller", "params": {"field": "sub"}}` assembles the principal's `sub` (or `roles`, `iss`, `client_id`, `auth_time`, `amr`, `acr`) into the input. It is never a `call` field, so the model cannot supply it and the augmenter advertises nothing for it, and with no principal the lookup fails closed as a denial.
 
 ### Filter pipelines
@@ -317,12 +323,13 @@ Beyond the discovery gate, the filter logic is yours to define. The filters desc
 | `access_control.deny` | Exact qualified tool names to hide (e.g. `github__delete_repo`) |
 | `access_control.deny_patterns` | Glob patterns to hide (e.g. `*__delete_*`) |
 | `access_control.allow_servers` | If non-empty, only tools from these servers appear in results |
+| `access_control.by_role` | Per-role scoping over the principal's roles: role → `allow_servers` (a list, or `"*"` for every server not denied) and `may_load`. Roles are additive. Present, a principal matching no role sees nothing; see [Inbound identity](#inbound-identity-who-a-session-acts-for) |
 
 **Call filters** — applied to `call_tool` invocations before they're proxied downstream.
 
 | Field | Description |
 |---|---|
-| `access_control.*` | Same deny/allow rules as search — blocks calls even if the LLM knows the tool name |
+| `access_control.*` | Same deny/allow rules as search, `by_role` included — blocks calls even if the LLM knows the tool name |
 
 **Rego policies** — for fine-grained call-time policy evaluation, you can point to a `.rego` file:
 
