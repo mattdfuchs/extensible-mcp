@@ -32,6 +32,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from extensible_mcp.client_manager import negotiate
+
 from extensible_mcp_vc.chat_agent import ChatAgent
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -66,13 +68,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             # into the outer stack via pop_all() so they outlive this loop.
             attempt_stack = AsyncExitStack()
             try:
-                read, write, _ = await attempt_stack.enter_async_context(
+                read, write = await attempt_stack.enter_async_context(
                     streamable_http_client(PROXY_URL)
                 )
                 session = await attempt_stack.enter_async_context(
                     ClientSession(read, write)
                 )
-                await session.initialize()
+                await negotiate(session)
             except (Exception, BaseExceptionGroup) as e:
                 # BaseExceptionGroup as well as Exception: the mcp client's
                 # own task group wraps a plain connection failure together

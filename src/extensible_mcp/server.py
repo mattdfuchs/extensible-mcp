@@ -25,7 +25,6 @@ from .declared_bundles import build_declared_bundle_filters
 from .principal import (
     PrincipalError,
     PrincipalMapping,
-    SessionPrincipals,
     build_auth_provider,
     principal_from_token,
 )
@@ -379,7 +378,6 @@ async def _setup(
         "local_tools": local_registry,
         "principal_mapping": principal_mapping,
         "require_principal": bool(require_principal),
-        "session_principals": SessionPrincipals(),
     }
 
 
@@ -389,10 +387,11 @@ def _current_principal(ctx: Context) -> Principal | None:
     bearer travels on every message and FastMCP verifies each one.
 
     Raises :class:`PrincipalError`, which the handler returns as an error,
-    when the deployment requires a principal and the request carries none,
-    or when the session is already bound to a different one. Enforced here,
-    ahead of every pipeline and not as a filter, because an unset filter
-    permits -- the 0.3.2 shape."""
+    when the deployment requires a principal and the request carries none.
+    Enforced here, ahead of every pipeline and not as a filter, because an
+    unset filter permits -- the 0.3.2 shape. Nothing binds a session to a
+    principal: the 2026-07-28 revision has no session, and every state the
+    proxy keeps across a person's requests is keyed on the principal."""
     from fastmcp.server.dependencies import get_access_token
 
     lifespan_context = ctx.lifespan_context
@@ -403,9 +402,6 @@ def _current_principal(ctx: Context) -> Principal | None:
             "this proxy requires an authenticated principal and the request "
             "carries none"
         )
-    sessions: SessionPrincipals | None = lifespan_context.get("session_principals")
-    if sessions is not None:
-        sessions.bind(ctx.session_id, principal)
     return principal
 
 
@@ -491,9 +487,9 @@ def create_server(
     tenant on purpose": a per-person proxy on loopback, where every principal
     is ``None``. ``None`` is unset, which is what the HTTP transport's gate
     keys on (it refuses to serve HTTP with no ``auth`` and the flag unset).
-    Either way a session is bound to the principal of its first
-    authenticated request, and a later request on it for a different
-    principal is refused.
+    State the proxy keeps across a person's requests -- the discovered-tools
+    set -- is keyed on the principal, or on the process when there is none;
+    the protocol's 2026-07-28 revision has no session to key on.
 
     ``config.filters.policy_bundles`` — bundles declared in the config file
     rather than wired in code — are loaded here, before the lifespan exists,
@@ -591,9 +587,9 @@ def create_server(
         results = pipeline.apply(results, query, principal=principal)
         # Registered against this session, so what one conversation surfaced
         # does not become callable by another.
-        discovered_filter.register(
-            [r.tool.qualified_name for r in results], ctx.session_id
-        )
+        # Registered against the principal (or the process), so what one
+        # person surfaced does not become callable by another.
+        discovered_filter.register([r.tool.qualified_name for r in results], principal)
         return _format_search_results(results)
 
     @server.tool(
@@ -661,8 +657,8 @@ def create_server(
             except Exception as e:
                 return f"Error calling tool '{tool_name}': {_describe(e)}"
             content = list(result.content)
-            is_error = result.isError
-            structured_content = result.structuredContent
+            is_error = result.is_error
+            structured_content = result.structured_content
         else:
             return f"Error: Unknown tool '{tool_name}'. Use search_tools to find available tools."
 

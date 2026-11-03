@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import httpx2
 import pytest
 
 from extensible_mcp.client_manager import (
@@ -59,7 +60,7 @@ class TestClientManager:
         try:
             await mgr.connect_all(configs)
             result = await mgr.call_tool("mock__add_numbers", {"a": 2, "b": 3})
-            assert not result.isError
+            assert not result.is_error
             text = result.content[0].text
             assert "5" in text
         finally:
@@ -167,10 +168,11 @@ def _make_conn(server_name: str = "test-server") -> _Connection:
     return conn
 
 
-def _httpx_status_error(code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("POST", "https://example.com/mcp")
-    response = httpx.Response(code, request=request)
-    return httpx.HTTPStatusError(f"HTTP {code}", request=request, response=response)
+def _httpx_status_error(code: int) -> httpx2.HTTPStatusError:
+    """The transport's error type: the SDK's streamable client is httpx2."""
+    request = httpx2.Request("POST", "https://example.com/mcp")
+    response = httpx2.Response(code, request=request)
+    return httpx2.HTTPStatusError(f"HTTP {code}", request=request, response=response)
 
 
 class TestCheckAuthError:

@@ -10,10 +10,11 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import MCPError
 import mcp.types as mcp_types
 
 from .config import read_tokens_file
@@ -57,6 +58,57 @@ class _OnceWarning:
             return
         self._logged = True
         logger.warning(message, *args)
+
+
+class _BearerAuth(httpx2.Auth):
+    """A fixed bearer (or none), and an auth refusal that stays a refusal.
+
+    SDK 2's streamable transport folds every non-2xx status into a generic
+    JSON-RPC error whose text no longer carries the status. For a 401 or 403
+    that loses the one fact the proxy acts on -- the credential was refused,
+    so tell the user to fix it -- and would also hide, from a test or a log,
+    that a runtime-loaded URL was reached *without* a token and refused for
+    it. So the status is raised here, at the HTTP layer, as
+    ``httpx2.HTTPStatusError``, which is what :meth:`_check_auth_error`
+    reads. One flow for the tokens-file path and the no-credential path;
+    the grant path has its own (``OAuthGrantAuth``), which retries once.
+    """
+
+    def __init__(self, token: str | None) -> None:
+        self._token = token
+
+    async def async_auth_flow(self, request: httpx2.Request):  # type: ignore[override]
+        if self._token:
+            request.headers["Authorization"] = f"Bearer {self._token}"
+        response = yield request
+        if response.status_code in (401, 403):
+            response.raise_for_status()
+
+    def sync_auth_flow(self, request: httpx2.Request):  # type: ignore[override]
+        raise RuntimeError("_BearerAuth is async-only; use an httpx2.AsyncClient")
+
+
+async def negotiate(session: ClientSession) -> None:
+    """Open the MCP layer over a connected stream pair, on whichever
+    protocol revision the downstream speaks.
+
+    The 2026-07-28 revision has no handshake: capabilities come back from
+    ``server/discover`` and every request carries the version. A downstream
+    on an older revision answers that with METHOD_NOT_FOUND, so the legacy
+    ``initialize`` handshake is the fallback. The SDK leaves the fallback to
+    the caller as policy; this proxy's policy is to speak to both, because
+    which revision a downstream runs is its business, not the operator's.
+    Any other refusal of ``server/discover`` propagates: a timeout or a
+    version the two sides cannot agree on is a failed connection, not a
+    reason to pretend the server is old.
+    """
+    try:
+        await session.discover()
+    except MCPError as e:
+        code = getattr(getattr(e, "error", None), "code", None)
+        if code != mcp_types.METHOD_NOT_FOUND:
+            raise
+        await session.initialize()
 
 
 class TokenExpiredError(Exception):
@@ -162,7 +214,7 @@ class _Connection:
         )
         return value
 
-    def _make_http_client(self) -> httpx.AsyncClient | None:
+    def _make_http_client(self) -> httpx2.AsyncClient | None:
         """Build an httpx client that authenticates this connection, if a
         credential is available *and* this connection is allowed to use one.
 
@@ -205,22 +257,24 @@ class _Connection:
                     self.config.name,
                     self.config.url,
                 )
-            return None
+            # Anonymous, and still our own client: a refusal of the
+            # credential-less connection must surface as the 401 it was.
+            return httpx2.AsyncClient(auth=_BearerAuth(None))
         if self._credential_provider is not None:
             # The token is resolved per request by the auth flow, not fixed
             # into a header here, so a token acquired or re-acquired after
             # this client was built needs no new client.
-            return httpx.AsyncClient(auth=OAuthGrantAuth(self._credential_provider))
+            return httpx2.AsyncClient(auth=OAuthGrantAuth(self._credential_provider))
         token = self._resolve_token()
         if not token:
-            return None
-        return httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {token}"},
-        )
+            # No credential, but still our own client: an auth refusal of an
+            # anonymous connection must surface as the status it was.
+            return httpx2.AsyncClient(auth=_BearerAuth(None))
+        return httpx2.AsyncClient(auth=_BearerAuth(token))
 
     def _check_auth_error(self, exc: BaseException) -> None:
         """Raise TokenExpiredError if the exception looks like a 401/403."""
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 403):
+        if isinstance(exc, httpx2.HTTPStatusError) and exc.response.status_code in (401, 403):
             raise TokenExpiredError(self.config.name, self.token_age_minutes) from exc
         msg = str(exc).lower()
         if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg:
@@ -274,7 +328,7 @@ class _Connection:
                     http_client = self._make_http_client()
                     if http_client:
                         await stack.enter_async_context(http_client)
-                    read, write, _ = await stack.enter_async_context(
+                    read, write = await stack.enter_async_context(
                         streamable_http_client(
                             self.config.url, http_client=http_client
                         )
@@ -287,7 +341,7 @@ class _Connection:
                     )
                     read, write = await stack.enter_async_context(stdio_client(params))
                 session = await stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
+                await negotiate(session)
                 self.session = session
                 started.set_result(None)
                 await closing.wait()
@@ -321,11 +375,11 @@ class _Connection:
             http_client = self._make_http_client()
             if http_client:
                 await stack.enter_async_context(http_client)
-            read, write, _ = await stack.enter_async_context(
+            read, write = await stack.enter_async_context(
                 streamable_http_client(self.config.url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            await negotiate(session)
             result = await session.list_tools()
             return result.tools
 
@@ -338,11 +392,11 @@ class _Connection:
                 http_client = self._make_http_client()
                 if http_client:
                     await stack.enter_async_context(http_client)
-                read, write, _ = await stack.enter_async_context(
+                read, write = await stack.enter_async_context(
                     streamable_http_client(self.config.url, http_client=http_client)
                 )
                 session = await stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
+                await negotiate(session)
                 return await session.call_tool(tool_name, arguments)
         except TokenExpiredError:
             raise
@@ -525,7 +579,7 @@ class ClientManager:
                     name=tool.name,
                     qualified_name=qualified,
                     description=tool.description or "",
-                    input_schema=tool.inputSchema,
+                    input_schema=tool.input_schema,
                     server_name=server_name,
                 )
             )

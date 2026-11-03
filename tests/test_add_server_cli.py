@@ -256,7 +256,7 @@ class TestReconcile:
 
             # And it stays usable, which is what the token being accepted means.
             result = await mgr.call_tool("mockauth__echo", {"message": "hi"})
-            assert not result.isError
+            assert not result.is_error
         finally:
             await mgr.close_all()
 

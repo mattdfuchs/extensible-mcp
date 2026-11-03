@@ -38,6 +38,8 @@ from pathlib import Path
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from .client_manager import negotiate
+
 PID_FILENAME = "extensible-mcp.pid"
 
 
@@ -68,14 +70,14 @@ async def verify_server(name: str, url: str, token: str | None) -> VerifiedServe
     and should not: a redirect carrying an Authorization header is a way to
     hand a bearer somewhere it was not meant to go.
     """
-    import httpx
+    import httpx2
 
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        async with httpx.AsyncClient(headers=headers) as http:
-            async with streamable_http_client(url, http_client=http) as (r, w, _):
+        async with httpx2.AsyncClient(headers=headers) as http:
+            async with streamable_http_client(url, http_client=http) as (r, w):
                 async with ClientSession(r, w) as session:
-                    await session.initialize()
+                    await negotiate(session)
                     listed = await session.list_tools()
     except Exception as e:  # noqa: BLE001 - every failure is the same advice
         detail = _leaf(e)

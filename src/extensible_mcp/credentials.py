@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol, runtime_checkable
 
 import httpx
+import httpx2
 
 from .types import CredentialConfig
 
@@ -452,10 +453,13 @@ def build_provider(
     )
 
 
-class OAuthGrantAuth(httpx.Auth):
+class OAuthGrantAuth(httpx2.Auth):
     """Presents a provider's token, and refreshes it once on a refusal.
 
-    An ``httpx.Auth`` rather than a header fixed at client construction: the
+    An ``httpx2.Auth`` -- the MCP SDK's streamable transport is built on
+    httpx2, so the client it is given must be one, while the token endpoint
+    behind the provider is reached with httpx and is none of the
+    transport's business -- rather than a header fixed at client construction: the
     token is resolved per request, so a token acquired after the client was
     built, or re-acquired after a 401, needs no new client. The retry is
     bounded at one — a second refusal is the authorization server and the
@@ -468,7 +472,7 @@ class OAuthGrantAuth(httpx.Auth):
         self._provider = provider
         self._principal = principal
 
-    async def async_auth_flow(self, request: httpx.Request):  # type: ignore[override]
+    async def async_auth_flow(self, request: httpx2.Request):  # type: ignore[override]
         request.headers["Authorization"] = (
             f"Bearer {await self._provider.token(self._principal)}"
         )
@@ -481,10 +485,18 @@ class OAuthGrantAuth(httpx.Auth):
         )
         token = await self._provider.token(self._principal, force_refresh=True)
         request.headers["Authorization"] = f"Bearer {token}"
-        yield request
+        response = yield request
+        # A second refusal is final, and it must reach the caller *as* a
+        # refusal. SDK 2's transport folds any non-2xx status into a generic
+        # JSON-RPC error with the status gone, so the proxy could no longer
+        # tell "the credential was rejected" from "the server fell over";
+        # raising here keeps the 401/403 on the exception, where
+        # ClientManager translates it into TokenExpiredError.
+        if response.status_code in (401, 403):
+            response.raise_for_status()
 
-    def sync_auth_flow(self, request: httpx.Request):  # type: ignore[override]
+    def sync_auth_flow(self, request: httpx2.Request):  # type: ignore[override]
         # Acquisition is async; there is no synchronous path through the proxy.
         raise RuntimeError(
-            "OAuthGrantAuth is async-only; use an httpx.AsyncClient"
+            "OAuthGrantAuth is async-only; use an httpx2.AsyncClient"
         )

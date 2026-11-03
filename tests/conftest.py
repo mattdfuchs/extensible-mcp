@@ -17,11 +17,14 @@ import threading
 import time
 
 import httpx
+import httpx2
 import pytest
 import uvicorn
 from fastmcp import FastMCP
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+
+from extensible_mcp.client_manager import negotiate
 from starlette.middleware import Middleware
 from starlette.responses import Response
 
@@ -135,12 +138,12 @@ def _mock_server():
     thread.start()
 
     async def _handshake() -> None:
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             headers={"Authorization": "Bearer correct-token"}, timeout=2.0
         ) as http:
-            async with streamable_http_client(url, http_client=http) as (r, w, _):
+            async with streamable_http_client(url, http_client=http) as (r, w):
                 async with ClientSession(r, w) as session:
-                    await session.initialize()
+                    await negotiate(session)
 
     # Ready means "completes a real MCP handshake", not "the socket accepts".
     # uvicorn's `started` flag only says the latter, and a request landing in

@@ -171,11 +171,12 @@ class Principal:
 class CallRequest:
     """Input to the call filter pipeline.
 
-    ``session_id`` identifies the MCP session the call arrived on, when the
-    transport has one — ``None`` on stdio, where a process serves exactly one
-    client and the distinction is empty. It exists so a filter can scope state
-    to the conversation that created it rather than to the process; see
-    ``DiscoveredToolsFilter``.
+    ``session_id`` is the framework's identifier for the connection the call
+    arrived on. On the protocol's 2026-07-28 revision every request is its own
+    connection and the value is fresh each time, so it identifies nothing
+    across calls and no filter keys state on it; it is carried for logging.
+    (Until that revision it was the MCP session, and ``DiscoveredToolsFilter``
+    scoped on it; that filter now scopes on ``principal``.)
 
     It is deliberately *not* an identity claim. It says which connection this
     came from, not who the connection acts for. That is ``principal``: the

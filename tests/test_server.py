@@ -488,73 +488,125 @@ def test_describe_unwraps_exception_groups():
 # sessions it was real.
 
 
-@pytest.mark.asyncio
-async def test_one_session_cannot_call_what_another_discovered():
-    """The bypass, end to end: two clients on one proxy. A searches, B calls."""
-    server = create_server(_make_config())
-    async with Client(server) as client_a, Client(server) as client_b:
-        found = await client_a.call_tool(
-            "search_tools", {"query": "add numbers", "top_k": 3}
-        )
-        assert "mock__add_numbers" in found.content[0].text
-
-        # A may call it, having surfaced it.
-        allowed = await client_a.call_tool(
-            "call_tool",
-            {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}},
-        )
-        assert "12" in allowed.content[0].text
-
-        # B never searched, and must not inherit A's discovery.
-        refused = await client_b.call_tool(
-            "call_tool",
-            {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}},
-        )
-        assert "not been discovered" in refused.content[0].text.lower()
+_ISSUER = "https://idp.example/realms/household"
+_TWO_PEOPLE = {
+    "a-token": {"client_id": "c", "scopes": [], "sub": "a", "iss": _ISSUER, "roles": []},
+    "b-token": {"client_id": "c", "scopes": [], "sub": "b", "iss": _ISSUER, "roles": []},
+}
 
 
 @pytest.mark.asyncio
-async def test_each_session_keeps_its_own_discoveries():
-    """Scoping must not break the normal case: both sessions search, both call."""
-    server = create_server(_make_config())
-    async with Client(server) as client_a, Client(server) as client_b:
-        for client in (client_a, client_b):
-            await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
-        for client in (client_a, client_b):
-            result = await client.call_tool(
-                "call_tool",
-                {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}},
+async def test_one_principal_cannot_call_what_another_discovered():
+    """The bypass, end to end: two people on one proxy over HTTP. A searches,
+    B calls. There is no session on the 2026-07-28 revision, so the key is
+    who each request acts for."""
+    from fastmcp.client.transports import StreamableHttpTransport
+    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+    from fastmcp.utilities.tests import run_server_async
+
+    server = create_server(_make_config(), auth=StaticTokenVerifier(tokens=_TWO_PEOPLE))
+    async with run_server_async(server) as url:
+        async with Client(StreamableHttpTransport(url, auth="a-token")) as client_a, \
+                   Client(StreamableHttpTransport(url, auth="b-token")) as client_b:
+            found = await client_a.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+            assert "mock__add_numbers" in found.content[0].text
+
+            # A may call it, having surfaced it.
+            allowed = await client_a.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}}
             )
-            assert "3" in result.content[0].text
+            assert "12" in allowed.content[0].text
+
+            # B never searched, and must not inherit A's discovery.
+            refused = await client_b.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 5, "b": 7}}
+            )
+            assert "not been discovered" in refused.content[0].text.lower()
+
+        # The same person on a new connection keeps what they surfaced:
+        # the scope is the principal, not the connection.
+        async with Client(StreamableHttpTransport(url, auth="a-token")) as client_a2:
+            again = await client_a2.call_tool(
+                "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+            )
+            assert "3" in again.content[0].text
 
 
-def test_the_filter_scopes_by_session_and_evicts_safely():
-    """Unit-level: the store is per session, and bounded.
+@pytest.mark.asyncio
+async def test_each_principal_keeps_its_own_discoveries():
+    """Scoping must not break the normal case: both people search, both call."""
+    from fastmcp.client.transports import StreamableHttpTransport
+    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+    from fastmcp.utilities.tests import run_server_async
+
+    server = create_server(_make_config(), auth=StaticTokenVerifier(tokens=_TWO_PEOPLE))
+    async with run_server_async(server) as url:
+        for token in ("a-token", "b-token"):
+            async with Client(StreamableHttpTransport(url, auth=token)) as client:
+                await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+                result = await client.call_tool(
+                    "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+                )
+                assert "3" in result.content[0].text
+
+
+def test_the_filter_scopes_by_principal_and_evicts_safely():
+    """Unit-level: the store is per principal, and bounded.
 
     Eviction is the safe direction here -- forgetting a discovery denies a call
-    that would have been allowed -- so flooding the proxy with sessions
+    that would have been allowed -- so flooding the proxy with principals
     restricts others rather than freeing them.
     """
     from extensible_mcp.filters import DiscoveredToolsFilter
+    from extensible_mcp.types import Principal
 
-    f = DiscoveredToolsFilter(max_sessions=2)
-    f.register(["a__x"], "s1")
-    f.register(["b__y"], "s2")
-    assert f.discovered_for("s1") == {"a__x"}
-    assert f.discovered_for("s2") == {"b__y"}
-    assert f.discovered_for("s3") == set()
+    def who(sub: str) -> Principal:
+        return Principal(sub=sub, iss=_ISSUER)
 
-    f.register(["c__z"], "s3")          # over the bound: evicts s1, the oldest
-    assert f.discovered_for("s1") == set()
-    assert f.discovered_for("s3") == {"c__z"}
+    f = DiscoveredToolsFilter(max_scopes=2)
+    f.register(["a__x"], who("p1"))
+    f.register(["b__y"], who("p2"))
+    assert f.discovered_for(who("p1")) == {"a__x"}
+    assert f.discovered_for(who("p2")) == {"b__y"}
+    assert f.discovered_for(who("p3")) == set()
+    # The same account at another issuer is another person.
+    assert f.discovered_for(Principal(sub="p1", iss="https://other.example")) == set()
+
+    f.register(["c__z"], who("p3"))          # over the bound: evicts p1, the oldest
+    assert f.discovered_for(who("p1")) == set()
+    assert f.discovered_for(who("p3")) == {"c__z"}
 
 
-def test_a_sessionless_transport_still_works():
-    """stdio has no session, so those calls share one bucket -- which is the
-    single-client case the guarantee was written for."""
+@pytest.mark.asyncio
+async def test_no_principal_shares_the_process_bucket():
+    """stdio, in-memory, or an operator who chose single tenancy: no token,
+    no principal, one bucket for the process -- the single-client case the
+    guarantee was written for. Two in-memory clients, each its own
+    connection on every request under the sessionless revision, share it."""
     from extensible_mcp.filters import DiscoveredToolsFilter
 
     f = DiscoveredToolsFilter()
     f.register(["a__x"])
     assert f.discovered_for() == {"a__x"}
     assert f.discovered_for(None) == {"a__x"}
+
+    server = create_server(_make_config())
+    async with Client(server) as first, Client(server) as second:
+        await first.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        result = await second.call_tool(
+            "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 10, "b": 20}}
+        )
+        assert "30" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_a_handshake_era_client_still_connects():
+    """A client on the previous revision opens with initialize; the proxy
+    answers both, and the guarantee is the same on either."""
+    server = create_server(_make_config())
+    async with Client(server, mode="legacy") as client:
+        await client.call_tool("search_tools", {"query": "add numbers", "top_k": 3})
+        result = await client.call_tool(
+            "call_tool", {"tool_name": "mock__add_numbers", "arguments": {"a": 1, "b": 2}}
+        )
+        assert "3" in result.content[0].text
