@@ -161,9 +161,47 @@ def _describe(exc: BaseException) -> str:
     return text or type(exc).__name__
 
 
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+_HTTP_CONSTRAINT = (
+    "--transport http serves many callers from one process, so it refuses to "
+    "start unless the config carries an 'auth' block (issuer, audience, and the "
+    "issuer's keys) or --allow-anonymous says this is one person's proxy on "
+    "loopback. It also refuses a configured tokens file, which presents one "
+    "credential for every caller, and it does not offer load_mcp_server: on a "
+    "shared proxy servers are configured, not loaded."
+)
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extensible MCP Proxy")
+    parser = argparse.ArgumentParser(
+        description="Extensible MCP Proxy",
+        epilog=_HTTP_CONSTRAINT,
+    )
     parser.add_argument("--config", type=str, default=None, help="Path to config file")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default="stdio",
+        help=(
+            "stdio (the default) serves the one client that launched the process; "
+            "http listens on --host:--port for many and requires inbound auth "
+            "(see below)"
+        ),
+    )
+    parser.add_argument(
+        "--host", default="127.0.0.1", help="Address to listen on with --transport http"
+    )
+    parser.add_argument("--port", type=int, default=8000, help="Port for --transport http")
+    parser.add_argument(
+        "--allow-anonymous",
+        action="store_true",
+        help=(
+            "Serve HTTP with no inbound auth: single tenant on purpose, one "
+            "person's proxy on a loopback --host. Refused with an 'auth' block "
+            "or a non-loopback host."
+        ),
+    )
     sub = parser.add_subparsers(dest="command")
 
     add = sub.add_parser(
@@ -190,6 +228,85 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     add.add_argument("--config", type=str, default=None, help="Path to config file")
     return parser.parse_args(argv)
+
+
+class TransportError(ValueError):
+    """A deployment the CLI refuses to start: not a warning, an exit."""
+
+
+def check_http_deployment(
+    config: Config, *, allow_anonymous: bool = False, host: str = "127.0.0.1"
+) -> bool:
+    """The gate on ``--transport http``: what it refuses, and the
+    ``require_principal`` it settles on when it does not.
+
+    A stdio proxy is launched by the one client it serves, so the process
+    boundary is the principal boundary and nothing about identity needs
+    saying. An HTTP listener serves whoever reaches the port, and three
+    things that were sound by that coincidence stop being sound:
+
+    - **No inbound auth.** Every principal would be ``None``, every
+      per-principal control (catalogue scoping, the discovered-tools set,
+      the ``caller`` source) would key on the process, and the proxy would
+      show one caller another's tools. Refused unless the operator says
+      ``--allow-anonymous``: single tenant on purpose, on a loopback host,
+      with no ``auth`` block to contradict it.
+    - **A tokens file.** One bearer per downstream server, per process, is one
+      downstream identity for every caller: the confused deputy, and a filter
+      bug would act with the credential's full authority. Refused flat, since
+      an HTTP listener cannot show it serves one person. Per-principal
+      downstream credentials are a later release.
+    - **The ``auth`` block itself is checked at load**: ``issuer`` and
+      ``audience`` are both required there, so a verifier that accepts any
+      issuer's token for any audience is not expressible in the config.
+
+    Returns the ``require_principal`` to pass to :func:`create_server`:
+    ``True`` with auth, ``False`` for the anonymous case. Raises
+    :class:`TransportError` naming what was refused.
+    """
+    if config.tokens_file is not None:
+        raise TransportError(
+            f"--transport http refuses a configured tokens file ({config.tokens_file}): "
+            "the file holds one credential per downstream server for the whole "
+            "process, which an HTTP proxy would present on behalf of every caller. "
+            "Remove the file (or EXTENSIBLE_MCP_TOKENS_FILE) and use a "
+            "'credentials' entry, or serve this config over stdio. The tokens "
+            "file is stdio-only."
+        )
+    if allow_anonymous:
+        if config.auth is not None:
+            raise TransportError(
+                "--allow-anonymous with an 'auth' block says two things: pick one. "
+                "Drop the flag to require the configured verifier's principal on "
+                "every request, or drop the block to serve one person on loopback."
+            )
+        if host not in LOOPBACK_HOSTS:
+            raise TransportError(
+                f"--allow-anonymous listens on {host!r}, which is not loopback. An "
+                "anonymous proxy is one person's, and a reachable port is not one "
+                f"person's; bind one of {sorted(LOOPBACK_HOSTS)} or configure 'auth'."
+            )
+        return False
+    if config.auth is None:
+        raise TransportError(
+            "--transport http needs an 'auth' block (issuer, audience, and "
+            "jwks_uri or public_key_file): one process serves many callers, and "
+            "without a verified principal it cannot tell them apart. For one "
+            "person's proxy on loopback, say so with --allow-anonymous."
+        )
+    return True
+
+
+def _over_http() -> bool:
+    """Whether the current request arrived over HTTP. A runtime fact rather
+    than a configuration one, so it holds however the server was run."""
+    from fastmcp.server.dependencies import get_http_request
+
+    try:
+        get_http_request()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _build_pipelines(
@@ -710,6 +827,17 @@ def create_server(
     async def load_mcp_server_handler(
         server_name: str, url: str, ctx: Context
     ) -> str:
+        # Runtime loading is a stdio capability: one person, one process, a
+        # server they chose. On a shared HTTP proxy a loaded server would join
+        # the namespace every principal searches, so servers are configured
+        # there, by an operator, not loaded. Refused at the handler rather
+        # than hidden from the catalogue, since a hidden tool is a suggestion.
+        if _over_http():
+            return (
+                "Error: load_mcp_server is not available over HTTP. On a shared "
+                "proxy, servers are configured by the operator, not loaded; ask "
+                "the user to add the server to the config file."
+            )
         server_load_pipeline: ServerLoadFilterPipeline = ctx.lifespan_context[
             "server_load_filter_pipeline"
         ]
@@ -827,10 +955,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_path = find_config_path(args.config)
     logger.info("Loading config from %s", config_path)
     config = load_config(config_path)
+    require_principal: bool | None = None
+    run_kwargs: dict[str, Any] = {}
+    if args.transport == "http":
+        try:
+            require_principal = check_http_deployment(
+                config, allow_anonymous=args.allow_anonymous, host=args.host
+            )
+        except TransportError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        run_kwargs = {"transport": "http", "host": args.host, "port": args.port}
+    elif args.allow_anonymous:
+        print("error: --allow-anonymous is only meaningful with --transport http", file=sys.stderr)
+        return 2
     # reload_config is what arms SIGHUP. The CLI supplies it -- and with it the
     # policy that "the config" means this file -- while the lifespan supplies
     # the machinery, since only it holds the live manager and index.
-    server = create_server(config, reload_config=lambda: load_config(config_path))
+    server = create_server(
+        config,
+        reload_config=lambda: load_config(config_path),
+        require_principal=require_principal,
+    )
     try:
         pid_file = admin.write_pid_file(config_path)
     except admin.AdminError as e:
@@ -839,7 +985,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
     try:
-        server.run()
+        server.run(**run_kwargs)
     finally:
         admin.remove_pid_file(pid_file)
     return 0

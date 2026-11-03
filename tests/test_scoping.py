@@ -245,16 +245,21 @@ async def _as(url: str, token: str):
 async def test_two_principals_one_proxy_each_see_only_their_catalogue():
     server = create_server(_config(), auth=StaticTokenVerifier(tokens=TOKENS), require_principal=True)
     async with run_server_async(server) as url:
+        # Runtime loading is refused over HTTP for every role in this release,
+        # ahead of the load pipeline, so may_load does not distinguish the
+        # parent from the child here; the filter-level test above covers it.
+        http_refusal = "Error: load_mcp_server is not available over HTTP"
+
         text, add, send, load = await _as(url, "parent-token")
         assert "mock__add_numbers" in text and "payments__send" in text
         assert "3" in add and send.startswith("sent 1")
-        assert not load.startswith("Error: Loading a server at runtime is not permitted")
+        assert load.startswith(http_refusal)
 
         text, add, send, load = await _as(url, "child-token")
         assert "mock__add_numbers" in text and "payments__send" not in text
         assert "3" in add
         assert send.startswith("Error:") and "access control" in send
-        assert load.startswith("Error: Loading a server at runtime is not permitted")
+        assert load.startswith(http_refusal)
 
         text, add, send, load = await _as(url, "guest-token")
         assert "mock__" not in text and "payments__" not in text
