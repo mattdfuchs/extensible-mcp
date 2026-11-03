@@ -140,7 +140,7 @@ Still open: wiring the issuer registry into credential acquisition, and broader 
 - Policy engines packaged as optional extras: `extensible-mcp[wasm]` (wasmtime + joserfc), `[cel]` (cel-python), `[cedar]` (cedarpy); `[rego]` serves the single-file `rego_policy` filter, and `[oauth]` the `private_key_jwt` downstream credential
 - Embeddings: all-MiniLM-L6-v2 (~22M parameters) via FastEmbed/ONNX, runs on CPU. No PyTorch dependency.
 - Config format compatible with Claude Desktop's `mcpServers` format
-- Runs as a stdio MCP server; any MCP client can connect to it
+- Runs as a stdio MCP server by default; any MCP client can connect to it. `--transport http` serves many callers and refuses to start without inbound auth (or an explicit `--allow-anonymous` on loopback), with a tokens file, and does not offer `load_mcp_server`
 - Packaged with hatchling; published to PyPI on a version tag by a trusted-publishing workflow (`.github/workflows/release.yml`)
 
 ## Repository
