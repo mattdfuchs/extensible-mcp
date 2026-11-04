@@ -88,6 +88,7 @@ the completeness check above.
 from __future__ import annotations
 
 import json
+import re
 import logging
 from collections import Counter
 from pathlib import Path
@@ -178,6 +179,7 @@ class CedarPolicy:
         self._package = package or policy_path.parent.name
         text = policy_path.read_text()
         policies = _parse_policies(cedarpy, text, policy_path)
+        _refuse_in(text, policy_path)
         self._declared = expected_path.exists()
         if self._declared:
             self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
@@ -590,6 +592,38 @@ def _parse_policies(cedarpy: Any, text: str, path: Path) -> list[tuple[str, dict
     for policy in (parsed.get("staticPolicies") or {}).values():
         out.append((policy.get("effect"), dict(policy.get("annotations") or {})))
     return out
+
+
+_COMMENT_OR_STRING = re.compile(r'//[^\n]*|"(?:[^"\\]|\\.)*"')
+_IN_TOKEN = re.compile(r"\bin\b")
+
+
+def _refuse_in(text: str, path: Path) -> None:
+    """Refuse a policy that uses ``in`` anywhere.
+
+    ``in`` is hierarchy membership and the hierarchy is the entity store,
+    which the proxy never passes: measured, ``forbid(principal in
+    Group::"kids", action, resource)`` against an empty store returns Allow
+    with no diagnostic. The forbid is inert and nothing reports it -- not a
+    load error, not an evaluation error, a policy hole that looks like a
+    passing test. In the scope, Cedar's own schema validation would catch
+    it; in a ``when`` clause nothing does, and cedarpy exposes a policy's
+    effect and annotations but not its conditions, so the text is the only
+    handle. Comments and string literals are stripped first; the one false
+    positive is an attribute literally named ``in``, which the author
+    renames.
+    """
+    stripped = _COMMENT_OR_STRING.sub(" ", text)
+    match = _IN_TOKEN.search(stripped)
+    if match is None:
+        return
+    line = stripped.count("\n", 0, match.start()) + 1
+    raise CedarPolicyError(
+        f"{path} line {line}: `in` is refused. The policy set is evaluated with "
+        "no entity hierarchy, so hierarchy membership can never hold and a rule "
+        "that tests it is silently inert; test the attribute in `context` "
+        "instead (an attribute literally named `in` must be renamed)."
+    )
 
 
 def _inline_sentences(policies: list[tuple[str, dict[str, Any]]]) -> dict[str, str]:
