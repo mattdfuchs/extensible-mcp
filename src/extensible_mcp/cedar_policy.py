@@ -106,13 +106,55 @@ _MISSING_DEPS_MSG = (
 POLICY_FILE = "policy.cedar"
 EXPECTED_IDS_FILE = "expected_ids.json"
 
-#: The one request head every bundle is evaluated under. The emitted policies
-#: never test these, so they are labels, not inputs.
+#: The request head when the input says nothing more: the PARC mapping's
+#: defaults. ``principal`` is the caller, ``Caller::"<sub>"`` when the input
+#: carries a ``caller`` object with a ``sub`` (a ``caller``-sourced fetch-plan
+#: entry, so never model-supplied) and ``Caller::"anonymous"`` otherwise;
+#: ``action`` is the tool, ``Action::"<tool>"`` from the input's ``tool``;
+#: ``resource`` is the server type the bundle governs, ``Server::"<package>"``,
+#: a label with provenance rather than an input, since a bundle only ever
+#: governs its own type. Everything evidential is ``context``: a request
+#: carries several evidence identities and ``principal`` is singular.
+#: See :func:`request_head`.
 REQUEST_HEAD: dict[str, str] = {
-    "principal": 'Caller::"caller"',
+    "principal": 'Caller::"anonymous"',
     "action": 'Action::"call"',
-    "resource": 'Tool::"governed"',
+    "resource": 'Server::"governed"',
 }
+
+
+def _entity(entity_type: str, entity_id: str) -> str:
+    """``Type::"id"`` with the id escaped as a Cedar string literal. A control
+    character is refused rather than escaped: no tool, subject or package name
+    legitimately carries one, and Cedar's escape forms differ from JSON's."""
+    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in entity_id):
+        raise PolicyEvaluationError(
+            f"{entity_type} id {entity_id!r} carries a control character"
+        )
+    escaped = entity_id.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{entity_type}::"{escaped}"'
+
+
+def request_head(input_obj: dict[str, Any], package: str) -> dict[str, str]:
+    """The PARC head for one evaluation (see :data:`REQUEST_HEAD`).
+
+    The caller's attributes stay in ``context.caller`` for the ``when``
+    clause; the head carries only the identity. A policy that reads
+    ``context.caller`` with no principal fails closed through ``has``, and one
+    that tests ``principal == Caller::"<sub>"`` never matches the anonymous
+    head. An issuer role never reaches the head or ``context.caller``: it is
+    evidence, admin-vouched and cryptographic, and stays in the evidence
+    fields, lexically apart from the IdP-asserted roles here.
+    """
+    head = dict(REQUEST_HEAD)
+    caller = input_obj.get("caller")
+    if isinstance(caller, dict) and isinstance(caller.get("sub"), str) and caller["sub"]:
+        head["principal"] = _entity("Caller", caller["sub"])
+    tool = input_obj.get("tool")
+    if isinstance(tool, str) and tool:
+        head["action"] = _entity("Action", tool)
+    head["resource"] = _entity("Server", package)
+    return head
 
 #: Cedar's JSON reader treats an object with one of these keys as an entity
 #: reference or an extension value rather than as a record. The assembled
@@ -325,7 +367,7 @@ class CedarPolicy:
         whole policy set. Fail closed as a fault, not as a denial.
         """
         result = self._cedarpy.is_authorized(
-            {**REQUEST_HEAD, "context": context}, self._policies, []
+            {**request_head(context, self._package), "context": context}, self._policies, []
         )
         diagnostics = result.diagnostics
         errors = list(diagnostics.errors)
