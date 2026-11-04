@@ -88,6 +88,7 @@ the completeness check above.
 from __future__ import annotations
 
 import json
+import re
 import logging
 from collections import Counter
 from pathlib import Path
@@ -105,13 +106,55 @@ _MISSING_DEPS_MSG = (
 POLICY_FILE = "policy.cedar"
 EXPECTED_IDS_FILE = "expected_ids.json"
 
-#: The one request head every bundle is evaluated under. The emitted policies
-#: never test these, so they are labels, not inputs.
+#: The request head when the input says nothing more: the PARC mapping's
+#: defaults. ``principal`` is the caller, ``Caller::"<sub>"`` when the input
+#: carries a ``caller`` object with a ``sub`` (a ``caller``-sourced fetch-plan
+#: entry, so never model-supplied) and ``Caller::"anonymous"`` otherwise;
+#: ``action`` is the tool, ``Action::"<tool>"`` from the input's ``tool``;
+#: ``resource`` is the server type the bundle governs, ``Server::"<package>"``,
+#: a label with provenance rather than an input, since a bundle only ever
+#: governs its own type. Everything evidential is ``context``: a request
+#: carries several evidence identities and ``principal`` is singular.
+#: See :func:`request_head`.
 REQUEST_HEAD: dict[str, str] = {
-    "principal": 'Caller::"caller"',
+    "principal": 'Caller::"anonymous"',
     "action": 'Action::"call"',
-    "resource": 'Tool::"governed"',
+    "resource": 'Server::"governed"',
 }
+
+
+def _entity(entity_type: str, entity_id: str) -> str:
+    """``Type::"id"`` with the id escaped as a Cedar string literal. A control
+    character is refused rather than escaped: no tool, subject or package name
+    legitimately carries one, and Cedar's escape forms differ from JSON's."""
+    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in entity_id):
+        raise PolicyEvaluationError(
+            f"{entity_type} id {entity_id!r} carries a control character"
+        )
+    escaped = entity_id.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{entity_type}::"{escaped}"'
+
+
+def request_head(input_obj: dict[str, Any], package: str) -> dict[str, str]:
+    """The PARC head for one evaluation (see :data:`REQUEST_HEAD`).
+
+    The caller's attributes stay in ``context.caller`` for the ``when``
+    clause; the head carries only the identity. A policy that reads
+    ``context.caller`` with no principal fails closed through ``has``, and one
+    that tests ``principal == Caller::"<sub>"`` never matches the anonymous
+    head. An issuer role never reaches the head or ``context.caller``: it is
+    evidence, admin-vouched and cryptographic, and stays in the evidence
+    fields, lexically apart from the IdP-asserted roles here.
+    """
+    head = dict(REQUEST_HEAD)
+    caller = input_obj.get("caller")
+    if isinstance(caller, dict) and isinstance(caller.get("sub"), str) and caller["sub"]:
+        head["principal"] = _entity("Caller", caller["sub"])
+    tool = input_obj.get("tool")
+    if isinstance(tool, str) and tool:
+        head["action"] = _entity("Action", tool)
+    head["resource"] = _entity("Server", package)
+    return head
 
 #: Cedar's JSON reader treats an object with one of these keys as an entity
 #: reference or an extension value rather than as a record. The assembled
@@ -178,6 +221,7 @@ class CedarPolicy:
         self._package = package or policy_path.parent.name
         text = policy_path.read_text()
         policies = _parse_policies(cedarpy, text, policy_path)
+        _refuse_in(text, policy_path)
         self._declared = expected_path.exists()
         if self._declared:
             self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
@@ -323,7 +367,7 @@ class CedarPolicy:
         whole policy set. Fail closed as a fault, not as a denial.
         """
         result = self._cedarpy.is_authorized(
-            {**REQUEST_HEAD, "context": context}, self._policies, []
+            {**request_head(context, self._package), "context": context}, self._policies, []
         )
         diagnostics = result.diagnostics
         errors = list(diagnostics.errors)
@@ -590,6 +634,38 @@ def _parse_policies(cedarpy: Any, text: str, path: Path) -> list[tuple[str, dict
     for policy in (parsed.get("staticPolicies") or {}).values():
         out.append((policy.get("effect"), dict(policy.get("annotations") or {})))
     return out
+
+
+_COMMENT_OR_STRING = re.compile(r'//[^\n]*|"(?:[^"\\]|\\.)*"')
+_IN_TOKEN = re.compile(r"\bin\b")
+
+
+def _refuse_in(text: str, path: Path) -> None:
+    """Refuse a policy that uses ``in`` anywhere.
+
+    ``in`` is hierarchy membership and the hierarchy is the entity store,
+    which the proxy never passes: measured, ``forbid(principal in
+    Group::"kids", action, resource)`` against an empty store returns Allow
+    with no diagnostic. The forbid is inert and nothing reports it -- not a
+    load error, not an evaluation error, a policy hole that looks like a
+    passing test. In the scope, Cedar's own schema validation would catch
+    it; in a ``when`` clause nothing does, and cedarpy exposes a policy's
+    effect and annotations but not its conditions, so the text is the only
+    handle. Comments and string literals are stripped first; the one false
+    positive is an attribute literally named ``in``, which the author
+    renames.
+    """
+    stripped = _COMMENT_OR_STRING.sub(" ", text)
+    match = _IN_TOKEN.search(stripped)
+    if match is None:
+        return
+    line = stripped.count("\n", 0, match.start()) + 1
+    raise CedarPolicyError(
+        f"{path} line {line}: `in` is refused. The policy set is evaluated with "
+        "no entity hierarchy, so hierarchy membership can never hold and a rule "
+        "that tests it is silently inert; test the attribute in `context` "
+        "instead (an attribute literally named `in` must be renamed)."
+    )
 
 
 def _inline_sentences(policies: list[tuple[str, dict[str, Any]]]) -> dict[str, str]:
