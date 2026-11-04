@@ -107,6 +107,9 @@ async def test_a_membership_with_no_accounts_binds_no_session(bundle, key):
     which is the fail-closed reading until the admin re-issues."""
     result = await _filter(bundle, key, kid_accounts=None).check(_call(key, KID_SESSION))
     assert not result.allowed
+    # A rendered denial, not a fault: the quantifier is guarded by `has`, so
+    # an absent list is a failed check with its sentence, never a CEL raise.
+    assert "session's account is not bound to the member whose key signed" in result.reason
 
 
 async def test_the_did_case_is_a_plain_equality(bundle, key):
