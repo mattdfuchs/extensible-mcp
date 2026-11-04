@@ -277,3 +277,47 @@ def test_every_hoisted_relation_has_a_denial_scenario(bundles):
     expected = frozenset().union(*(s.expect_ids for s in SCENARIOS.values()))
     assert REQUIRED_DENIALS <= expected, sorted(REQUIRED_DENIALS - expected)
     assert REQUIRED_DENIALS <= cedar.policy.expected_ids
+
+
+# -- an integral float: a validation failure on every engine, never a fault -- #
+#
+# From the toolchain's randomized differential (handoff §13.52). jsonschema
+# admits 12.0 at an integer field; Rego then decides, CEL raises and Cedar
+# cannot build the request, and the certificate says nothing about a float
+# at all. The validator now refuses it, and because validation gates allows
+# and explains faults, every engine reports the same denial at the same
+# path instead of "could not be evaluated".
+
+
+@pytest.mark.parametrize("where", ["clock", "call"])
+async def test_an_integral_float_is_a_validation_denial_on_every_engine(
+    bundles, key, stranger, where
+):
+    scenario = SCENARIOS["solo_allows"]
+    arguments = _arguments(key, stranger, amount=scenario.amount,
+                           auth=scenario.auth, tamper=scenario.tamper)
+    clock = lambda: scenario.now  # noqa: E731
+    expected_path = "now:"
+    if where == "call":
+        arguments["amountCents"] = float(arguments["amountCents"])  # the LLM sent 500.0
+        expected_path = "arguments/amountCents:"
+    else:
+        clock = lambda: float(scenario.now)  # noqa: E731 - an embedder's clock
+    reasons = {}
+    for engine, bundle in bundles.items():
+        f = WasmPolicyFilter(
+            bundle,
+            config=_config(key, stranger, scenario),
+            wallet_lookup=_wallet(key, stranger, scenario),
+            clock=clock,
+        )
+        call = CallRequest(tool_name=scenario.tool, arguments=dict(arguments),
+                           server_name="payments")
+        result = await f.check(call)
+        assert result.allowed is False, engine
+        reasons[engine] = result.reason
+
+    for engine, reason in reasons.items():
+        assert "could not" not in reason, (engine, reason)  # a denial, not a fault
+        assert "failed manifest validation" in reason, (engine, reason)
+        assert expected_path in reason and "integer" in reason, (engine, reason)

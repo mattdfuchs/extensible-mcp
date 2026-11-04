@@ -45,6 +45,24 @@ _TOOL_FIELD = "tool"
 _ARGUMENTS_FIELD = "arguments"
 
 
+def _is_json_integer(checker: Any, instance: Any) -> bool:
+    """``integer`` means a JSON integer: ``int`` and not ``bool``. Python's
+    parser keeps the distinction the schema cannot state -- ``12`` is an
+    ``int``, ``12.0`` and ``1e3`` are ``float`` -- so this is where it is
+    enforced."""
+    return isinstance(instance, int) and not isinstance(instance, bool)
+
+
+def _strict_integers(cls: Any) -> Any:
+    """``cls`` with its ``integer`` type redefined to :func:`_is_json_integer`.
+    Everything else about the draft is untouched."""
+    import jsonschema
+
+    return jsonschema.validators.extend(
+        cls, type_checker=cls.TYPE_CHECKER.redefine("integer", _is_json_integer)
+    )
+
+
 @dataclass
 class PolicyBundle:
     """One loaded policy bundle, ready to assemble-and-evaluate against.
@@ -196,6 +214,15 @@ class PolicyBundle:
         a present-but-malformed one does not, and ``additionalProperties:
         false`` rejects fields the policy does not read.
 
+        One rule is stricter than JSON Schema's: a field typed ``integer``
+        accepts only a JSON integer, never a number with a fraction or an
+        exponent, even one that is integral (``12.0``, ``1e3``). The spec
+        admits those, and the engines then disagree on them -- Rego decides,
+        CEL has no overload across the two types and Cedar cannot build the
+        request -- while the certificate a bundle ships with says nothing
+        about a float at all. The schema cannot express the exclusion, so
+        the host does, at the one seam every input crosses.
+
         Raises on a missing ``jsonschema`` dependency or a manifest that is
         not itself a valid schema — both deployment faults the caller treats
         as fail-closed, never as a policy decision.
@@ -211,7 +238,7 @@ class PolicyBundle:
                 ) from e
             cls = jsonschema.validators.validator_for(self.manifest)
             cls.check_schema(self.manifest)
-            validator = self._validator = cls(self.manifest)
+            validator = self._validator = _strict_integers(cls)(self.manifest)
         return [
             f"{'/'.join(str(p) for p in err.absolute_path) or '<input>'}: {err.message}"
             for err in validator.iter_errors(assembled)

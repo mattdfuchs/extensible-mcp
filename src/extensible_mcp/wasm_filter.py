@@ -89,13 +89,19 @@ def _fault(tool_name: str, stage: str, exc: BaseException, *, detail: str | None
     return f"{stage} (failing closed; the detail is in the proxy log)."
 
 
-def _validation_failure(errors: list[str]) -> str:
+def _validation_failure(errors: list[str], *, allowed: bool = True) -> str:
+    """The denial for an input outside the manifest.
+
+    Validation gates allows, not denials: a policy's own denial stays the
+    reason the caller sees, since that explanation is the useful one. It
+    also explains a fault. An engine that cannot evaluate an input the
+    manifest refuses has not malfunctioned, and the certificate a bundle
+    ships with says nothing about such an input; the validation error is
+    the reason, and the fault is logged rather than reported."""
     shown = "; ".join(errors[:3])
     more = f" (+{len(errors) - 3} more)" if len(errors) > 3 else ""
-    return (
-        "Policy allowed the call, but its input failed manifest validation "
-        f"(failing closed): {shown}{more}"
-    )
+    lead = "Policy allowed the call, but its input" if allowed else "Policy input"
+    return f"{lead} failed manifest validation (failing closed): {shown}{more}"
 
 
 def policy_deny_reason(bundle: PolicyBundle, assembled: dict[str, Any]) -> str:
@@ -256,6 +262,12 @@ class WasmPolicyFilter:
         try:
             result = self.bundle.policy.query(assembled, self.bundle.allow_entrypoint)
         except PolicyEvaluationError as e:
+            if validation_errors:
+                logger.info(
+                    "engine fault on an input outside the manifest for %r (%s): %s",
+                    request.tool_name, validation_errors, e,
+                )
+                return deny(_validation_failure(validation_errors, allowed=False))
             # Engine/config fault — fail closed, surfaced as an error not a
             # silent policy "deny".
             return deny(_fault(request.tool_name, "Policy could not be evaluated", e))
@@ -397,6 +409,12 @@ class VCPolicyFilter:
         try:
             result = self.bundle.policy.query(assembled, self.bundle.allow_entrypoint)
         except PolicyEvaluationError as e:
+            if validation_errors:
+                logger.info(
+                    "engine fault on an input outside the manifest for %r (%s): %s",
+                    request.tool_name, validation_errors, e,
+                )
+                return deny(_validation_failure(validation_errors, allowed=False))
             return deny(_fault(request.tool_name, "Policy could not be evaluated", e))
 
         if result and result[0].get("result") is True:
