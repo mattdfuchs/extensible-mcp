@@ -151,6 +151,13 @@ class CallerResolver:
     denial: a rule that reads the caller cannot be satisfied by a session
     nobody vouched for. ``roles`` and ``amr`` arrive as sorted lists, so the
     assembled input stays JSON.
+
+    ``params.fields`` instead names several, and the entry assembles as one
+    object with a key per fact the token carries (one it does not is left
+    out, for ``has``). That is the shape the Cedar engine's PARC head reads:
+    an entry named ``caller`` with ``sub`` among its fields puts
+    ``Caller::"<sub>"`` at the head, and the object itself is
+    ``context.caller`` for the ``when`` clause.
     """
 
     async def resolve(self, name, params, assembled, ctx):
@@ -160,13 +167,26 @@ class CallerResolver:
                 f"{name!r} is read from the caller, and this request carries no "
                 "authenticated principal"
             )
+        fields = params.get("fields")
+        if fields is not None:
+            out = {}
+            for which in fields:
+                value = _caller_value(principal, which)
+                if value is not None:
+                    out[which] = value
+            return out
         which = params.get("field")
-        value = getattr(principal, which)
-        if isinstance(value, (frozenset, set, tuple)):
-            value = sorted(value)
+        value = _caller_value(principal, which)
         if value is None:
             raise FetchError(f"{name!r}: the caller's token carries no {which!r}")
         return value
+
+
+def _caller_value(principal: Any, which: str) -> Any:
+    value = getattr(principal, which)
+    if isinstance(value, (frozenset, set, tuple)):
+        value = sorted(value)
+    return value
 
 
 class ClockResolver:
@@ -720,15 +740,33 @@ def _input_roots(node: Any) -> set[str]:
 
 def validate_caller_sources(plan: dict[str, Any]) -> None:
     """Refuse, at load, a ``caller`` entry naming a field the
-    :class:`~extensible_mcp.types.Principal` does not have, or none."""
+    :class:`~extensible_mcp.types.Principal` does not have, or none: one in
+    ``params.field``, or several in ``params.fields``, never both."""
     for entry in plan.get("entries") or []:
         source = entry.get("source") or {}
         if source.get("kind") != "caller":
             continue
-        which = (source.get("params") or {}).get("field")
+        params = source.get("params") or {}
+        name = entry.get("field")
+        if "fields" in params:
+            if "field" in params:
+                raise DerivePlanError(
+                    f"fetch plan entry {name!r}: a 'caller' source names params.field "
+                    "or params.fields, not both"
+                )
+            fields = params["fields"]
+            if not isinstance(fields, list) or not fields or any(
+                f not in CALLER_FIELDS for f in fields
+            ):
+                raise DerivePlanError(
+                    f"fetch plan entry {name!r}: a 'caller' source's params.fields must "
+                    f"be a non-empty list drawn from {sorted(CALLER_FIELDS)}, got {fields!r}"
+                )
+            continue
+        which = params.get("field")
         if which not in CALLER_FIELDS:
             raise DerivePlanError(
-                f"fetch plan entry {entry.get('field')!r}: a 'caller' source must name "
+                f"fetch plan entry {name!r}: a 'caller' source must name "
                 f"one of {sorted(CALLER_FIELDS)} in params.field, got {which!r}"
             )
 

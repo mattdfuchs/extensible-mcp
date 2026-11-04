@@ -128,3 +128,43 @@ def test_a_config_declared_bundle_may_read_the_caller(rewritten_bundle, tmp_path
         }}},
     }))
     create_server(load_config(config_path))  # no refusal
+
+
+# -- the object form: several facts as one field ----------------------------- #
+
+
+async def test_several_facts_assemble_as_one_object(rewritten_bundle, key):
+    """``params.fields`` is the shape the Cedar head reads: an entry named
+    ``caller`` with ``sub`` among its fields. A fact the token lacks is left
+    out, for ``has``, rather than failing the whole entry."""
+    def plan(doc):
+        doc["entries"].append({
+            "field": "caller",
+            "source": {"kind": "caller", "params": {"fields": ["sub", "roles", "acr", "auth_time"]}},
+            "schema": {},
+        })
+
+    def manifest(doc):
+        doc["properties"]["caller"] = {}
+        doc["required"].append("caller")
+
+    bundle = PolicyBundle.load(rewritten_bundle(MINIMAL_SPEND, plan=plan, manifest=manifest))
+    assembled = await FetchExecutor().assemble(bundle.fetchplan, _ctx(key, PARENT))
+    assert assembled["caller"] == {"sub": "parent-1", "roles": ["admin", "parent"]}
+    assert bundle.validate_input(assembled) == []
+
+
+@pytest.mark.parametrize("params, needle", [
+    ({"fields": ["sub", "shoe_size"]}, "params.fields"),
+    ({"fields": []}, "params.fields"),
+    ({"fields": "sub"}, "params.fields"),
+    ({"field": "sub", "fields": ["sub"]}, "not both"),
+])
+def test_load_refuses_a_malformed_fields_list(rewritten_bundle, params, needle):
+    def plan(doc):
+        doc["entries"].append({
+            "field": "caller", "source": {"kind": "caller", "params": params}, "schema": {},
+        })
+
+    with pytest.raises(DerivePlanError, match=needle):
+        PolicyBundle.load(rewritten_bundle(MINIMAL_SPEND, plan=plan))
