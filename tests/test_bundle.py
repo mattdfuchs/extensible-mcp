@@ -227,3 +227,54 @@ def test_a_literal_wallet_subject_is_an_authors_constant(rewritten_bundle):
         rewritten_bundle(FAMILY_SPEND, plan=_wallet_subject("requesterMembership", "did:key:fixed"))
     )
     assert bundle.name == "family_spend"
+
+
+# -- an integral float is not an integer -------------------------------------- #
+#
+# JSON Schema says a zero-fraction float satisfies {"type": "integer"}, and
+# the engines then disagree on it: Rego decides, CEL has no overload across
+# the two types, Cedar cannot build the request. The schema cannot express
+# the exclusion, so the validator does, at the one seam every input crosses.
+
+
+def _manifest_fixtures():
+    from pathlib import Path
+
+    root = Path(__file__).parent / "fixtures"
+    return sorted(
+        d.name for d in root.iterdir()
+        if (d / "manifest.json").exists() and d.name != "classifier"
+    )
+
+
+@pytest.mark.parametrize("name", _manifest_fixtures())
+def test_an_integral_float_fails_validation_at_its_path(name):
+    import json
+    from pathlib import Path
+
+    from extensible_mcp.bundle import PolicyBundle
+    from extensible_mcp.wasm_policy import default_builtins
+
+    # Two Rego fixtures declare verify_webauthn, which the load refuses to
+    # leave unregistered; the manifest under test is the same either way.
+    builtins = default_builtins(webauthn_rp_id="wallet.example")
+    bundle = PolicyBundle.load(Path(__file__).parent / "fixtures" / name, name=name,
+                               builtins=builtins)
+    for bad in (12.0, json.loads("1e3")):
+        errors = bundle.validate_input({"now": bad})
+        at_now = [e for e in errors if e.startswith("now:")]
+        assert at_now and "integer" in at_now[0], (name, bad, errors)
+    assert not [e for e in bundle.validate_input({"now": 12}) if e.startswith("now:")], name
+
+
+def test_the_strict_integer_leaves_number_fields_and_bools_as_they_were():
+    from jsonschema import Draft7Validator
+
+    from extensible_mcp.bundle import _strict_integers
+
+    number = _strict_integers(Draft7Validator)({"type": "number"})
+    assert not list(number.iter_errors(12.0)) and not list(number.iter_errors(12))
+    integer = _strict_integers(Draft7Validator)({"type": "integer"})
+    assert not list(integer.iter_errors(12))
+    assert list(integer.iter_errors(True)), "a bool is not an integer, as before"
+    assert list(integer.iter_errors(12.0))
