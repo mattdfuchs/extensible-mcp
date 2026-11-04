@@ -103,7 +103,7 @@ Core proxy:
 
 Policy-bundle engine:
 
-- **`bundle.py` / `fetchplan.py`** — loads a bundle and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers.
+- **`bundle.py` / `fetchplan.py`** — loads a bundle and assembles the policy's closed input by walking the fetch plan with async, fail-closed resolvers. `validate_input` runs the manifest with `integer` redefined as a JSON integer (`int`, not `bool`, never an integral float), the one exclusion JSON Schema cannot state. Validation gates allows and explains faults: a policy's own denial stays the reason, but an engine that cannot evaluate an input the manifest refuses reports the validation error, not a fault.
 - **`policy_engine.py`** — the `PolicyEngine` Protocol all three engines implement; the bundle format is engine-plural by design.
 - **`wasm_policy.py`** — OPA-compiled Rego evaluated in-process via wasmtime, with the crypto builtins a credential policy needs supplied from Python as host imports (JWS verification for EdDSA, ES256 and RS256, raw Ed25519, WebAuthn, SHA-256), so signature checks run *inside* the policy. The OPA heap is a bump allocator: the heap pointer is captured after instantiation and rewound per query.
 - **`cel_policy.py`** — the second engine over the same bundle format, via `cel-python`. A check that does not evaluate to a CEL bool fails closed.
