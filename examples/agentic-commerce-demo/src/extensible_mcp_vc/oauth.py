@@ -60,6 +60,12 @@ from joserfc.jwk import OctKey
 ISSUER = "https://approval.demo.invalid"
 AUDIENCE = "approval-service"
 CLIENT_ID = "approval-page"
+#: The chat console's own client at the organization's identity provider,
+#: and the audience the family proxy verifies. One client per browser
+#: surface and one audience per resource server: a token for the passkey
+#: page is never a token for the proxy, nor the reverse.
+CONSOLE_CLIENT_ID = "family-console"
+PROXY_AUDIENCE = "family-proxy"
 
 #: The two roles an enrollment can be made under, and the claim an external
 #: issuer carries them in (a list, since one person can hold both). The
@@ -574,3 +580,35 @@ class ExternalIssuer:
         except ValueError as e:
             raise ExternalIssuerError("identity provider token endpoint did not answer JSON") from e
         return response.status_code, body
+
+
+# -- the organization's accounts, bound into the memberships ----------------- #
+
+
+def realm_user_ids(realm_path: Path) -> dict[str, str]:
+    """``username -> id`` for the users the committed realm pins.
+
+    Keycloak keeps a user's ``id`` on import when the file carries one, which
+    is what lets the admin bind the organization's account into a membership
+    credential *before* anyone has signed in. The ids are the realm file's;
+    nothing here invents one.
+    """
+    realm = json.loads(Path(realm_path).read_text())
+    out: dict[str, str] = {}
+    for user in realm.get("users", []):
+        uid, name = user.get("id"), user.get("username")
+        if isinstance(uid, str) and uid and isinstance(name, str) and name:
+            out[name] = uid
+    return out
+
+
+def bound_accounts(issuer: str, realm_path: Path) -> dict[str, list[tuple[str, str]]]:
+    """The ``accounts`` each member's membership credential should carry
+    when the demo runs on the organization's identity provider: the
+    issuer, and the member's pinned account there, as ``(idp, account)``
+    pairs keyed by username. The membership's ``accounts`` list is what the
+    production bundles' ``account_bound`` check tests the console session
+    against, so this is the admin saying which member each account is.
+    """
+    issuer = issuer.rstrip("/")
+    return {name: [(issuer, uid)] for name, uid in realm_user_ids(realm_path).items()}

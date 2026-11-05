@@ -17,7 +17,10 @@
   "browserFlow": "webauthn-passwordless-browser",
   "webAuthnPolicyPasswordlessRpEntityName": "extensible-mcp household demo",
   "webAuthnPolicyPasswordlessRpId": "localhost",
-  "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256", "RS256"],
+  "webAuthnPolicyPasswordlessSignatureAlgorithms": [
+    "ES256",
+    "RS256"
+  ],
   "webAuthnPolicyPasswordlessAttestationConveyancePreference": "none",
   "webAuthnPolicyPasswordlessAuthenticatorAttachment": "platform",
   "webAuthnPolicyPasswordlessRequireResidentKey": "Yes",
@@ -39,29 +42,49 @@
   "scopeMappings": [
     {
       "client": "approval-page",
-      "roles": ["parent", "child"]
+      "roles": [
+        "parent",
+        "child"
+      ]
+    },
+    {
+      "client": "family-console",
+      "roles": [
+        "parent",
+        "child"
+      ]
     }
   ],
   "users": [
     {
+      "id": "6b1c2f4e-8d3a-4c51-9e7f-0a1b2c3d4e51",
       "username": "parent",
       "enabled": true,
       "firstName": "Demo",
       "lastName": "Parent",
       "email": "parent@household.invalid",
       "emailVerified": true,
-      "realmRoles": ["parent"],
-      "requiredActions": ["webauthn-register-passwordless"]
+      "realmRoles": [
+        "parent"
+      ],
+      "requiredActions": [
+        "webauthn-register-passwordless"
+      ]
     },
     {
+      "id": "6b1c2f4e-8d3a-4c51-9e7f-0a1b2c3d4e52",
       "username": "child",
       "enabled": true,
       "firstName": "Demo",
       "lastName": "Child",
       "email": "child@household.invalid",
       "emailVerified": true,
-      "realmRoles": ["child"],
-      "requiredActions": ["webauthn-register-passwordless"]
+      "realmRoles": [
+        "child"
+      ],
+      "requiredActions": [
+        "webauthn-register-passwordless"
+      ]
     }
   ],
   "requiredActions": [
@@ -150,8 +173,12 @@
       "frontchannelLogout": true,
       "rootUrl": "http://localhost:7500",
       "baseUrl": "/",
-      "redirectUris": ["http://localhost:7500/*"],
-      "webOrigins": ["http://localhost:7500"],
+      "redirectUris": [
+        "http://localhost:7500/*"
+      ],
+      "webOrigins": [
+        "http://localhost:7500"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:7500/*",
@@ -159,7 +186,11 @@
         "oidc.ciba.grant.enabled": "false",
         "client.use.lightweight.access.token.enabled": "false"
       },
-      "defaultClientScopes": ["basic", "profile", "roles"],
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "roles"
+      ],
       "optionalClientScopes": [],
       "protocolMappers": [
         {
@@ -169,6 +200,84 @@
           "consentRequired": false,
           "config": {
             "included.custom.audience": "approval-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "household-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "family-console",
+      "name": "Family assistant console",
+      "description": "The chat console that drives the family proxy; its token is the proxy's principal.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": true,
+      "rootUrl": "http://localhost:7300",
+      "baseUrl": "/",
+      "redirectUris": [
+        "http://localhost:7300/*"
+      ],
+      "webOrigins": [
+        "http://localhost:7300"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:7300/*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "client.use.lightweight.access.token.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "roles"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "family-proxy-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "family-proxy",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "introspection.token.claim": "true",

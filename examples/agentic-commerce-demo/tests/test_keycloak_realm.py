@@ -30,7 +30,16 @@ from pathlib import Path
 
 import pytest
 
-from extensible_mcp_vc.oauth import AUDIENCE, CLIENT_ID, ROLES, ROLES_CLAIM, DemoUserStore
+from extensible_mcp_vc.oauth import (
+    AUDIENCE,
+    CLIENT_ID,
+    CONSOLE_CLIENT_ID,
+    PROXY_AUDIENCE,
+    ROLES,
+    ROLES_CLAIM,
+    DemoUserStore,
+    realm_user_ids,
+)
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "keycloak"
 REALM_FILE = DEPLOY / "household-realm.json"
@@ -58,11 +67,28 @@ def realm() -> dict:
     return json.loads(REALM_FILE.read_text())
 
 
+# One client per browser surface, one audience per resource server: the
+# passkey page's token is for the approval service, the console's for the
+# proxy, and neither is a token for the other. Every per-client test below
+# runs for both.
+SURFACES = {CLIENT_ID: AUDIENCE, CONSOLE_CLIENT_ID: PROXY_AUDIENCE}
+
+
+@pytest.fixture(scope="module", params=sorted(SURFACES))
+def client_id(request) -> str:
+    return request.param
+
+
 @pytest.fixture(scope="module")
-def client(realm: dict) -> dict:
-    """The approval page's client, found by the id the service actually uses."""
-    matches = [c for c in realm["clients"] if c["clientId"] == CLIENT_ID]
-    assert len(matches) == 1, f"expected exactly one {CLIENT_ID!r} client"
+def audience(client_id: str) -> str:
+    return SURFACES[client_id]
+
+
+@pytest.fixture(scope="module")
+def client(realm: dict, client_id: str) -> dict:
+    """One surface's client, found by the id the code actually uses."""
+    matches = [c for c in realm["clients"] if c["clientId"] == client_id]
+    assert len(matches) == 1, f"expected exactly one {client_id!r} client"
     return matches[0]
 
 
@@ -99,14 +125,18 @@ def test_audience_mapper_exists_at_all(client: dict) -> None:
     assert len(mappers(client, AUDIENCE_MAPPER)) == 1
 
 
-def test_audience_mapper_names_the_resource_the_service_verifies(client: dict) -> None:
-    """The emitted audience is the one `verify_token` requires, not a client id.
+def test_audience_mapper_names_the_resource_the_service_verifies(client: dict, audience: str) -> None:
+    """The emitted audience is the one the verifier requires, not a client id.
 
     If these two drift apart, every token is rejected -- so the constant in
     `oauth.py` is the assertion rather than a copy of the string.
     """
     config = mappers(client, AUDIENCE_MAPPER)[0]["config"]
-    assert config["included.custom.audience"] == AUDIENCE
+    assert config["included.custom.audience"] == audience
+
+
+def test_the_two_surfaces_have_distinct_audiences() -> None:
+    assert AUDIENCE != PROXY_AUDIENCE
 
 
 def test_audience_mapper_targets_the_access_token(client: dict) -> None:
@@ -125,7 +155,7 @@ def test_audience_is_a_custom_value_not_another_client(client: dict) -> None:
 
 def test_recipe_documents_the_audience_it_emits() -> None:
     text = RECIPE.read_text()
-    assert AUDIENCE in text
+    assert AUDIENCE in text and PROXY_AUDIENCE in text
     assert AUDIENCE_MAPPER in text
 
 
@@ -155,7 +185,7 @@ def test_role_claim_is_multivalued(client: dict) -> None:
     assert config["multivalued"] == "true"
 
 
-def test_roles_are_in_the_clients_scope(realm: dict, client: dict) -> None:
+def test_roles_are_in_the_clients_scope(realm: dict, client: dict, client_id: str) -> None:
     """With `fullScopeAllowed: false` a mapper alone emits nothing.
 
     Measured on the pinned version: without the scope mapping the `roles` claim
@@ -166,7 +196,7 @@ def test_roles_are_in_the_clients_scope(realm: dict, client: dict) -> None:
     granted = {
         role
         for entry in realm.get("scopeMappings", [])
-        if entry.get("client") == CLIENT_ID
+        if entry.get("client") == client_id
         for role in entry.get("roles", [])
     }
     assert granted == {r["name"] for r in realm["roles"]["realm"]}
@@ -341,3 +371,32 @@ def test_realm_file_name_matches_the_realm(realm: dict) -> None:
     """A directory import requires `<realm>-realm.json`; the pinned version
     refuses to start on a mismatch."""
     assert REALM_FILE.name == f"{realm['realm']}-realm.json"
+
+
+# --------------------------------------------------------------------------- #
+# the users' ids are pinned, so a membership can name the account before any sign-in
+# --------------------------------------------------------------------------- #
+
+
+def test_users_ids_are_pinned_and_readable(realm: dict) -> None:
+    """`setup.py` binds `(issuer, id)` into each member's membership credential
+    at first boot, before the user has ever signed in, so the id has to be
+    the file's and survive import (Keycloak keeps an `id` it is given; measured
+    on the pinned version). A regenerated export always carries ids, so the
+    thing to guard is that they stay the *same* ones."""
+    ids = realm_user_ids(REALM_FILE)
+    assert set(ids) == {"parent", "child"}
+    assert ids == {
+        "parent": "6b1c2f4e-8d3a-4c51-9e7f-0a1b2c3d4e51",
+        "child": "6b1c2f4e-8d3a-4c51-9e7f-0a1b2c3d4e52",
+    }
+    for uid in ids.values():
+        assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", uid)
+
+
+def test_console_client_redirects_to_the_console(realm: dict) -> None:
+    console = next(c for c in realm["clients"] if c["clientId"] == CONSOLE_CLIENT_ID)
+    assert console["publicClient"] is True
+    assert console["redirectUris"] == ["http://localhost:7300/*"]
+    assert console["webOrigins"] == ["http://localhost:7300"]
+    assert console["attributes"]["pkce.code.challenge.method"] == "S256"

@@ -67,10 +67,13 @@ rather than in `docker-compose.yml` on purpose, because the demo's default
       - "127.0.0.1:8080:8080"
 ```
 
-The values the approval service takes: issuer
-`http://localhost:8080/realms/household`, client `approval-page`, audience
-`approval-service`. The client and audience are the service's own constants;
-only the issuer is configuration.
+The values the demo takes: issuer `http://localhost:8080/realms/household`;
+for the passkey page, client `approval-page` and audience `approval-service`;
+for the chat console, client `family-console` and audience `family-proxy`,
+which is what the family proxy verifies. One client per browser surface and
+one audience per resource server, so a token for the page is never a token
+for the proxy. The clients and audiences are the code's own constants; only
+the issuer is configuration.
 
 ## Point the demo at it
 
@@ -100,6 +103,22 @@ What the fragment sets, and why each line is there:
   tokens would carry the wrong `iss` too.
 - The service's `APPROVAL_REQUIRED_AMR` is left at its default, `hwk`: a
   sign-in that did not use the passwordless flow cannot enrol a passkey.
+- The same two variables put the **family proxy** on the provider: it
+  waits for discovery at startup, verifies the console's bearer for the
+  `family-proxy` audience against the realm's keys, requires a principal on
+  every call, and scopes the catalogue by role (both roles see everything;
+  neither may load a server at runtime). And they put the **console** on
+  it: the chat page signs you in at Keycloak and the console holds one MCP
+  session per signed-in person, presenting that person's token, so the
+  proxy's principal is the person at the console.
+- **First boot binds the memberships.** With the issuer set, `setup.py`
+  writes each member's pinned account at the provider —
+  `{"idp": <issuer>, "account": <the realm's user id>}` — into the
+  membership credential the admin signs. The production bundles'
+  `account_bound` check then requires the console session to be the member
+  whose wallet signed the request. A workspace created *without* the issuer
+  has unbound memberships, which bind nobody under a principal: run
+  `docker compose down -v` before switching modes.
 
 Then, once:
 
@@ -111,6 +130,14 @@ Then, once:
    the passkey; you come back signed in as that user, and **Enrol** mints the
    admin-signed enrollment under the role the token carries. A user holding
    both roles is asked which one to enrol under.
+3. Open `http://localhost:7300`. The console sends you to Keycloak too (its
+   own client); sign in as `child`, and every call the assistant makes
+   carries your token: the proxy knows who it is representing, the wallet
+   that signs the request must be bound to your account, and a request the
+   assistant steers at the other member's wallet is denied with the binding
+   sentence. The business shape in one sign-in: the organization's
+   identity provider, its proxy, its passkey authority, the merchant on the
+   other side.
 
 `docker compose logs family` prints `[approval] sign-in via external issuer`
 instead of the local passwords, which do not apply in this mode.
