@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from extensible_mcp_vc.oauth import AUDIENCE, CLIENT_ID, DemoUserStore
+from extensible_mcp_vc.oauth import AUDIENCE, CLIENT_ID, ROLES, ROLES_CLAIM, DemoUserStore
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "keycloak"
 REALM_FILE = DEPLOY / "household-realm.json"
@@ -51,7 +51,6 @@ ROLE_MAPPER = "oidc-usermodel-realm-role-mapper"
 AMR_MAPPER = "oidc-amr-mapper"
 PASSWORDLESS_AUTHENTICATOR = "webauthn-authenticator-passwordless"
 
-ROLES_CLAIM = "roles"
 
 
 @pytest.fixture(scope="module")
@@ -139,6 +138,7 @@ def test_realm_declares_exactly_our_role_vocabulary(realm: dict) -> None:
     """The roles are the demo's own two, taken from the code rather than
     retyped: `DemoUserStore` is what issues them on the non-Keycloak path."""
     expected = set(inspect.signature(DemoUserStore.__init__).parameters["roles"].default)
+    assert expected == set(ROLES), "the verifier's vocabulary and the user store's must agree"
     assert {r["name"] for r in realm["roles"]["realm"]} == expected
 
 

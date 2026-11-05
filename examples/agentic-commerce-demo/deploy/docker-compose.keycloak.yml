@@ -1,0 +1,30 @@
+# Optional overlay: the demo plus a Keycloak holding the committed realm, with
+# the approval service in external-issuer mode. See keycloak/README.md,
+# "Point the demo at it". Kept out of docker-compose.yml on purpose: the
+# default `up` should not start an identity provider nobody asked for.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.keycloak.yml up --build
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Dev-mode bootstrap admin. A real deployment uses `start`, a database,
+      # and an admin created out of band.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # The issuer the tokens and the discovery document name, whichever host
+      # a request arrived on: the browser reaches Keycloak at localhost:8080,
+      # the family container at keycloak:8080, and both must see one issuer.
+      KC_HOSTNAME: http://localhost:8080
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  family:
+    environment:
+      APPROVAL_ISSUER: http://localhost:8080/realms/household
+      APPROVAL_ISSUER_INTERNAL: http://keycloak:8080/realms/household
+    depends_on:
+      - keycloak

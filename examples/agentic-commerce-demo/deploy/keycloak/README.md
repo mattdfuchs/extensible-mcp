@@ -6,12 +6,14 @@ become a configuration step rather than a rewrite — which is the reason
 [`oauth.py`](../../src/extensible_mcp_vc/oauth.py) implements authorization
 code + PKCE and not a password check.
 
-**The recipe is ahead of the code.** Today `verify_token` accepts only tokens
-the approval service minted itself: there is no issuer setting, no discovery,
-no JWKS fetch and no RS256 path, so a token this realm issues is refused. The
-realm is committed and tested now so the two sides are pinned from one
-contract; the external-issuer mode that consumes it is issue #47, and lands
-with the proxy's own principal and HTTP auth gate (#9, #11).
+**The code consumes it.** With `APPROVAL_ISSUER` set, the approval service
+runs in external-issuer mode: discovery, the realm's JWKS, RS256, verified by
+the same `JWTVerifier` the proxy's `auth` block builds; the page's sign-in
+goes to Keycloak and the code exchange is forwarded. The realm and the
+verifier are pinned from one contract: `tests/test_keycloak_realm.py` holds
+this file to the claims the recipe promises, and `tests/test_external_issuer.py`
+mints tokens of exactly that shape and checks the service accepts them. See
+[Point the demo at it](#point-the-demo-at-it).
 
 Keycloak is the enterprise answer here: self-hosted, no account needed by
 anyone cloning the repo, dynamic client registration, identity brokering,
@@ -65,11 +67,61 @@ rather than in `docker-compose.yml` on purpose, because the demo's default
       - "127.0.0.1:8080:8080"
 ```
 
-The values the approval service will take once #47 lands: issuer
+The values the approval service takes: issuer
 `http://localhost:8080/realms/household`, client `approval-page`, audience
-`approval-service`. Until then the service has no issuer setting, and the
-realm is something to import and inspect, not something the demo signs in
-against.
+`approval-service`. The client and audience are the service's own constants;
+only the issuer is configuration.
+
+## Point the demo at it
+
+[`docker-compose.keycloak.yml`](../docker-compose.keycloak.yml) is the
+fragment above plus the family container's environment, so the demo and the
+provider come up together:
+
+```sh
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+               -f examples/agentic-commerce-demo/deploy/docker-compose.keycloak.yml up --build
+```
+
+What the fragment sets, and why each line is there:
+
+- `APPROVAL_ISSUER=http://localhost:8080/realms/household` on the family
+  container: what the realm's tokens name in `iss`, and where the browser is
+  sent to sign in.
+- `APPROVAL_ISSUER_INTERNAL=http://keycloak:8080/realms/household`: where the
+  *service* reaches Keycloak, from inside the compose network. Discovery, the
+  JWKS and the token endpoint are fetched there; the URLs Keycloak publishes
+  are rewritten from the public issuer onto this base for the service's own
+  requests only, and the browser-facing authorize URL is left as published.
+- `KC_HOSTNAME=http://localhost:8080` on Keycloak: makes it name the public
+  issuer in tokens and in discovery whichever host the request arrived on.
+  Without it the discovery document fetched at `keycloak:8080` names
+  `keycloak:8080` as the issuer, the service refuses it as a mismatch, and
+  tokens would carry the wrong `iss` too.
+- The service's `APPROVAL_REQUIRED_AMR` is left at its default, `hwk`: a
+  sign-in that did not use the passwordless flow cannot enrol a passkey.
+
+Then, once:
+
+1. Open `http://localhost:8080` (admin / admin), realm `household`, and
+   register a passkey for `parent` and for `child` as
+   [The users, and the enrolment step you have to do by hand](#the-users-and-the-enrolment-step-you-have-to-do-by-hand)
+   describes; the realm ships the users with no credential.
+2. Open `http://localhost:7500`. The page sends you to Keycloak; sign in with
+   the passkey; you come back signed in as that user, and **Enrol** mints the
+   admin-signed enrollment under the role the token carries. A user holding
+   both roles is asked which one to enrol under.
+
+`docker compose logs family` prints `[approval] sign-in via external issuer`
+instead of the local passwords, which do not apply in this mode.
+
+The opt-in test runs the service's provider client against the live
+container, rewrite included, and is skipped without the variable:
+
+```sh
+KEYCLOAK_URL=http://127.0.0.1:8080 uv run --package extensible-mcp-vc \
+  pytest examples/agentic-commerce-demo/tests/test_external_issuer.py -k pinned_keycloak
+```
 
 **The file name is load-bearing.** A directory import requires
 `<realm>-realm.json`; with any other name 26.8.1 refuses to start with

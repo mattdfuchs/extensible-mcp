@@ -115,8 +115,9 @@ PYEOF
 
 # The passkey page is behind a sign-in now, and the passwords are random per
 # workspace. Echo them to stdout as well as the shared log, so they show up in
-# `docker compose logs` and not only at :7300/logs.
-if [ -f workspace/approval-users.json ]; then
+# `docker compose logs` and not only at :7300/logs. Not in external-issuer
+# mode, where sign-in is at the provider and the local passwords do not apply.
+if [ -z "${APPROVAL_ISSUER:-}" ] && [ -f workspace/approval-users.json ]; then
   uv run python - << 'PYEOF' | tee -a "$DEMO_LOG_FILE"
 import json, pathlib
 users = json.loads(pathlib.Path("workspace/approval-users.json").read_text())["users"]

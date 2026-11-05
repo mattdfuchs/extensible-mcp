@@ -13,9 +13,13 @@ from who you are rather than taken from the request body.
 **Why a real flow and not a password check.** Authorization code + PKCE is
 what an external identity provider speaks. Building the demo against that
 shape keeps a later swap to Entra, Keycloak, Okta or Auth0 a bounded change
-to this module rather than a redesign of the page. It is a change, not a
-configuration step: `verify_token` accepts only tokens this server minted,
-and no external issuer is supported today (see issue #47). The resource-owner
+to this module rather than a redesign of the page. That swap is now a
+configuration step: with ``APPROVAL_ISSUER`` set the service runs in
+**external-issuer mode** (:class:`ExternalIssuer`), where the realm's tokens
+are verified with the same ``JWTVerifier`` the proxy's ``auth`` block builds,
+``/authorize`` redirects to the provider and ``/token`` forwards the code
+exchange, and the page is unchanged. One mode per process: in external mode
+a token this server minted is refused like any other. The resource-owner
 password grant would have been a third of the code and is deprecated in
 OAuth 2.1 — and choosing it would have thrown away the one property that
 makes this worth doing.
@@ -37,21 +41,39 @@ is acceptable is that these credentials guard a mock pizza purchase.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
+from urllib.parse import urlencode
 
+import httpx2
 from joserfc import jwt
 from joserfc.jwk import OctKey
 
 ISSUER = "https://approval.demo.invalid"
 AUDIENCE = "approval-service"
 CLIENT_ID = "approval-page"
+
+#: The two roles an enrollment can be made under, and the claim an external
+#: issuer carries them in (a list, since one person can hold both). The
+#: committed Keycloak realm's role mapper emits exactly this claim with
+#: exactly these values; ``tests/test_keycloak_realm.py`` holds it to that.
+ROLES: Final = ("child", "parent")
+ROLES_CLAIM: Final = "roles"
+#: RFC 8176 authentication-method values an enrollment requires in external
+#: mode, by default: ``hwk`` is proof of possession of a hardware-secured
+#: key, which is what the realm's passwordless flow records. Enrollment is
+#: the first link of the evidence chain, so a password sign-in at the
+#: provider does not get to enrol a passkey. ``APPROVAL_REQUIRED_AMR``
+#: overrides it (comma-separated; empty disables the check).
+DEFAULT_REQUIRED_AMR: Final = frozenset({"hwk"})
 
 # An authorization code is redeemed immediately by the page, so it lives for
 # seconds. The access token has to outlast a human deciding whether to
@@ -288,3 +310,267 @@ class AuthorizationServer:
         now = self.clock()
         for code in [c for c, p in self._codes.items() if p.expires_at <= now]:
             del self._codes[code]
+
+
+# -- roles, in both modes ---------------------------------------------------- #
+
+
+def roles_of(claims: Mapping[str, Any]) -> list[str]:
+    """The roles a token asserts: the ``roles`` list, or the single ``role``
+    string this server's own tokens carry, read as a one-element list."""
+    raw = claims.get(ROLES_CLAIM)
+    if raw is None:
+        single = claims.get("role")
+        raw = [single] if isinstance(single, str) else []
+    elif isinstance(raw, str):
+        raw = [raw]
+    elif not isinstance(raw, list):
+        raw = []
+    return [r for r in raw if isinstance(r, str) and r]
+
+
+def eligible_roles(claims: Mapping[str, Any]) -> list[str]:
+    """The enrollable roles the token holds, in vocabulary order."""
+    held = roles_of(claims)
+    return [r for r in ROLES if r in held]
+
+
+def select_role(claims: Mapping[str, Any], requested: str | None) -> str:
+    """The role an enrollment is made under: derived from the token, never
+    asserted by the request.
+
+    One eligible role means that role, and ``requested`` is ignored, as it
+    always was. Two means the request must select one of them -- the body
+    picks between what the token already grants and can never widen it.
+    None is a refusal.
+    """
+    eligible = eligible_roles(claims)
+    if not eligible:
+        raise OAuthError(
+            "insufficient_scope",
+            f"the token carries no enrollable role (needs one of {', '.join(ROLES)})",
+        )
+    if len(eligible) == 1:
+        return eligible[0]
+    if requested in eligible:
+        return requested
+    raise OAuthError(
+        "invalid_request",
+        f"the token carries {' and '.join(eligible)}; the request must select one",
+    )
+
+
+def check_amr(claims: Mapping[str, Any], required: frozenset[str]) -> None:
+    """Refuse an enrollment whose sign-in did not use a required method."""
+    if not required:
+        return
+    raw = claims.get("amr")
+    held = {v for v in raw if isinstance(v, str)} if isinstance(raw, list) else set()
+    if not held & required:
+        raise OAuthError(
+            "insufficient_scope",
+            "enrollment requires an authentication method in "
+            f"{{{', '.join(sorted(required))}}}; the token carries "
+            f"{{{', '.join(sorted(held)) or 'none'}}}",
+        )
+
+
+# -- an external issuer ------------------------------------------------------ #
+
+
+class ExternalIssuerError(Exception):
+    """The identity provider could not be reached, or answered out of shape.
+
+    A 503 at the service, never ``invalid_token``: the caller's token was not
+    judged, so the caller must not be told it was bad.
+    """
+
+
+@dataclass(frozen=True)
+class ExternalIssuerConfig:
+    """External-issuer mode, from the environment.
+
+    ``issuer`` is what the provider's tokens name in ``iss`` and where the
+    browser is sent to sign in. ``internal_base`` is where *this service*
+    reaches the provider, which differs inside a container: the browser
+    reaches Keycloak at ``localhost:8080`` while the service reaches it at
+    ``keycloak:8080``. URLs the provider publishes are rewritten from the one
+    onto the other for the service's own requests only.
+    """
+
+    issuer: str
+    internal_base: str
+    audience: str = AUDIENCE
+    client_id: str = CLIENT_ID
+    jwks_uri: str | None = None
+    required_amr: frozenset[str] = DEFAULT_REQUIRED_AMR
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> ExternalIssuerConfig | None:
+        env = os.environ if environ is None else environ
+        issuer = (env.get("APPROVAL_ISSUER") or "").strip().rstrip("/")
+        if not issuer:
+            return None
+        internal = (env.get("APPROVAL_ISSUER_INTERNAL") or "").strip().rstrip("/") or issuer
+        amr_raw = env.get("APPROVAL_REQUIRED_AMR")
+        if amr_raw is None:
+            required = DEFAULT_REQUIRED_AMR
+        else:
+            required = frozenset(v.strip() for v in amr_raw.split(",") if v.strip())
+        return cls(
+            issuer=issuer,
+            internal_base=internal,
+            jwks_uri=(env.get("APPROVAL_JWKS_URI") or "").strip() or None,
+            required_amr=required,
+        )
+
+    def internal(self, url: str) -> str:
+        """A provider-published URL, as this service reaches it."""
+        if self.internal_base == self.issuer or not url.startswith(self.issuer):
+            return url
+        return self.internal_base + url[len(self.issuer):]
+
+
+_DISCOVERY_KEYS: Final = ("authorization_endpoint", "token_endpoint", "jwks_uri")
+
+
+class ExternalIssuer:
+    """The provider side of external-issuer mode.
+
+    Verifies the realm's tokens, sends the browser to the provider's
+    authorize endpoint, and forwards the page's code exchange to the
+    provider's token endpoint. The verifier is FastMCP's ``JWTVerifier``,
+    constructed with the same arguments the proxy's ``auth`` block passes
+    (issuer, audience, JWKS, RS256): one verifier in the repo, so the page
+    and the proxy accept a token on the same terms.
+
+    Discovery is lazy and cached: the service starts before the provider
+    may be up, and nothing here retries on its behalf.
+    """
+
+    def __init__(
+        self,
+        config: ExternalIssuerConfig,
+        *,
+        http_client: httpx2.AsyncClient | None = None,
+        verifier: Any | None = None,
+    ) -> None:
+        self.config = config
+        self._http = http_client or httpx2.AsyncClient(timeout=httpx2.Timeout(10.0))
+        self._verifier = verifier
+        self._discovery: dict[str, Any] | None = None
+        self._lock = asyncio.Lock()
+
+    async def discovery(self) -> dict[str, Any]:
+        if self._discovery is not None:
+            return self._discovery
+        async with self._lock:
+            if self._discovery is not None:
+                return self._discovery
+            url = self.config.internal(self.config.issuer + "/.well-known/openid-configuration")
+            try:
+                response = await self._http.get(url)
+            except httpx2.HTTPError as e:
+                raise ExternalIssuerError(
+                    f"identity provider {self.config.issuer} is unreachable: {e}"
+                ) from e
+            if response.status_code != 200:
+                raise ExternalIssuerError(
+                    f"identity provider discovery at {url} answered HTTP {response.status_code}"
+                )
+            try:
+                doc = response.json()
+            except ValueError as e:
+                raise ExternalIssuerError("identity provider discovery was not JSON") from e
+            if not isinstance(doc, dict) or doc.get("issuer") != self.config.issuer:
+                raise ExternalIssuerError(
+                    f"identity provider discovery names issuer {doc.get('issuer')!r}; "
+                    f"configured {self.config.issuer!r}"
+                )
+            for key in _DISCOVERY_KEYS:
+                if not isinstance(doc.get(key), str) or not doc[key]:
+                    raise ExternalIssuerError(f"identity provider discovery lacks {key!r}")
+            self._discovery = doc
+            return doc
+
+    async def verifier(self) -> Any:
+        if self._verifier is None:
+            from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+            jwks_uri = self.config.jwks_uri or (await self.discovery())["jwks_uri"]
+            self._verifier = JWTVerifier(
+                issuer=self.config.issuer,
+                audience=self.config.audience,
+                jwks_uri=self.config.internal(jwks_uri),
+                algorithm="RS256",
+                http_client=self._http,
+            )
+        return self._verifier
+
+    async def verify_token(self, authorization_header: str | None) -> dict[str, Any]:
+        """Claims for a valid bearer from the provider, else ``OAuthError``.
+
+        The same one-refusal rule as the internal verifier: every failure is
+        ``invalid_token`` with no detail. A provider that cannot be reached is
+        :class:`ExternalIssuerError` instead, since no judgement was made.
+        """
+        if not authorization_header or not authorization_header.startswith("Bearer "):
+            raise OAuthError("invalid_token", "a bearer token is required")
+        token = authorization_header[7:].strip()
+        verifier = await self.verifier()
+        try:
+            verified = await verifier.verify_token(token)
+        except ExternalIssuerError:
+            raise
+        except Exception as e:  # noqa: BLE001 - any JOSE or fetch failure is one refusal
+            raise OAuthError("invalid_token", "token could not be verified") from e
+        if verified is None:
+            raise OAuthError("invalid_token", "token could not be verified")
+        claims = dict(getattr(verified, "claims", None) or {})
+        if not isinstance(claims.get("sub"), str) or not claims["sub"]:
+            raise OAuthError("invalid_token", "token names nobody")
+        return claims
+
+    async def authorize_url(self, *, redirect_uri: str, code_challenge: str, state: str) -> str:
+        """Where to send the browser: the provider's authorize endpoint, as
+        published (the browser reaches the provider at the public issuer)."""
+        endpoint = (await self.discovery())["authorization_endpoint"]
+        query = {
+            "response_type": "code",
+            "client_id": self.config.client_id,
+            "redirect_uri": redirect_uri,
+            "scope": "openid",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        }
+        if state:
+            query["state"] = state
+        return endpoint + ("&" if "?" in endpoint else "?") + urlencode(query)
+
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str, client_id: str
+    ) -> tuple[int, Any]:
+        """Forward the page's code exchange and return the provider's answer
+        as is, status included. The PKCE verifier passes through; this
+        service never holds a client secret, since the client is public."""
+        if client_id != self.config.client_id:
+            raise OAuthError("unauthorized_client", "client_id does not match")
+        endpoint = self.config.internal((await self.discovery())["token_endpoint"])
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+        }
+        try:
+            response = await self._http.post(endpoint, data=form)
+        except httpx2.HTTPError as e:
+            raise ExternalIssuerError(
+                f"identity provider token endpoint is unreachable: {e}"
+            ) from e
+        try:
+            body = response.json()
+        except ValueError as e:
+            raise ExternalIssuerError("identity provider token endpoint did not answer JSON") from e
+        return response.status_code, body

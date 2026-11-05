@@ -130,15 +130,18 @@ not a gate is worse than none because it stops a reader asking. The flow is a
 real one rather than a password check because authorization code + PKCE is the
 shape an external identity provider speaks, which keeps a later swap to one a
 bounded change to the approval service rather than a redesign of the page. It
-is a change, not a configuration step: today the service verifies only tokens
-it minted itself, and no external provider is required or supported.
+is a configuration step: with `APPROVAL_ISSUER` set, the service verifies the
+provider's tokens with the same verifier the proxy's `auth` block builds,
+sends the browser to the provider to sign in, and forwards the code exchange;
+with it unset the service is its own issuer and no external provider is
+required. One mode per process.
 
-[`keycloak/`](keycloak/) is the provider side of that change, worked out
-ahead of the code: a committed realm with the audience, role and AMR mappers
-and a WebAuthn-passwordless browser flow, carrying no secrets of any kind,
-with a test that holds the file to what its document claims. The demo does
-not start Keycloak and cannot yet sign in against it; the verifier that would
-accept its tokens is issue #47. [`keycloak/README.md`](keycloak/README.md)
+[`keycloak/`](keycloak/) is the provider side: a committed realm with the
+audience, role and AMR mappers and a WebAuthn-passwordless browser flow,
+carrying no secrets of any kind, with a test that holds the file to what its
+document claims. The demo's default `up` does not start Keycloak; the
+recipe's "Point the demo at it" section is the one-command way to run it
+alongside and sign in against it. [`keycloak/README.md`](keycloak/README.md)
 says what each mapper is for and what silently breaks without it.
 
 **What is still open.** Three endpoints on `:7500` remain unauthenticated
