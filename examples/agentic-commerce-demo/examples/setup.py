@@ -12,12 +12,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from household_identity.common import did as did_mod
 from household_identity.common import jws, keys
 from household_identity.did_server.document import make_did_document
 from household_identity.did_server.membership import make_membership_vc
+
+from extensible_mcp_vc.oauth import bound_accounts
+
+# The committed realm, whose pinned user ids a membership binds to.
+REALM_FILE = Path(__file__).resolve().parent.parent / "deploy" / "keycloak" / "household-realm.json"
 
 ADMIN_DID = "did:web:family.example.com"
 
@@ -32,9 +38,20 @@ def main() -> None:
         "--admin-did", default=ADMIN_DID,
         help=f"family admin did:web (default: {ADMIN_DID})",
     )
+    parser.add_argument(
+        "--issuer", default=os.environ.get("APPROVAL_ISSUER") or None,
+        help="the organization's identity provider (issuer URL); when set, each "
+             "membership binds the member's pinned account there (default: "
+             "$APPROVAL_ISSUER, else unbound)",
+    )
     args = parser.parse_args()
     ws: Path = args.workspace
     admin_did: str = args.admin_did
+    # With the organization's provider configured, the admin binds each
+    # member's account into the membership it signs: the production bundles'
+    # account_bound check then requires the console session to be that
+    # member. Unbound memberships bind nobody under a principal.
+    accounts = bound_accounts(args.issuer, REALM_FILE) if args.issuer else {}
 
     # The guard is about not clobbering keys and memberships. The approval
     # service writes its own approval-users.json here the first time it starts,
@@ -72,7 +89,8 @@ def main() -> None:
         ("parent", parent_did, "parent"),
     ]:
         payload = make_membership_vc(
-            admin_did=admin_did, member_did=member_did, role=role
+            admin_did=admin_did, member_did=member_did, role=role,
+            accounts=accounts.get(role),
         )
         token = jws.sign_jwt(payload, key=admin_key, kid=admin_did)
         (ws / "memberships" / f"{label}.jwt").write_text(token + "\n")
