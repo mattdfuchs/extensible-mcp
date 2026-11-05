@@ -36,10 +36,12 @@ allowed once the parent authorizes it (both shells exercised).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import dataclasses
 import json
 import logging
 import os
+import time
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
@@ -62,13 +64,19 @@ from extensible_mcp import (
 )
 from extensible_mcp.filters import AccessControlFilter
 from extensible_mcp.augment import BundleAugmenter
-from extensible_mcp.config import Config
+from extensible_mcp.config import AccessControlConfig, Config, FiltersConfig, RoleScope
 from extensible_mcp.server import create_server
 from extensible_mcp.types import CallFilterResult, CallRequest, ServerConfig
 from extensible_mcp.wasm_filter import WasmPolicyFilter
 from extensible_mcp.wasm_policy import default_builtins
 from extensible_mcp.fetchplan import default_primitives
 from extensible_mcp_vc.invoice import canonical_invoice
+from extensible_mcp_vc.oauth import (
+    PROXY_AUDIENCE,
+    ExternalIssuer,
+    ExternalIssuerConfig,
+    ExternalIssuerError,
+)
 from extensible_mcp_vc.meta_tools import (
     build_invoice_tools,
     build_vc_tools,
@@ -401,6 +409,72 @@ def build_bundle_router(
     return router, resolver, policy_set
 
 
+# -- the organization's identity provider as the proxy's own --------------- #
+
+
+@dataclasses.dataclass(frozen=True)
+class Identity:
+    """What the proxy is told about who is calling.
+
+    ``server_kwargs`` go to :func:`create_server`: the verifier for the
+    console's bearer and ``require_principal``, so no call reaches a
+    pipeline without a person behind it. ``by_role`` scopes the catalogue
+    per role. Both empty is the home shape: one household on loopback, no
+    inbound auth, every principal ``None``.
+    """
+
+    server_kwargs: dict[str, Any]
+    by_role: dict[str, RoleScope] | None
+
+
+#: Both roles see every server and neither may load one at runtime. The
+#: demo's claim is who the LLM is representing, not a catalogue difference;
+#: a deployment that wants the child to see less edits this table.
+DEMO_BY_ROLE = {
+    "parent": RoleScope(allow_servers="*", may_load=False),
+    "child": RoleScope(allow_servers="*", may_load=False),
+}
+
+
+async def wait_for_provider(issuer: ExternalIssuer, *, timeout: float = 120.0) -> Any:
+    """The verifier for the organization's provider, once it answers
+    discovery. The provider comes up beside the demo in the compose overlay
+    and takes longer than the proxy, so this is the one place the proxy
+    waits at startup; the bound is a fault, not a retry forever."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return await issuer.verifier()
+        except ExternalIssuerError as e:
+            if time.monotonic() >= deadline:
+                raise
+            logging.getLogger(__name__).info("identity provider not ready (%s); retrying", e)
+            await asyncio.sleep(2.0)
+
+
+def external_identity(
+    config: ExternalIssuerConfig | None, *, http_client: Any | None = None,
+    timeout: float = 120.0,
+) -> Identity:
+    """The proxy's identity settings for the configured provider, or none.
+
+    The token the console presents is for the proxy's own audience
+    (``family-proxy``), never the passkey page's: one audience per resource
+    server. The verifier is FastMCP's ``JWTVerifier`` over the realm's JWKS,
+    reached at the internal base, built by the same ``ExternalIssuer`` the
+    approval service verifies with.
+    """
+    if config is None:
+        return Identity(server_kwargs={}, by_role=None)
+    proxy_config = dataclasses.replace(config, audience=PROXY_AUDIENCE)
+    issuer = ExternalIssuer(proxy_config, http_client=http_client)
+    verifier = asyncio.run(wait_for_provider(issuer, timeout=timeout))
+    return Identity(
+        server_kwargs={"auth": verifier, "require_principal": True},
+        by_role=dict(DEMO_BY_ROLE),
+    )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(prog="family_proxy_server")
@@ -452,7 +526,14 @@ def main() -> None:
             },
         )
     )
+    # With the organization's provider configured, the console's bearer is
+    # the proxy's principal on every call and the catalogue is scoped by
+    # role; the memberships setup.py wrote bind each member's account there,
+    # which is what the production bundles' account_bound check tests.
+    identity = external_identity(ExternalIssuerConfig.from_env())
+
     config = Config(
+        filters=FiltersConfig(access_control=AccessControlConfig(by_role=identity.by_role)),
         servers=[
             ServerConfig(
                 name="payments",
@@ -549,13 +630,19 @@ def main() -> None:
         bundle_router=router,
         extra_search_filters=search_filters,
         local_tools=local_tools,
+        **identity.server_kwargs,
     )
     register_vc_callback_route(server, callback_base_url="", pending=pending)
 
     routes = ", ".join(
         f"{r.name}={r.server_type}{sorted(r.tools)}" for r in policy_set.routes.values()
     )
-    print(f"family-authority proxy on http://{args.host}:{args.port}/mcp/  "
+    who = (
+        f"principal required, from {ExternalIssuerConfig.from_env().issuer} "
+        f"(audience {PROXY_AUDIENCE}); catalogue by role"
+        if identity.by_role else "no inbound auth (one household on loopback)"
+    )
+    print(f"family-authority proxy on http://{args.host}:{args.port}/mcp/  ({who})  "
           f"(downstreams: {DOWNSTREAM.name} + {PIZZA_SERVER.name} + "
           f"{SETTLEMENT_SERVER.name}; "
           f"routes: {routes}; "
