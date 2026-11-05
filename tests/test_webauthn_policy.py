@@ -23,13 +23,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.fetchplan import FetchContext, FetchExecutor, default_primitives
-from extensible_mcp.types import CallRequest
+from extensible_mcp.types import CallRequest, Principal
 from extensible_mcp.wasm_filter import WasmPolicyFilter
 from extensible_mcp.wasm_policy import PolicyEvaluationError, default_builtins
 from tests import vc_helpers as vc
 
 WA_DIR = Path(__file__).parent / "fixtures" / "family_spend_webauthn"
 CEL_WA_DIR = Path(__file__).parent / "fixtures" / "cel_family_spend_webauthn"
+CEDAR_WA_DIR = Path(__file__).parent / "fixtures" / "cedar_family_spend_webauthn"
 ADMIN_DID = "did:web:admin.example"
 RP_ID = "approval.example"
 ORIGIN = "https://approval.example"
@@ -73,19 +74,20 @@ def _cel_bundle_with_rp_id(directory: Path, *, name: str, rp_id: str) -> PolicyB
     )
 
 
-@pytest.fixture(params=["rego", "cel"])
+@pytest.fixture(params=["rego", "cel", "cedar"])
 def bundle(request):
-    """Parametrized so every scenario below runs against both engines, the
-    same discipline as test_invoice_policy.py and test_vc_policy.py. The
-    two artifacts are emitted from a common core, so agreement here isn't
-    two authors corroborating each other; but their check ids come from
-    separate expansions, and neither Rego nor CEL validates an id, so the
-    same rendered denial on both engines is a real cross-check. The
-    challenge canonicalization is the one place the twins' text differs for
-    a reason other than syntax -- CEL's ``+`` and ``string()`` against
-    Rego's ``concat`` and ``format_int`` -- so the challenge-binding
-    scenarios are where running both engines earns its keep. On CEL there
-    is no ``deny_reason`` entrypoint, so every reason below is rendered
+    """Parametrized so every scenario below runs against all three engines,
+    the same discipline as test_invoice_policy.py and test_vc_policy.py.
+    The artifacts are emitted from a common core, so agreement here isn't
+    three authors corroborating each other; but their check ids come from
+    separate expansions, and no engine validates an id, so the same
+    rendered denial on every engine is a real cross-check. The challenge
+    canonicalization is the one place the twins' text differs for a reason
+    other than syntax -- CEL's ``+`` and ``string()`` against Rego's
+    ``concat`` and ``format_int``, and on Cedar a ``derive`` entry over
+    the same primitives -- so the challenge-binding scenarios are where
+    running every engine earns its keep. No bundle carries a
+    ``deny_reason`` entrypoint any more, so every reason below is rendered
     from ``failed_checks`` through the guidance layer."""
     if request.param == "rego":
         return PolicyBundle.load(
@@ -93,7 +95,12 @@ def bundle(request):
             builtins=default_builtins(webauthn_rp_id=RP_ID),
             primitives=default_primitives(webauthn_rp_id=RP_ID),
         )
-    return _cel_bundle_with_rp_id(CEL_WA_DIR, name="cel_family_spend_webauthn", rp_id=RP_ID)
+    if request.param == "cel":
+        return _cel_bundle_with_rp_id(CEL_WA_DIR, name="cel_family_spend_webauthn", rp_id=RP_ID)
+    return PolicyBundle.load(
+        CEDAR_WA_DIR, name="cedar_family_spend_webauthn",
+        primitives=default_primitives(webauthn_rp_id=RP_ID),
+    )
 
 
 def _passkey_jwk(passkey) -> str:
@@ -139,10 +146,13 @@ def _envelope(keys, *, sub, subject_claims):
             "adminKey": vc.public_jwk(keys["admin"])}
 
 
-def _filter(keys, passkey, bundle, *, enrollment_role="parent"):
+def _filter(keys, passkey, bundle, *, enrollment_role="parent", kid_accounts=None):
+    kid_subject = {"role": "child"}
+    if kid_accounts is not None:
+        kid_subject["accounts"] = kid_accounts
     wallets = {
         vc.did_key(keys["kid"]): _envelope(
-            keys, sub=vc.did_key(keys["kid"]), subject_claims={"role": "child"}
+            keys, sub=vc.did_key(keys["kid"]), subject_claims=kid_subject
         ),
         CRED_ID: _envelope(
             keys, sub=CRED_ID,
@@ -161,12 +171,41 @@ def _filter(keys, passkey, bundle, *, enrollment_role="parent"):
     )
 
 
-def _call(keys, *, amount_cents, merchant="acme", approval=None) -> CallRequest:
+def _call(keys, *, amount_cents, merchant="acme", approval=None, principal=None) -> CallRequest:
     args = {"amountCents": amount_cents, "merchant": merchant,
             "requestVC": _request_vc(keys, amount_cents=amount_cents, merchant=merchant)}
     if approval is not None:
         args["approval"] = approval
-    return CallRequest(tool_name="payments__spend", arguments=args, server_name="payments")
+    return CallRequest(tool_name="payments__spend", arguments=args, server_name="payments",
+                       principal=principal)
+
+
+# -- the token/evidence seam, on this bundle too ------------------------------ #
+
+IDP = "https://idp.example/realms/household"
+KID_ACCOUNT = "kid-a3f1"
+KID_SESSION = Principal(sub=KID_ACCOUNT, iss=IDP, roles=frozenset({"child"}))
+BOUND = [{"idp": IDP, "account": KID_ACCOUNT}]
+BINDING_SENTENCE = "session's account is not bound to the member whose key signed"
+
+
+async def test_the_bound_session_is_allowed(keys, passkey, bundle):
+    f = _filter(keys, passkey, bundle, kid_accounts=BOUND)
+    result = await f.check(_call(keys, amount_cents=500, principal=KID_SESSION))
+    assert result.allowed, result.reason
+
+
+async def test_another_members_session_is_denied_with_the_binding_sentence(keys, passkey, bundle):
+    f = _filter(keys, passkey, bundle, kid_accounts=BOUND)
+    parent = Principal(sub="parent-77", iss=IDP, roles=frozenset({"parent"}))
+    result = await f.check(_call(keys, amount_cents=500, principal=parent))
+    assert not result.allowed and BINDING_SENTENCE in result.reason, result.reason
+
+
+async def test_a_membership_with_no_accounts_binds_no_session(keys, passkey, bundle):
+    f = _filter(keys, passkey, bundle)
+    result = await f.check(_call(keys, amount_cents=500, principal=KID_SESSION))
+    assert not result.allowed and BINDING_SENTENCE in result.reason
 
 
 def test_load_without_rp_id_fails_closed():

@@ -56,6 +56,22 @@
   {"source": {"kind": "clock"},
    "schema": {"$ref": "#/definitions/Timestamp"},
    "field": "now"},
+  {"source": {"params": {"field": "iss"}, "kind": "caller"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [],
+    "field": "callerIdp",
+    "deciding_checks": [],
+    "always": false},
+   "field": "callerIdp"},
+  {"source": {"params": {"field": "sub"}, "kind": "caller"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [],
+    "field": "callerAccount",
+    "deciding_checks": [],
+    "always": false},
+   "field": "callerAccount"},
   {"source":
    {"params": {"subject": {"$input": "childApproval.credentialId"}},
     "kind": "wallet"},

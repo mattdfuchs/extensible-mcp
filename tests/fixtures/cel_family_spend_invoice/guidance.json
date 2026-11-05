@@ -53,6 +53,11 @@
      "condition":
      "not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)"},
     {"sentence":
+     "the session's account is not bound to the member whose key approved the call: the person at the console and the approver must be one member, bound by the family admin",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.account_bound",
+     "condition": "not account_bound(input.childEnrollment)"},
+    {"sentence":
      "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
      "remedy_class": "re-promptable",
      "id": "solo.child_enrollment.role_matches",
@@ -116,6 +121,11 @@
      "condition":
      "not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)"},
     {"sentence":
+     "the session's account is not bound to the member whose key approved the call: the person at the console and the approver must be one member, bound by the family admin",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.account_bound",
+     "condition": "not account_bound(input.childEnrollment)"},
+    {"sentence":
      "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
      "remedy_class": "re-promptable",
      "id": "dual.child_enrollment.role_matches",
@@ -169,7 +179,7 @@
      "input.parentEnrollment.claims.vc.credentialSubject.role != \"parent\""}]}],
  "id_scheme": "named-split",
  "guidance_digest":
- {"value": "f2712452315e4b1f",
+ {"value": "d511c75035a69d5a",
   "covers":
   "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
   "alg": "fnv1a64"},

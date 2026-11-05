@@ -22,6 +22,8 @@
   "invoice": {"$ref": "#/definitions/Invoice"},
   "childEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
   "childApproval": {"$ref": "#/definitions/WebAuthnApproval"},
+  "callerIdp": {"type": "string"},
+  "callerAccount": {"type": "string"},
   "arguments": {"$ref": "#/definitions/InvoiceArgs"}},
  "description": "Input to the invoice family-spend policy.",
  "definitions":
@@ -52,7 +54,9 @@
   {"type": "object",
    "required": ["role", "publicKey"],
    "properties":
-   {"role": {"$ref": "#/definitions/Role"}, "publicKey": {"type": "string"}},
+   {"role": {"$ref": "#/definitions/Role"},
+    "publicKey": {"type": "string"},
+    "accounts": {"type": "array", "items": {"$ref": "#/definitions/Account"}}},
    "additionalProperties": true},
   "PasskeyEnrollment":
   {"type": "object",
@@ -88,6 +92,11 @@
    "properties":
    {"signature": {"type": "string"}, "canonical": {"type": "string"}},
    "additionalProperties": false},
-  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"}},
+  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"},
+  "Account":
+  {"type": "object",
+   "required": ["idp", "account"],
+   "properties": {"idp": {"type": "string"}, "account": {"type": "string"}},
+   "additionalProperties": false}},
  "additionalProperties": false,
  "$schema": "http://json-schema.org/draft-07/schema#"}

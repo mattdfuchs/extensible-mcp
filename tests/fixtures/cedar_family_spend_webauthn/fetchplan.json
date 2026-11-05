@@ -1,0 +1,213 @@
+{"primitives":
+ {"verify_webauthn": {"class": "key-consuming"},
+  "verify_eddsa": {"class": "key-consuming"},
+  "sha256": {"class": "pure"},
+  "parse_json": {"class": "pure"},
+  "key_from_did_key": {"class": "key-producing"},
+  "format_int": {"class": "pure"},
+  "concat": {"class": "pure"},
+  "base64url_encode_no_pad": {"class": "pure"},
+  "base64url_decode": {"class": "pure"}},
+ "input": "WaSpendInput",
+ "entries":
+ [{"source": {"kind": "call"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [0, 1],
+    "field": "tool",
+    "deciding_checks": [],
+    "always": true},
+   "field": "tool"},
+  {"source": {"kind": "call"},
+   "schema": {"$ref": "#/definitions/CallArgs"},
+   "guard":
+   {"required_in_tiers": [0, 1],
+    "field": "arguments",
+    "deciding_checks": [],
+    "always": true},
+   "field": "arguments"},
+  {"source": {"kind": "call"},
+   "schema": {"$ref": "#/definitions/RequestVC"},
+   "guard":
+   {"required_in_tiers": [0, 1],
+    "field": "requestVC",
+    "deciding_checks": [],
+    "always": true},
+   "field": "requestVC"},
+  {"source": {"kind": "call"},
+   "schema": {"$ref": "#/definitions/WebAuthnApproval"},
+   "guard":
+   {"required_in_tiers": [1],
+    "field": "approval",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field": "approval"},
+  {"source": {"kind": "config"},
+   "schema": {"type": "string"},
+   "field": "webauthnOrigin"},
+  {"source": {"kind": "config"},
+   "schema": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+   "field": "trustedAdminDids"},
+  {"source": {"kind": "clock"},
+   "schema": {"$ref": "#/definitions/Timestamp"},
+   "field": "now"},
+  {"source": {"params": {"field": "iss"}, "kind": "caller"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [],
+    "field": "callerIdp",
+    "deciding_checks": [],
+    "always": false},
+   "field": "callerIdp"},
+  {"source": {"params": {"field": "sub"}, "kind": "caller"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [],
+    "field": "callerAccount",
+    "deciding_checks": [],
+    "always": false},
+   "field": "callerAccount"},
+  {"source":
+   {"params": {"subject": {"$input": "requestVC.claims.iss"}},
+    "kind": "wallet"},
+   "schema": {"$ref": "#/definitions/Membership"},
+   "field": "requesterMembership"},
+  {"source":
+   {"params": {"subject": {"$input": "approval.credentialId"}},
+    "kind": "wallet"},
+   "schema": {"$ref": "#/definitions/PasskeyEnrollment"},
+   "field": "approverEnrollment"},
+  {"source":
+   {"project": "did",
+    "over": [{"did": {"$input": "requestVC.claims.iss"}}],
+    "kind": "derive",
+    "fn": "verify_eddsa",
+    "args":
+    [{"$input": "requestVC.jws"},
+     {"$apply": {"fn": "key_from_did_key", "args": [{"$item": "did"}]}}]},
+   "schema": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+   "guard":
+   {"required_in_tiers": [0, 1],
+    "field": "requestVCJwsClaimsIssDidWitnesses",
+    "deciding_checks": [],
+    "always": true},
+   "field": "requestVCJwsClaimsIssDidWitnesses"},
+  {"source":
+   {"project": "key",
+    "over": [{"key": {"$input": "requesterMembership.adminKey"}}],
+    "kind": "derive",
+    "fn": "verify_eddsa",
+    "args": [{"$input": "requesterMembership.jws"}, {"$item": "key"}]},
+   "schema": {"type": "array", "items": {"type": "string"}},
+   "guard":
+   {"required_in_tiers": [0, 1],
+    "field": "requesterMembershipJwsAdminKeyWitnesses",
+    "deciding_checks": [],
+    "always": true},
+   "field": "requesterMembershipJwsAdminKeyWitnesses"},
+  {"source":
+   {"project": "key",
+    "over":
+    [{"key":
+      {"$input": "approverEnrollment.claims.vc.credentialSubject.publicKey"}}],
+    "kind": "derive",
+    "fn": "verify_webauthn",
+    "args":
+    [{"$input": "approval.authenticatorData"},
+     {"$input": "approval.clientDataJSON"},
+     {"$input": "approval.signature"},
+     {"$item": "key"}]},
+   "schema": {"type": "array", "items": {"type": "string"}},
+   "guard":
+   {"required_in_tiers": [1],
+    "field":
+    "approvalAuthenticatorDataApproverEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field":
+   "approvalAuthenticatorDataApproverEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses"},
+  {"source":
+   {"kind": "derive",
+    "fn": "parse_json",
+    "args":
+    [{"$apply":
+      {"fn": "base64url_decode",
+       "args": [{"$input": "approval.clientDataJSON"}]}}]},
+   "schema":
+   {"type": "object",
+    "properties":
+    {"origin": {"type": "string"}, "challenge": {"type": "string"}},
+    "additionalProperties": true},
+   "guard":
+   {"required_in_tiers": [1],
+    "field": "approvalClientDataJSONDecodedParsed",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field": "approvalClientDataJSONDecodedParsed"},
+  {"source":
+   {"kind": "derive",
+    "fn": "concat",
+    "args":
+    ["|",
+     ["legov1",
+      "spend",
+      {"$input": "tool"},
+      {"$apply":
+       {"fn": "format_int", "args": [{"$input": "arguments.amountCents"}, 10]}},
+      {"$input": "arguments.merchant"}]]},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [1],
+    "field": "toolFormattedConcat",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field": "toolFormattedConcat"},
+  {"source":
+   {"project": "key",
+    "over": [{"key": {"$input": "approverEnrollment.adminKey"}}],
+    "kind": "derive",
+    "fn": "verify_eddsa",
+    "args": [{"$input": "approverEnrollment.jws"}, {"$item": "key"}]},
+   "schema": {"type": "array", "items": {"type": "string"}},
+   "guard":
+   {"required_in_tiers": [1],
+    "field": "approverEnrollmentJwsAdminKeyWitnesses",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field": "approverEnrollmentJwsAdminKeyWitnesses"},
+  {"source":
+   {"kind": "derive",
+    "fn": "sha256",
+    "args": [{"$input": "toolFormattedConcat"}]},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [1],
+    "field": "toolFormattedConcatDigest",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field": "toolFormattedConcatDigest"},
+  {"source":
+   {"kind": "derive",
+    "fn": "base64url_encode_no_pad",
+    "args": [{"$input": "toolFormattedConcatDigest"}]},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [1],
+    "field": "toolFormattedConcatDigestEncoded",
+    "deciding_checks":
+    ["full_chain.request_vc.amount_cents_above",
+     "full_chain.request_vc.amount_cents_at_most"],
+    "always": false},
+   "field": "toolFormattedConcatDigestEncoded"}]}

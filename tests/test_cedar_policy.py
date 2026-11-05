@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Matthew Fuchs
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Cedar engine over the ``cedar_family_spend`` bundle.
+"""The Cedar engine over the ``cedar_family_spend_forbid_only`` bundle.
 
 Three properties of Cedar become tests here; what this file does not cover
 — that the bundle decides what its Rego and CEL siblings decide — is
@@ -48,7 +48,7 @@ from extensible_mcp.wasm_policy import PolicyEvaluationError
 from tests import vc_helpers as vc
 
 FIXTURES = Path(__file__).parent / "fixtures"
-FIXTURE_DIR = FIXTURES / "cedar_family_spend"
+FIXTURE_DIR = FIXTURES / "cedar_family_spend_forbid_only"
 
 
 @pytest.fixture(scope="module")
@@ -58,7 +58,7 @@ def key():
 
 @pytest.fixture
 def bundle():
-    return PolicyBundle.load(FIXTURE_DIR, name="cedar_family_spend")
+    return PolicyBundle.load(FIXTURE_DIR, name="cedar_family_spend_forbid_only")
 
 
 def _memberships(key):
@@ -114,9 +114,9 @@ def _assert_fault_logged_not_leaked(caplog, result, tool_name):
 
 def test_load_dispatches_to_cedar_engine(bundle):
     assert isinstance(bundle.policy, CedarPolicy)
-    assert bundle.package == "cedar_family_spend"
+    assert bundle.package == "cedar_family_spend_forbid_only"
     assert bundle.policy.entrypoints() == [
-        "cedar_family_spend/allow", "cedar_family_spend/failed_checks",
+        "cedar_family_spend_forbid_only/allow", "cedar_family_spend_forbid_only/failed_checks",
     ]
     assert bundle.has_failed_checks()
     assert not bundle.has_deny_reason()  # like CEL: denials render through guidance
@@ -352,7 +352,7 @@ async def test_reserved_key_inside_an_open_claims_object_fails_closed(bundle, ke
 
 def test_unknown_entrypoint_raises(bundle):
     with pytest.raises(PolicyEvaluationError, match="unknown entrypoint"):
-        bundle.policy.query({}, "cedar_family_spend/deny_reason")
+        bundle.policy.query({}, "cedar_family_spend_forbid_only/deny_reason")
 
 
 # -- the derivation contract: the proxy's half of the Cedar guarantee ------- #
@@ -444,7 +444,7 @@ def _permit_block(text: str) -> str:
 def test_the_shape_is_reported_whether_declared_or_read_off_the_policy():
     minimal = PolicyBundle.load(MINIMAL_DIR).policy
     assert minimal.shape == "permit-decides" and not minimal.expected_ids_declared
-    compact = PolicyBundle.load(FIXTURES / "cedar_family_spend_compact").policy
+    compact = PolicyBundle.load(FIXTURES / "cedar_family_spend").policy
     assert compact.shape == "permit-decides" and compact.expected_ids_declared
     adopted = PolicyBundle.load(FIXTURE_DIR).policy
     assert adopted.shape == "forbid-only" and adopted.expected_ids_declared
@@ -588,7 +588,7 @@ def test_an_evaluation_diagnostic_in_the_probe_pass_is_a_fault(tmp_path):
 
 # -- the file is optional where the decision does not depend on the forbids - #
 
-COMPACT_DIR = FIXTURES / "cedar_family_spend_compact"
+COMPACT_DIR = FIXTURES / "cedar_family_spend"
 
 
 def _compact_without_file(tmp_path, policy=None) -> Path:

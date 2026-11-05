@@ -6,8 +6,8 @@ one verdict.
 
 ``family_spend`` (Rego under wasmtime), ``cel_family_spend`` (CEL in-process)
 and ``cedar_family_spend`` (Cedar's engine over host-derived witness sets),
-plus ``cedar_family_spend_compact``, the same Cedar policy in the
-permit-decides shape
+plus ``cedar_family_spend_forbid_only``, the same Cedar policy as the
+supplier first emitted it, in the forbid-only shape,
 are three notations of one teaching policy. The first two share their
 manifest and fetch plan byte for byte; the Cedar bundle cannot, because
 every cryptographic leaf is hoisted out of the policy into a ``derive``
@@ -48,9 +48,9 @@ BUNDLES = {
     "rego": "family_spend",
     "cel": "cel_family_spend",
     "cedar": "cedar_family_spend",
-    # The same Cedar policy in the permit-decides shape, derived from the
-    # adopted file: a fourth twin, held to the same verdicts and ids.
-    "cedar_compact": "cedar_family_spend_compact",
+    # The forbid-only text the supplier emitted first, frozen: the other
+    # policy-set shape, a fourth twin held to the same verdicts and ids.
+    "cedar_forbid_only": "cedar_family_spend_forbid_only",
 }
 NOW = 100
 

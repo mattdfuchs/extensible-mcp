@@ -37,7 +37,7 @@ from typing import Any
 
 from .bundle import PolicyBundle
 from .didweb import DidWebResolver
-from .fetchplan import FetchContext, FetchError, FetchExecutor, WalletLookup
+from .fetchplan import FetchContext, FetchError, FetchExecutor, WalletLookup, default_resolvers
 from .guidance import render_denial
 from .types import CallFilterResult, CallRequest
 from .wallet_bundle import WalletBundleAdapter, WalletBundleError, make_membership_lookup
@@ -102,6 +102,14 @@ def _validation_failure(errors: list[str], *, allowed: bool = True) -> str:
     more = f" (+{len(errors) - 3} more)" if len(errors) > 3 else ""
     lead = "Policy allowed the call, but its input" if allowed else "Policy input"
     return f"{lead} failed manifest validation (failing closed): {shown}{more}"
+
+
+def _executor_for(bundle: PolicyBundle) -> FetchExecutor:
+    """The executor a filter assembles with when none is supplied: the
+    shipped resolvers over the ``derive`` vocabulary the bundle was loaded
+    against, so a plan accepted with ``verify_webauthn`` in it is not then
+    assembled by a resolver that lacks it."""
+    return FetchExecutor(default_resolvers(primitives=bundle.primitives))
 
 
 def policy_deny_reason(bundle: PolicyBundle, assembled: dict[str, Any]) -> str:
@@ -209,7 +217,7 @@ class WasmPolicyFilter:
         self._wallet = wallet_lookup
         self._clock = clock or (lambda: int(time.time()))
         self._tool_action = tool_action
-        self._executor = executor or FetchExecutor()
+        self._executor = executor or _executor_for(bundle)
         self._validate = validate_input
 
     async def check(self, request: CallRequest) -> CallFilterResult:
@@ -341,7 +349,7 @@ class VCPolicyFilter:
         self._resolver = resolver
         self._trusted = list(trusted_admin_dids)
         self._clock = clock or (lambda: int(time.time()))
-        self._executor = executor or FetchExecutor()
+        self._executor = executor or _executor_for(bundle)
         self._validate = validate_input
         self._extra_config = dict(extra_config or {})
         self._wallet_fallback = wallet_fallback

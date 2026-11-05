@@ -40,19 +40,27 @@ PLACEHOLDER = "an unnamed condition was not met"
 # upstream; the three Rego bundles here plus their three CEL twins). The
 # teaching rows are this repo's, authored here.
 EXPECTED_COUNTS = {
-    "family_spend_prod": (32, 16, 16),
-    "cel_family_spend_prod": (32, 16, 16),
-    "family_spend_webauthn": (30, 15, 15),
-    "cel_family_spend_webauthn": (30, 15, 15),
-    "family_spend_invoice": (32, 23, 9),
-    "cel_family_spend_invoice": (32, 23, 9),
+    # The three production bundles, three engines each: the token/evidence
+    # seam added two account_bound checks to every one (34/32/34).
+    "family_spend_prod": (34, 18, 16),
+    "cel_family_spend_prod": (34, 18, 16),
+    "cedar_family_spend_prod": (34, 18, 16),
+    "family_spend_webauthn": (32, 17, 15),
+    "cel_family_spend_webauthn": (32, 17, 15),
+    "cedar_family_spend_webauthn": (32, 17, 15),
+    "family_spend_invoice": (34, 25, 9),
+    "cel_family_spend_invoice": (34, 25, 9),
+    "cedar_family_spend_invoice": (34, 25, 9),
     "family_spend": (29, 16, 13),
     "cel_family_spend": (29, 16, 13),
     # The teaching bundle plus the token/evidence seam: two account_bound checks.
     "cel_family_spend_bound": (31, 18, 13),
-    "cedar_family_spend": (29, 16, 13),
-    # The adopted Cedar policy re-shaped by this repo: permit decides, forbid explains.
-    "cedar_family_spend_compact": (29, 16, 13),
+    # The supplier's teaching emission in the permit-decides shape, with the
+    # seam: the Cedar twin of cel_family_spend_bound, whose guidance it carries.
+    "cedar_family_spend": (31, 18, 13),
+    # The forbid-only text the supplier emitted first, frozen: upstream no
+    # longer emits that shape, and the loader still accepts it.
+    "cedar_family_spend_forbid_only": (29, 16, 13),
     # The smallest bundle, three ways: the README's authoring walk-through.
     "minimal_spend": (5, 2, 3),
     "cel_minimal_spend": (5, 2, 3),
@@ -60,7 +68,8 @@ EXPECTED_COUNTS = {
 }
 ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
            "cel_family_spend_invoice", "cel_family_spend_prod",
-           "cel_family_spend_webauthn"}
+           "cel_family_spend_webauthn", "cedar_family_spend_prod",
+           "cedar_family_spend_webauthn", "cedar_family_spend_invoice"}
 # The digest each adopted bundle is pinned at. The recomputation test below
 # holds a file to its own digest; this holds the corpus to the values that
 # were reviewed, so a re-pin has to change this table on purpose and the
@@ -70,17 +79,20 @@ ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
 # `62c3ea0` (2026-10-28), after upstream's refusal of the fail-open negation
 # shapes (#35) landed: every adopted bundle verbatim, no regeneration.
 PINNED_DIGESTS = {
-    "family_spend_prod": "b5f8d6314061d4c3",
-    "cel_family_spend_prod": "b5f8d6314061d4c3",
-    "family_spend_webauthn": "22c0b6689dcbbc13",
-    "cel_family_spend_webauthn": "22c0b6689dcbbc13",
-    "family_spend_invoice": "f2712452315e4b1f",
-    "cel_family_spend_invoice": "f2712452315e4b1f",
+    "family_spend_prod": "c776a057d78a4999",
+    "cel_family_spend_prod": "c776a057d78a4999",
+    "cedar_family_spend_prod": "c776a057d78a4999",
+    "family_spend_webauthn": "3d5e03e7a83b5b65",
+    "cel_family_spend_webauthn": "3d5e03e7a83b5b65",
+    "cedar_family_spend_webauthn": "3d5e03e7a83b5b65",
+    "family_spend_invoice": "d511c75035a69d5a",
+    "cel_family_spend_invoice": "d511c75035a69d5a",
+    "cedar_family_spend_invoice": "d511c75035a69d5a",
 }
-# cedar_family_spend's rules are supplied, but its guidance is this repo's
-# own teaching file, so it carries no digest either.
+# The two teaching Cedar bundles' rules are supplied, but their guidance is
+# this repo's own teaching file, so they carry no digest either.
 TEACHING = {"family_spend", "cel_family_spend", "cel_family_spend_bound",
-            "cedar_family_spend", "cedar_family_spend_compact",
+            "cedar_family_spend", "cedar_family_spend_forbid_only",
             "minimal_spend", "cel_minimal_spend", "cedar_minimal_spend"}
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
                 "family_spend_invoice", "minimal_spend"}
@@ -93,8 +105,6 @@ CEL_TWIN = {
     "family_spend": "cel_family_spend",
     "minimal_spend": "cel_minimal_spend",
     "family_spend_invoice": "cel_family_spend_invoice",
-    # Pinned at upstream c40ca70, not the d114d32 the others are on: no CEL
-    # artifact existed at d114d32 (see the twin's PROVENANCE.md).
     "family_spend_webauthn": "cel_family_spend_webauthn",
     "family_spend_prod": "cel_family_spend_prod",
 }
@@ -334,12 +344,36 @@ def test_cel_twin_is_the_same_bundle_in_another_notation(rego):
 # A Rego bundle may have one Cedar twin per policy-set shape; each is held
 # to the same relation to the Rego bundle.
 CEDAR_TWIN = {
-    "family_spend": ["cedar_family_spend", "cedar_family_spend_compact"],
+    # The frozen forbid-only text was emitted over the teaching manifest;
+    # the live teaching Cedar twin (cedar_family_spend) is held to
+    # cel_family_spend_bound below instead, since it carries the seam.
+    "family_spend": ["cedar_family_spend_forbid_only"],
     "minimal_spend": ["cedar_minimal_spend"],
-    "family_spend_prod": None,      # ships upstream; needs #27's `concat` as a derive primitive
-    "family_spend_webauthn": None,  # ships upstream; needs #27 and `verify_webauthn` registered
-    "family_spend_invoice": None,   # ships upstream; needs `verify_webauthn` registered
+    "family_spend_prod": ["cedar_family_spend_prod"],
+    "family_spend_webauthn": ["cedar_family_spend_webauthn"],
+    "family_spend_invoice": ["cedar_family_spend_invoice"],
 }
+
+
+def test_the_teaching_cedar_twin_carries_the_bound_bundles_guidance():
+    """cedar_family_spend is the supplier's teaching emission with the
+    token/evidence seam; its Rego and CEL twins upstream are not adopted
+    (the teaching Rego and CEL bundles here are hand-authored), so it is
+    held to the hand-written bound CEL bundle: the same 31 ids, tier by
+    tier, and the same sentences, so the four teaching siblings render one
+    sentence per id. Its manifest and fetch plan are the supplier's own,
+    and the differences from the bound bundle's are documented in its
+    PROVENANCE.md rather than asserted entry by entry: the supplier's plan
+    orders the caller entries before the memberships and leaves the
+    full-chain fields optional, which is the vacuity reading, not a drift."""
+    cedar, bound = FIXTURES / "cedar_family_spend", FIXTURES / "cel_family_spend_bound"
+    assert (cedar / "guidance.json").read_bytes() == (bound / "guidance.json").read_bytes()
+    expected = json.loads((cedar / "expected_ids.json").read_text())
+    g = _guidance("cel_family_spend_bound")
+    assert set(expected["ids"]) == set(_ids(g))
+    assert [set(t["ids"]) for t in expected["tiers"]] == [
+        {ch["id"] for ch in t["checks"]} for t in g["tiers"]
+    ]
 
 
 def _cedar_pairs():
@@ -381,8 +415,8 @@ def test_cedar_twin_differs_from_the_rego_bundle_only_where_cedar_forces_it(rego
     appended = cp["entries"][shared:]
     assert all(e["source"]["kind"] == "derive" for e in appended)
     assert {e["field"] for e in appended} == set(derived)
-    assert set(cp["primitives"]) == {e["source"]["fn"] for e in appended}, (
-        "a Cedar plan declares exactly what it derives"
+    assert set(cp["primitives"]) == _referenced_primitives(cp), (
+        "a Cedar plan declares exactly what it derives, nested $apply included"
     )
 
     # expected_ids.json, where the shape needs one, names the guidance's ids,
@@ -482,7 +516,7 @@ def test_no_supplier_namespace_leaks_into_a_public_artifact():
 import logging
 
 from extensible_mcp.bundle import PolicyBundle
-from extensible_mcp.fetchplan import default_primitives
+from extensible_mcp.fetchplan import _referenced_primitives, default_primitives
 from extensible_mcp.wasm_policy import default_builtins
 
 RP_ID = "approval.example"
@@ -492,7 +526,10 @@ LOAD_CONFIG = {
     "cel_family_spend": {},
     "cel_family_spend_bound": {},
     "cedar_family_spend": {},
-    "cedar_family_spend_compact": {},
+    "cedar_family_spend_forbid_only": {},
+    "cedar_family_spend_prod": {"primitives": default_primitives()},
+    "cedar_family_spend_webauthn": {"primitives": default_primitives(webauthn_rp_id=RP_ID)},
+    "cedar_family_spend_invoice": {"primitives": default_primitives(webauthn_rp_id=RP_ID)},
     "minimal_spend": {},
     "cel_minimal_spend": {},
     "cedar_minimal_spend": {},

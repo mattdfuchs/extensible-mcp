@@ -153,8 +153,8 @@ def test_cedar_tiers_come_from_expected_ids_in_order():
     """The compact two-tier policy carries no @sentence; its synthesised
     guidance still has both paths, numbered by position, each with the ids
     expected_ids.json gives that tier."""
-    policy = PolicyBundle.load(FIXTURES / "cedar_family_spend_compact").policy
-    expected = json.loads((FIXTURES / "cedar_family_spend_compact" / "expected_ids.json").read_text())
+    policy = PolicyBundle.load(FIXTURES / "cedar_family_spend").policy
+    expected = json.loads((FIXTURES / "cedar_family_spend" / "expected_ids.json").read_text())
     tiers = policy.inline_guidance()["tiers"]
     assert [t["tier"] for t in tiers] == [0, 1]
     assert [[c["id"] for c in t["checks"]] for t in tiers] == [t["ids"] for t in expected["tiers"]]
