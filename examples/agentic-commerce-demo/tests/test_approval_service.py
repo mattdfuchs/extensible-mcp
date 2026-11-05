@@ -296,7 +296,7 @@ class TestTheFlowItself:
     def test_me_reports_the_authenticated_identity(self, client):
         r = client.get("/me", headers=sign_in(client, "parent"))
         assert r.status_code == 200
-        assert r.json() == {"sub": "parent", "role": "parent"}
+        assert r.json() == {"sub": "parent", "role": "parent", "roles": ["parent"]}
 
     def test_passwords_are_not_the_usernames(self, client):
         """A fixed pair would make the login a speed bump: two guesses."""
