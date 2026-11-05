@@ -80,6 +80,13 @@ class PolicyBundle:
     manifest: dict[str, Any]
     fetchplan: dict[str, Any]
     guidance: dict[str, Any] | None = None
+    #: The ``derive`` vocabulary the plan was validated against at load, so a
+    #: filter evaluates with the same one. ``None`` is the default vocabulary.
+    #: A bundle that derives passkey witnesses is loaded with
+    #: ``default_primitives(webauthn_rp_id=...)``; accepting that plan and
+    #: then assembling with the defaults would make every such witness set
+    #: absent at evaluation, which is a denial that no load-time check saw.
+    primitives: dict[str, Any] | None = None
 
     @classmethod
     def load(
@@ -178,6 +185,7 @@ class PolicyBundle:
             policy=policy,
             manifest=manifest,
             fetchplan=fetchplan,
+            primitives=primitives,
             guidance=guidance,
         )
 
