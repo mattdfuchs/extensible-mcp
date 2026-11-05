@@ -19,13 +19,15 @@ import pytest
 from extensible_mcp.bundle import PolicyBundle
 from extensible_mcp.didweb import DidWebResolver
 from extensible_mcp.fetchplan import FetchContext, FetchExecutor
-from extensible_mcp.types import CallRequest
+from extensible_mcp.fetchplan import default_primitives
+from extensible_mcp.types import CallRequest, Principal
 from extensible_mcp.wallet_bundle import WalletBundleAdapter
 from extensible_mcp.wasm_filter import VCPolicyFilter
 from tests import vc_helpers as vc
 
 PROD_DIR = Path(__file__).parent / "fixtures" / "family_spend_prod"
 CEL_PROD_DIR = Path(__file__).parent / "fixtures" / "cel_family_spend_prod"
+CEDAR_PROD_DIR = Path(__file__).parent / "fixtures" / "cedar_family_spend_prod"
 ADMIN_DID = "did:web:admin.example"
 
 
@@ -34,20 +36,24 @@ def keys():
     return {"kid": vc.new_key(), "parent": vc.new_key(), "admin": vc.new_key()}
 
 
-@pytest.fixture(params=["rego", "cel"])
+@pytest.fixture(params=["rego", "cel", "cedar"])
 def bundle(request):
-    """Parametrized so every scenario below runs against both engines, the
-    same discipline as test_invoice_policy.py. The two artifacts are emitted
-    from a common core, so agreement here isn't two authors corroborating
-    each other; but their check ids come from separate expansions, and
-    neither Rego nor CEL validates an id, so the same rendered denial on
-    both engines is a real cross-check. On CEL there is no ``deny_reason``
-    entrypoint, so every reason below is rendered from ``failed_checks``
-    through the guidance layer -- the path the filter takes on either engine
-    for any bundle without one."""
+    """Parametrized so every scenario below runs against all three engines,
+    the same discipline as test_invoice_policy.py. The three artifacts are
+    emitted from a common core, so agreement here isn't three authors
+    corroborating each other; but their check ids come from separate
+    expansions, and no engine validates an id, so the same rendered denial
+    on every engine is a real cross-check. No bundle carries a
+    ``deny_reason`` entrypoint any more, so every reason below is rendered
+    from ``failed_checks`` through the guidance layer. The Cedar twin runs
+    its crypto as ``derive`` entries over the proxy's primitives, so it is
+    also the production-shaped exercise of that path."""
     if request.param == "rego":
         return PolicyBundle.load(PROD_DIR, name="family_spend_prod")
-    return PolicyBundle.load(CEL_PROD_DIR, name="cel_family_spend_prod")
+    if request.param == "cel":
+        return PolicyBundle.load(CEL_PROD_DIR, name="cel_family_spend_prod")
+    return PolicyBundle.load(CEDAR_PROD_DIR, name="cedar_family_spend_prod",
+                             primitives=default_primitives())
 
 
 @pytest.fixture
@@ -64,15 +70,19 @@ def vc_filter(keys, bundle):
     )
 
 
-def _membership_token(keys, who, role, *, admin="admin", admin_did=ADMIN_DID):
+def _membership_token(keys, who, role, *, admin="admin", admin_did=ADMIN_DID, accounts=None):
+    subject = {"role": role}
+    if accounts is not None:
+        subject["accounts"] = accounts
     return vc.sign(
         {"iss": admin_did, "sub": vc.did_key(keys[who]), "nbf": 0, "exp": 9999999999,
-         "vc": {"credentialSubject": {"role": role}}},
+         "vc": {"credentialSubject": subject}},
         keys[admin],
     )
 
 
-def _request_bundle(keys, *, amount, merchant="acme", kid_role="child", jti="urn:req1"):
+def _request_bundle(keys, *, amount, merchant="acme", kid_role="child", jti="urn:req1",
+                    kid_accounts=None):
     kid_did = vc.did_key(keys["kid"])
     token = vc.sign(
         {"iss": kid_did, "nbf": 0, "exp": 9999999999, "jti": jti,
@@ -80,7 +90,8 @@ def _request_bundle(keys, *, amount, merchant="acme", kid_role="child", jti="urn
              "id": kid_did, "requests": {"type": "spend", "amount": amount, "merchant": merchant}}}},
         keys["kid"],
     )
-    return token, {"token": token, "membership": _membership_token(keys, "kid", kid_role)}
+    return token, {"token": token,
+                   "membership": _membership_token(keys, "kid", kid_role, accounts=kid_accounts)}
 
 
 def _auth_bundle(keys, request_token, *, parent_role="parent", req_jti="urn:req1",
@@ -100,12 +111,56 @@ def _auth_bundle(keys, request_token, *, parent_role="parent", req_jti="urn:req1
     return {"token": token, "membership": _membership_token(keys, "parent", parent_role)}
 
 
-def _call(keys, *, amount, merchant="acme", with_auth=False, **req_kw) -> CallRequest:
+def _call(keys, *, amount, merchant="acme", with_auth=False, principal=None, **req_kw) -> CallRequest:
     req_token, req_bundle = _request_bundle(keys, amount=amount, merchant=merchant, **req_kw)
     args = {"amount": amount, "merchant": merchant, "requestVC": req_bundle}
     if with_auth:
         args["authorizationVC"] = _auth_bundle(keys, req_token)
-    return CallRequest(tool_name="payments__spend", arguments=args, server_name="payments")
+    return CallRequest(tool_name="payments__spend", arguments=args, server_name="payments",
+                       principal=principal)
+
+
+# -- the token/evidence seam: the session's account and the signer -------- #
+#
+# The supplier's production bundles pin the shape of account_bound and no
+# behaviour: building a valid input needs a signing harness they do not have
+# and would not write, since fixtures of theirs would share any wrong
+# assumption with the policy. These rows are this repository's, through the
+# real VCPolicyFilter, on all three engines.
+
+IDP = "https://idp.example/realms/household"
+KID_ACCOUNT = "kid-a3f1"
+KID_SESSION = Principal(sub=KID_ACCOUNT, iss=IDP, roles=frozenset({"child"}))
+BOUND = [{"idp": IDP, "account": KID_ACCOUNT}]
+BINDING_SENTENCE = "session's account is not bound to the member whose key signed"
+
+
+async def test_the_bound_session_is_allowed(vc_filter, keys):
+    result = await vc_filter.check(_call(keys, amount=5, principal=KID_SESSION, kid_accounts=BOUND))
+    assert result.allowed, result.reason
+
+
+async def test_another_members_session_is_denied_with_the_binding_sentence(vc_filter, keys):
+    """Every signature verifies; the person at the console is not the member
+    whose key signed, and the denial names exactly that."""
+    parent = Principal(sub="parent-77", iss=IDP, roles=frozenset({"parent"}))
+    result = await vc_filter.check(_call(keys, amount=5, principal=parent, kid_accounts=BOUND))
+    assert not result.allowed
+    assert BINDING_SENTENCE in result.reason, result.reason
+
+
+async def test_the_same_account_at_another_provider_is_not_the_same_person(vc_filter, keys):
+    elsewhere = Principal(sub=KID_ACCOUNT, iss="https://other-idp.example", roles=frozenset())
+    result = await vc_filter.check(_call(keys, amount=5, principal=elsewhere, kid_accounts=BOUND))
+    assert not result.allowed and BINDING_SENTENCE in result.reason
+
+
+async def test_a_membership_with_no_accounts_binds_no_session(vc_filter, keys):
+    """Older credentials carry no accounts; under a principal they bind
+    nobody, the fail-closed reading until the admin re-issues. With no
+    principal (every other test in this file) the check is vacuous."""
+    result = await vc_filter.check(_call(keys, amount=5, principal=KID_SESSION))
+    assert not result.allowed and BINDING_SENTENCE in result.reason
 
 
 async def test_solo_allows_without_authorization(vc_filter, keys):
@@ -174,7 +229,7 @@ async def test_amount_binding_mismatch_denies(vc_filter, keys):
     assert result.allowed is False
 
 
-async def test_untrusted_admin_denies(vc_filter, keys):
+async def test_untrusted_admin_denies(vc_filter, keys, bundle):
     """Row one of the split's ``adminKey`` finding: a membership signed by an
     admin not in the trusted set. The resolver fetches keys only for trusted
     issuers, so this yields ``adminKey = None`` -- and ``signed_by_key`` fails
@@ -192,6 +247,15 @@ async def test_untrusted_admin_denies(vc_filter, keys):
     )
     result = await vc_filter.check(call)
     assert result.allowed is False
+    if bundle.name == "cedar_family_spend_prod":
+        # Cedar cannot build a request over a JSON null, so the input with
+        # adminKey=None -- outside the manifest on every engine -- is a
+        # fault there, and a fault on an input the manifest refuses reports
+        # the validation error (bundle.py). Rego and CEL evaluate it as
+        # undefined and reach the policy's own sentences; Cedar stops at the
+        # manifest. Both deny; the divergence is outside the validated space.
+        assert "manifest validation" in result.reason and "adminKey" in result.reason
+        return
     assert "issuer is not a trusted admin" in result.reason
     assert "could not be verified against its issuer's key" in result.reason
     assert "invalid" not in result.reason
@@ -267,10 +331,13 @@ async def test_validation_opt_out_restores_policy_verdict(keys, bundle):
     assert result.allowed is True  # the policy alone never reads `note`
 
 
-async def test_validation_never_masks_a_policy_denial(vc_filter, keys):
+async def test_validation_never_masks_a_policy_denial(vc_filter, keys, bundle):
     # An untrusted admin yields adminKey=None, which violates the manifest's
     # string type — but the denial the LLM sees must stay the policy's
     # chain-of-trust reason, not a schema error (validation gates allows only).
+    # Except where the engine cannot evaluate the input at all: Cedar refuses
+    # a null, and a fault on an input outside the manifest reports the
+    # validation error rather than the fault (see test_untrusted_admin_denies).
     call = _call(keys, amount=5.00)
     rogue = vc.new_key()
     call.arguments["requestVC"]["membership"] = vc.sign(
@@ -280,6 +347,10 @@ async def test_validation_never_masks_a_policy_denial(vc_filter, keys):
     )
     result = await vc_filter.check(call)
     assert result.allowed is False
+    if bundle.name == "cedar_family_spend_prod":
+        assert "manifest validation" in result.reason and "adminKey" in result.reason
+        assert "could not" not in result.reason  # a denial, not a rendered fault
+        return
     assert "issuer is not a trusted admin" in result.reason
     assert "invalid" not in result.reason
     assert "manifest validation" not in result.reason

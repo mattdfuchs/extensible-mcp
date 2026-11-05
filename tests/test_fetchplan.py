@@ -1192,6 +1192,27 @@ def test_load_still_accepts_every_shipped_fetch_plan():
     assert PolicyBundle.load(FIXTURE_DIR).fetchplan["entries"]
 
 
+async def test_a_filter_assembles_with_the_vocabulary_the_bundle_was_loaded_against():
+    """A plan that derives with ``verify_webauthn`` loads only with a
+    relying-party id supplied. The filter that then evaluates the bundle
+    must assemble with that same vocabulary: with the default resolver the
+    witness set is simply absent, the tier's guard fails, and the denial
+    blames nothing anyone can fix. Found adopting the Cedar passkey bundle."""
+    from extensible_mcp.wasm_filter import WasmPolicyFilter
+
+    rp = default_primitives(webauthn_rp_id="approval.example")
+    bundle = PolicyBundle.load(
+        Path(__file__).parent / "fixtures" / "cedar_family_spend_webauthn",
+        name="cedar_family_spend_webauthn", primitives=rp,
+    )
+    assert bundle.primitives is rp
+    f = WasmPolicyFilter(bundle, config={})
+    assert "verify_webauthn" in f._executor.resolvers["derive"].primitives
+    plain = PolicyBundle.load(Path(__file__).parent / "fixtures" / "cedar_family_spend")
+    assert plain.primitives is None
+    assert "verify_webauthn" not in WasmPolicyFilter(plain, config={})._executor.resolvers["derive"].primitives
+
+
 # -- the 'primitives' block declares a vocabulary, not a registry request ----- #
 #
 # ``fetchplan.json`` is byte-identical between a rego bundle and its cel
