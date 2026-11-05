@@ -12,29 +12,49 @@ Talks to the proxy exactly as an external MCP client would (Streamable HTTP,
 the same endpoint ``claude mcp add`` would point at) — nothing here reaches
 into the proxy's internals.
 
+With ``APPROVAL_ISSUER`` set, the console runs on the organization's
+identity provider: the page signs the person in there (the same
+authorization-code + PKCE relay the passkey page uses, with the console's
+own client and the proxy's own audience), every chat request carries the
+bearer, and the console holds one MCP session *per signed-in person*, each
+presenting that person's token to the proxy — so the proxy's principal on
+every call is the person at this console, not the console itself. Unset,
+one anonymous session serves the one household on loopback, as before.
+
     uv run python examples/console_server.py      # -> http://localhost:7300
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import re
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import anthropic
+import httpx2
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from extensible_mcp.client_manager import negotiate
 
 from extensible_mcp_vc.chat_agent import ChatAgent
+from extensible_mcp_vc.oauth import (
+    CONSOLE_CLIENT_ID,
+    PROXY_AUDIENCE,
+    ExternalIssuer,
+    ExternalIssuerConfig,
+    ExternalIssuerError,
+    OAuthError,
+    eligible_roles,
+)
 
 PROJECT = Path(__file__).resolve().parent.parent
 PROXY_URL = os.environ.get("PROXY_URL", "http://127.0.0.1:7400/mcp/")
@@ -49,6 +69,17 @@ def _log(line: str) -> None:
         f.write(f"[{time.strftime('%H:%M:%S')}] {line}\n")
 
 
+# The organization's identity provider, when configured: the console's own
+# client, and the proxy's audience -- the token it relays is the proxy's
+# principal, never the passkey page's.
+_external_config = ExternalIssuerConfig.from_env()
+_external: ExternalIssuer | None = (
+    ExternalIssuer(dataclasses.replace(
+        _external_config, client_id=CONSOLE_CLIENT_ID, audience=PROXY_AUDIENCE,
+    ))
+    if _external_config is not None else None
+)
+
 # The proxy is launched a couple of seconds before this process, but "a
 # couple of seconds" is a guess, not a guarantee (vector-index build time
 # varies with load) — a single failed connection attempt here used to take
@@ -57,19 +88,48 @@ _CONNECT_RETRIES = 15
 _CONNECT_RETRY_DELAY = 2.0
 
 
-@asynccontextmanager
-async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    async with AsyncExitStack() as stack:
-        session = None
-        for attempt in range(1, _CONNECT_RETRIES + 1):
+@dataclasses.dataclass
+class Seat:
+    """One signed-in person at this console: their subject, the bearer
+    their last request carried, and the agent whose MCP session presents it.
+    The token is read per request by the session's auth, so a re-sign-in
+    after expiry needs no new session."""
+
+    sub: str
+    roles: list[str]
+    token: str
+    agent: Any = None
+    stack: AsyncExitStack = dataclasses.field(default_factory=AsyncExitStack)
+
+
+class _SeatBearer(httpx2.Auth):
+    """Presents the seat's current token on every request to the proxy."""
+
+    def __init__(self, seat: Seat) -> None:
+        self._seat = seat
+
+    async def async_auth_flow(self, request: httpx2.Request):  # type: ignore[override]
+        request.headers["Authorization"] = f"Bearer {self._seat.token}"
+        yield request
+
+    def sync_auth_flow(self, request: httpx2.Request):  # type: ignore[override]
+        raise RuntimeError("async only")
+
+
+async def _connect(stack: AsyncExitStack, http_client: httpx2.AsyncClient | None = None):
+    """A negotiated MCP session on ``stack``, retrying while the proxy comes up."""
+    session = None
+    for attempt in range(1, _CONNECT_RETRIES + 1):
             # A fresh, disposable stack per attempt: on failure it's closed
             # outright instead of leaving broken connections piled onto the
             # long-lived outer stack; on success its entries are transferred
             # into the outer stack via pop_all() so they outlive this loop.
             attempt_stack = AsyncExitStack()
             try:
+                if http_client is not None:
+                    await attempt_stack.enter_async_context(http_client)
                 read, write = await attempt_stack.enter_async_context(
-                    streamable_http_client(PROXY_URL)
+                    streamable_http_client(PROXY_URL, http_client=http_client)
                 )
                 session = await attempt_stack.enter_async_context(
                     ClientSession(read, write)
@@ -116,17 +176,78 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await asyncio.sleep(_CONNECT_RETRY_DELAY)
             else:
                 stack.push_async_exit(attempt_stack.pop_all().aclose)
-                break
-        app.state.agent = ChatAgent(
-            session=session,
-            anthropic_messages=anthropic.AsyncAnthropic().messages,
-            log=_log,
-        )
-        _log(f"console connected to proxy at {PROXY_URL} (attempt {attempt})")
-        yield
+                _log(f"console connected to proxy at {PROXY_URL} (attempt {attempt})")
+                return session
+    raise RuntimeError("unreachable: the last attempt re-raises")
+
+
+async def _open_agent(app: FastAPI, seat: Seat) -> Any:
+    """The seat's agent: a session of its own, presenting the seat's bearer."""
+    client = httpx2.AsyncClient(auth=_SeatBearer(seat), timeout=httpx2.Timeout(300.0))
+    session = await _connect(seat.stack, client)
+    return ChatAgent(session=session, anthropic_messages=app.state.anthropic, log=_log)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.anthropic = anthropic.AsyncAnthropic().messages
+    app.state.seats = {}
+    async with AsyncExitStack() as stack:
+        if _external is None:
+            # The home shape: one anonymous session for the one household.
+            session = await _connect(stack)
+            app.state.agent = ChatAgent(
+                session=session, anthropic_messages=app.state.anthropic, log=_log,
+            )
+        else:
+            # Nobody has signed in yet, and the proxy refuses an anonymous
+            # session; each person's session opens on their first message.
+            app.state.agent = None
+            _log(f"console: sign-in via {_external.config.issuer}; a session per person")
+        try:
+            yield
+        finally:
+            for seat in list(app.state.seats.values()):
+                await seat.stack.aclose()
 
 
 app = FastAPI(title="Family assistant console", lifespan=_lifespan)
+
+_OAUTH_STATUS = {"invalid_token": 401, "insufficient_scope": 403}
+
+
+def _refused(e: OAuthError) -> HTTPException:
+    headers = {"WWW-Authenticate": 'Bearer realm="console"'} if e.code == "invalid_token" else None
+    return HTTPException(_OAUTH_STATUS.get(e.code, 400), f"{e.code}: {e.description}", headers=headers)
+
+
+async def _claims(request: Request) -> dict[str, Any]:
+    assert _external is not None
+    try:
+        return await _external.verify_token(request.headers.get("Authorization"))
+    except OAuthError as e:
+        raise _refused(e) from e
+    except ExternalIssuerError as e:
+        raise HTTPException(503, str(e)) from e
+
+
+async def _seat_for(request: Request) -> Seat:
+    """The signed-in person's seat, opened on their first message. Keyed on
+    the subject, so two browser windows holding the same person's tokens
+    share one session and two people never do."""
+    claims = await _claims(request)
+    token = request.headers["Authorization"][7:].strip()
+    seats: dict[str, Seat] = request.app.state.seats
+    seat = seats.get(claims["sub"])
+    if seat is None:
+        seat = Seat(sub=claims["sub"], roles=eligible_roles(claims), token=token)
+        seats[claims["sub"]] = seat
+    seat.token = token
+    seat.roles = eligible_roles(claims)
+    if seat.agent is None:
+        seat.agent = await _open_agent(request.app, seat)
+        _log(f"console: session opened for {seat.sub} ({', '.join(seat.roles) or 'no role'})")
+    return seat
 
 
 @app.post("/chat")
@@ -135,9 +256,14 @@ async def chat(request: Request) -> JSONResponse:
     message = (body.get("message") or "").strip()
     if not message:
         raise HTTPException(400, "message is required")
-    _log(f"user: {message}")
+    if _external is not None:
+        seat = await _seat_for(request)
+        agent, who = seat.agent, f"user {seat.sub}"
+    else:
+        agent, who = request.app.state.agent, "user"
+    _log(f"{who}: {message}")
     try:
-        reply = await request.app.state.agent.turn(message)
+        reply = await agent.turn(message)
     except Exception as e:  # noqa: BLE001 - surfaced to the chat, not a bare 500
         _log(f"error: {e}")
         raise HTTPException(502, str(e)) from e
@@ -145,9 +271,70 @@ async def chat(request: Request) -> JSONResponse:
     return JSONResponse({"reply": reply})
 
 
+# -- sign-in at the organization's provider, relayed as the passkey page does -- #
+
+
+def _absolute(request: Request, redirect_uri: str) -> str:
+    origin = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+    return origin + redirect_uri if redirect_uri.startswith("/") else redirect_uri
+
+
+def _require_external() -> ExternalIssuer:
+    if _external is None:
+        raise HTTPException(404, "no sign-in: this console serves one household anonymously")
+    return _external
+
+
+@app.get("/authorize")
+async def authorize(request: Request) -> Response:
+    ext = _require_external()
+    q = request.query_params
+    if q.get("client_id") != CONSOLE_CLIENT_ID:
+        raise HTTPException(400, "unauthorized_client: unknown client_id")
+    if q.get("redirect_uri") != "/":
+        raise HTTPException(400, "invalid_request: redirect_uri is not registered")
+    if q.get("response_type") != "code" or q.get("code_challenge_method") != "S256":
+        raise HTTPException(400, "invalid_request: only code + S256 is supported")
+    if not q.get("code_challenge"):
+        raise HTTPException(400, "invalid_request: code_challenge is required (PKCE)")
+    try:
+        target = await ext.authorize_url(
+            redirect_uri=_absolute(request, q["redirect_uri"]),
+            code_challenge=q["code_challenge"], state=q.get("state", ""),
+        )
+    except ExternalIssuerError as e:
+        raise HTTPException(503, str(e)) from e
+    return RedirectResponse(target, status_code=302)
+
+
+@app.post("/token")
+async def token(request: Request) -> JSONResponse:
+    ext = _require_external()
+    form = await request.form()
+    try:
+        status, body = await ext.exchange_code(
+            code=str(form.get("code", "")),
+            code_verifier=str(form.get("code_verifier", "")),
+            redirect_uri=_absolute(request, str(form.get("redirect_uri", ""))),
+            client_id=str(form.get("client_id", "")),
+        )
+    except OAuthError as e:
+        return JSONResponse({"error": e.code, "error_description": e.description}, status_code=400)
+    except ExternalIssuerError as e:
+        raise HTTPException(503, str(e)) from e
+    return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/me")
+async def me(request: Request) -> JSONResponse:
+    _require_external()
+    claims = await _claims(request)
+    return JSONResponse({"sub": claims["sub"], "roles": eligible_roles(claims)})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    return HTMLResponse(_CHAT_HTML)
+    return HTMLResponse(_CHAT_HTML.replace("__EXTERNAL__", "true" if _external else "false"))
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -228,7 +415,7 @@ _CHAT_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Family assistant</h1>
-<p><a href="/logs">Live log</a></p>
+<p><a href="/logs">Live log</a> <span id="who"></span></p>
 <div id="transcript"></div>
 <form id="form">
   <input id="input" type="text" autocomplete="off"
@@ -236,9 +423,53 @@ _CHAT_HTML = """<!doctype html>
   <button type="submit">Send</button>
 </form>
 <script>
+const EXTERNAL = __EXTERNAL__;
 const transcript = document.getElementById('transcript');
 const form = document.getElementById('form');
 const input = document.getElementById('input');
+
+// -- sign-in at the organization's identity provider (authorization code +
+// PKCE, relayed by this console; the same flow the passkey page runs) ---- //
+const S = sessionStorage;
+const b64 = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+const rnd = n => b64(crypto.getRandomValues(new Uint8Array(n)));
+async function s256(v){ return b64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v))); }
+let token = null;
+
+async function signIn(){
+  const verifier = rnd(48); S.setItem('pkce_v', verifier);
+  const state = rnd(12); S.setItem('pkce_s', state);
+  const q = new URLSearchParams({response_type:'code', client_id:'family-console', redirect_uri:'/',
+    state, code_challenge: await s256(verifier), code_challenge_method:'S256'});
+  location.href = '/authorize?' + q;
+}
+
+async function completeSignIn(){
+  const u = new URL(location.href), code = u.searchParams.get('code'), state = u.searchParams.get('state');
+  if (!code) return false;
+  if (state !== S.getItem('pkce_s')) { addMessage('assistant', 'sign-in state mismatch; sign in again'); return false; }
+  const body = new URLSearchParams({grant_type:'authorization_code', code,
+    code_verifier: S.getItem('pkce_v'), redirect_uri:'/', client_id:'family-console'});
+  const r = await fetch('/token', {method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'}, body});
+  if (!r.ok) { addMessage('assistant', 'token exchange failed'); return false; }
+  const j = await r.json();
+  S.setItem('tok', j.access_token); S.removeItem('pkce_v'); S.removeItem('pkce_s');
+  history.replaceState({}, '', '/');
+  return true;
+}
+
+const auth = () => token ? {'Authorization': 'Bearer ' + token} : {};
+
+async function boot(){
+  if (!EXTERNAL) return;
+  await completeSignIn();
+  token = S.getItem('tok');
+  if (!token) { await signIn(); return; }
+  const r = await fetch('/me', {headers: auth()});
+  if (r.status === 401) { S.removeItem('tok'); await signIn(); return; }
+  const me = await r.json();
+  document.getElementById('who').textContent = '— signed in as ' + me.sub + ' (' + me.roles.join('/') + ')';
+}
 
 function addMessage(cls, text) {
   const div = document.createElement('div');
@@ -259,9 +490,10 @@ form.addEventListener('submit', async (e) => {
   try {
     const res = await fetch('/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...auth()},
       body: JSON.stringify({message}),
     });
+    if (res.status === 401 && EXTERNAL) { pending.remove(); S.removeItem('tok'); await signIn(); return; }
     const data = await res.json();
     pending.remove();
     addMessage('assistant', res.ok ? data.reply : ('Error: ' + (data.detail || res.status)));
@@ -270,6 +502,7 @@ form.addEventListener('submit', async (e) => {
     addMessage('assistant', 'Error: ' + err);
   }
 });
+boot();
 </script>
 </body>
 </html>
