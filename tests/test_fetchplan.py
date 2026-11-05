@@ -1178,9 +1178,12 @@ def test_load_still_accepts_every_shipped_fetch_plan():
     every Cedar bundle must, or its crypto leaves would be unstated."""
     plans = sorted((Path(__file__).parent / "fixtures").glob("*/fetchplan.json"))
     assert plans  # the corpus is the point of the assertion
+    # The passkey bundles derive with verify_webauthn, which exists only once
+    # a relying-party id is configured; the vocabulary is what is checked.
+    primitives = default_primitives(webauthn_rp_id="approval.example")
     for path in plans:
         plan = json.loads(path.read_text())
-        validate_derive_plan(plan)
+        validate_derive_plan(plan, primitives=primitives)
         derives = [e for e in plan["entries"] if e["source"]["kind"] == "derive"]
         if (path.parent / "policy.cedar").exists():
             assert derives, f"{path} is a Cedar plan that hoists nothing"

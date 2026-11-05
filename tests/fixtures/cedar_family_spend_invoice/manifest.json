@@ -1,0 +1,141 @@
+{"type": "object",
+ "title": "InvoiceSpendInput",
+ "required":
+ ["tool",
+  "arguments",
+  "invoice",
+  "trustedMerchants",
+  "childApproval",
+  "childEnrollment",
+  "webauthnOrigin",
+  "trustedAdminDids",
+  "now"],
+ "properties":
+ {"webauthnOrigin": {"type": "string"},
+  "trustedMerchants":
+  {"type": "array", "items": {"$ref": "#/definitions/TrustedMerchant"}},
+  "trustedAdminDids": {"type": "array", "items": {"$ref": "#/definitions/DID"}},
+  "tool": {"type": "string"},
+  "parentEnrollmentJwsAdminKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "parentEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
+  "parentApprovalClientDataJSONDecodedParsed":
+  {"type": "object",
+   "properties":
+   {"origin": {"type": "string"}, "challenge": {"type": "string"}},
+   "additionalProperties": true},
+  "parentApprovalAuthenticatorDataParentEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "parentApproval": {"$ref": "#/definitions/WebAuthnApproval"},
+  "now": {"$ref": "#/definitions/Timestamp"},
+  "invoiceCanonicalTrustedMerchantsMerchantIdWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "invoiceCanonicalParsed":
+  {"type": "object",
+   "properties":
+   {"totalCents": {"type": "integer"},
+    "merchantId": {"type": "string"},
+    "exp": {"type": "integer"}},
+   "additionalProperties": true},
+  "invoiceCanonicalDigestEncoded": {"type": "string"},
+  "invoice": {"$ref": "#/definitions/Invoice"},
+  "childEnrollmentJwsAdminKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "childEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
+  "childApprovalClientDataJSONDecodedParsed":
+  {"type": "object",
+   "properties":
+   {"origin": {"type": "string"}, "challenge": {"type": "string"}},
+   "additionalProperties": true},
+  "childApprovalAuthenticatorDataChildEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses":
+  {"type": "array", "items": {"type": "string"}},
+  "childApproval": {"$ref": "#/definitions/WebAuthnApproval"},
+  "callerIdp": {"type": "string"},
+  "callerAccount": {"type": "string"},
+  "arguments": {"$ref": "#/definitions/InvoiceArgs"}},
+ "description":
+ "Input to the invoice family-spend policy. Cedar bundle: the fields named in `derived_fields` are computed by the fetch plan's `derive` entries rather than supplied by a caller, and are absent when their primitive matched nothing — so they are in `properties` and never in `required`.",
+ "derived_fields":
+ ["invoiceCanonicalTrustedMerchantsMerchantIdWitnesses",
+  "invoiceCanonicalParsed",
+  "childApprovalAuthenticatorDataChildEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses",
+  "childApprovalClientDataJSONDecodedParsed",
+  "invoiceCanonicalDigestEncoded",
+  "childEnrollmentJwsAdminKeyWitnesses",
+  "parentApprovalAuthenticatorDataParentEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses",
+  "parentApprovalClientDataJSONDecodedParsed",
+  "parentEnrollmentJwsAdminKeyWitnesses"],
+ "definitions":
+ {"WebAuthnApproval":
+  {"type": "object",
+   "required":
+   ["credentialId", "authenticatorData", "clientDataJSON", "signature"],
+   "properties":
+   {"signature": {"type": "string"},
+    "credentialId": {"type": "string"},
+    "clientDataJSON": {"type": "string"},
+    "authenticatorData": {"type": "string"}},
+   "additionalProperties": false},
+  "TrustedMerchant":
+  {"type": "object",
+   "required": ["merchantId", "key"],
+   "properties": {"merchantId": {"type": "string"}, "key": {"type": "string"}},
+   "additionalProperties": false},
+  "Timestamp": {"type": "integer", "minimum": 0},
+  "Role": {"type": "string", "enum": ["child", "parent"]},
+  "PasskeyVcBody":
+  {"type": "object",
+   "required": ["credentialSubject"],
+   "properties":
+   {"credentialSubject": {"$ref": "#/definitions/PasskeySubject"}},
+   "additionalProperties": true},
+  "PasskeySubject":
+  {"type": "object",
+   "required": ["role", "publicKey"],
+   "properties":
+   {"role": {"$ref": "#/definitions/Role"},
+    "publicKey": {"type": "string"},
+    "accounts": {"type": "array", "items": {"$ref": "#/definitions/Account"}}},
+   "additionalProperties": true},
+  "PasskeyEnrollment":
+  {"type": "object",
+   "required": ["jws", "claims", "adminKey"],
+   "properties":
+   {"jws": {"$ref": "#/definitions/JWS"},
+    "claims": {"$ref": "#/definitions/PasskeyClaims"},
+    "adminKey": {"type": "string"}},
+   "additionalProperties": false},
+  "PasskeyClaims":
+  {"type": "object",
+   "required": ["iss", "sub", "nbf", "exp", "vc"],
+   "properties":
+   {"vc": {"$ref": "#/definitions/PasskeyVcBody"},
+    "sub": {"type": "string"},
+    "nbf": {"$ref": "#/definitions/Timestamp"},
+    "iss": {"$ref": "#/definitions/DID"},
+    "exp": {"$ref": "#/definitions/Timestamp"}},
+   "additionalProperties": true},
+  "JWS":
+  {"type": "string",
+   "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"},
+  "InvoiceArgs":
+  {"type": "object",
+   "required": ["amountCents", "merchantId"],
+   "properties":
+   {"merchantId": {"type": "string"},
+    "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": false},
+  "Invoice":
+  {"type": "object",
+   "required": ["canonical", "signature"],
+   "properties":
+   {"signature": {"type": "string"}, "canonical": {"type": "string"}},
+   "additionalProperties": false},
+  "DID": {"type": "string", "pattern": "^did:(key|web):.+$"},
+  "Account":
+  {"type": "object",
+   "required": ["idp", "account"],
+   "properties": {"idp": {"type": "string"}, "account": {"type": "string"}},
+   "additionalProperties": false}},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

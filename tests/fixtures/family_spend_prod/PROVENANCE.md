@@ -1,5 +1,25 @@
 # Fixture provenance — family_spend_prod (production VC verification)
 
+## Re-pinned 2026-11-05 to upstream `364c4da` (the token/evidence seam)
+
+This section supersedes the entrypoint and count lines below where they
+differ; those are kept as the history of the pin.
+
+- **`account_bound`**, one check per tier (`solo/full_chain.requester_membership.account_bound`), binds the session's
+  identity-provider account to the member whose key signed: vacuous with no
+  principal, a plain equality when the issuer's subjects are the accounts
+  themselves, else membership in the admin-signed `accounts` list
+  (`{idp, account}`, `additionalProperties: false`). Two `caller`-sourced
+  plan entries, `callerIdp` (`iss`) and `callerAccount` (`sub`), read the
+  proxy's principal and never the call. 32 → 34 ids.
+- **`deny_reason` is gone** upstream: the sentences live in `guidance.json`
+  and every denial renders through it, on every engine alike. The wasm is rebuilt from the supplied `policy.rego` with `opa build -t wasm` (opa 1.17.1), entrypoints `allow` and `failed_checks`, and the supplier's uncommitted `capabilities.json`.
+- `guidance_digest.value = "c776a057d78a4999"`, shared by the Rego, CEL and
+  Cedar twins, whose `manifest.json`, `fetchplan.json` and `guidance.json`
+  are byte-identical.
+- Behavioural rows for the seam on this bundle are this repository's own
+  (`tests/test_vc_policy.py`), built with its signing harness, run on all three engines.
+
 A faithful multi-key policy: per-signer `did:key`, a `did:web` admin
 membership chain, nested W3C-VC claims, a solo tier at or under $10 and a
 full-chain tier up to $200 requiring a co-signed authorization bound to the

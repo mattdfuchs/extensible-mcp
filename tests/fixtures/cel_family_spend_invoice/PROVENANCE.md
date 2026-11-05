@@ -1,5 +1,25 @@
 # Fixture provenance — cel_family_spend_invoice (CEL twin, invoice-bound leg)
 
+## Re-pinned 2026-11-05 to upstream `364c4da` (the token/evidence seam)
+
+This section supersedes the entrypoint and count lines below where they
+differ; those are kept as the history of the pin.
+
+- **`account_bound`**, one check per tier (`solo/dual.child_enrollment.account_bound, the `accounts` disjunct alone`), binds the session's
+  identity-provider account to the member whose key signed: vacuous with no
+  principal, a plain equality when the issuer's subjects are the accounts
+  themselves, else membership in the admin-signed `accounts` list
+  (`{idp, account}`, `additionalProperties: false`). Two `caller`-sourced
+  plan entries, `callerIdp` (`iss`) and `callerAccount` (`sub`), read the
+  proxy's principal and never the call. 32 → 34 ids.
+- **`deny_reason` is gone** upstream: the sentences live in `guidance.json`
+  and every denial renders through it, on every engine alike.
+- `guidance_digest.value = "d511c75035a69d5a"`, shared by the Rego, CEL and
+  Cedar twins, whose `manifest.json`, `fetchplan.json` and `guidance.json`
+  are byte-identical.
+- Behavioural rows for the seam on this bundle are this repository's own
+  (`tests/test_invoice_policy.py`), built with its signing harness, run on all three engines.
+
 Supplied by an external policy-authoring toolchain — the CEL twin of
 `family_spend_invoice`, emitted from the same common core rather than
 translated from the Rego bundle. Because both artifacts are generated,

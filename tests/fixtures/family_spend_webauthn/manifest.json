@@ -15,6 +15,8 @@
   "requesterMembership": {"$ref": "#/definitions/Membership"},
   "requestVC": {"$ref": "#/definitions/RequestVC"},
   "now": {"$ref": "#/definitions/Timestamp"},
+  "callerIdp": {"type": "string"},
+  "callerAccount": {"type": "string"},
   "arguments": {"$ref": "#/definitions/CallArgs"},
   "approverEnrollment": {"$ref": "#/definitions/PasskeyEnrollment"},
   "approval": {"$ref": "#/definitions/WebAuthnApproval"}},
@@ -80,7 +82,9 @@
   {"type": "object",
    "required": ["role", "publicKey"],
    "properties":
-   {"role": {"$ref": "#/definitions/Role"}, "publicKey": {"type": "string"}},
+   {"role": {"$ref": "#/definitions/Role"},
+    "publicKey": {"type": "string"},
+    "accounts": {"type": "array", "items": {"$ref": "#/definitions/Account"}}},
    "additionalProperties": true},
   "PasskeyEnrollment":
   {"type": "object",
@@ -116,7 +120,9 @@
   "MemSubject":
   {"type": "object",
    "required": ["role"],
-   "properties": {"role": {"$ref": "#/definitions/Role"}},
+   "properties":
+   {"role": {"$ref": "#/definitions/Role"},
+    "accounts": {"type": "array", "items": {"$ref": "#/definitions/Account"}}},
    "additionalProperties": true},
   "MemClaims":
   {"type": "object",
@@ -138,6 +144,11 @@
    "properties":
    {"merchant": {"type": "string"},
     "amountCents": {"type": "integer", "minimum": 0}},
+   "additionalProperties": false},
+  "Account":
+  {"type": "object",
+   "required": ["idp", "account"],
+   "properties": {"idp": {"type": "string"}, "account": {"type": "string"}},
    "additionalProperties": false}},
  "additionalProperties": false,
  "$schema": "http://json-schema.org/draft-07/schema#"}

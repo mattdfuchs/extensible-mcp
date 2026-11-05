@@ -51,6 +51,7 @@ child_approved if {
 	webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)
 	invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
 	enrolled_as(input.childEnrollment, input.childApproval.credentialId, input.trustedAdminDids, input.now)
+	account_bound(input.childEnrollment)
 	input.childEnrollment.claims.vc.credentialSubject.role == "child"
 }
 
@@ -59,6 +60,16 @@ enrolled_as(e, cred_id, trusted, now) if {
 	signed_by_key(e.jws, e.adminKey)
 	e.claims.sub == cred_id
 	within_window(e.claims.nbf, e.claims.exp, now)
+}
+
+account_bound(en) if {
+	not input.callerAccount
+}
+
+account_bound(en) if {
+	some a in en.claims.vc.credentialSubject.accounts
+	a.idp == input.callerIdp
+	a.account == input.callerAccount
 }
 
 enrolled_by_trusted_admin(e, trusted) if {
@@ -94,111 +105,6 @@ signed_by_key(jws, jwk) if {
 webauthn_verified(ad, cd, sig, jwk, origin) if {
 	verify_webauthn(ad, cd, sig, jwk)
 	json.unmarshal(base64url.decode(cd)).origin == origin
-}
-
-deny_reason contains "the invoice is not signed by a trusted merchant" if {
-	not allow
-	not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)
-}
-
-deny_reason contains "the invoice has expired" if {
-	not allow
-	not invoice_unexpired(input.invoice.canonical, input.now)
-}
-
-deny_reason contains "the invoice total is not the amount this call would pay" if {
-	not allow
-	not invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)
-}
-
-deny_reason contains "the invoice is not from the merchant this call names" if {
-	not allow
-	not invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)
-}
-
-deny_reason contains "the passkey assertion is invalid" if {
-	not allow
-	not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)
-}
-
-deny_reason contains "the approval is not bound to this invoice" if {
-	not allow
-	not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)
-}
-
-deny_reason contains "the enrollment credential's issuer is not a trusted admin" if {
-	not allow
-	not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)
-}
-
-deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
-	not allow
-	not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)
-}
-
-deny_reason contains "required: input.childEnrollment.claims.sub == input.childApproval.credentialId" if {
-	not allow
-	input.childEnrollment.claims.sub != input.childApproval.credentialId
-}
-
-deny_reason contains "a credential is outside its validity window" if {
-	not allow
-	not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)
-}
-
-deny_reason contains "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"" if {
-	not allow
-	input.childEnrollment.claims.vc.credentialSubject.role != "child"
-}
-
-deny_reason contains "required: input.arguments.amountCents <= 1000" if {
-	not allow
-	input.arguments.amountCents > 1000
-}
-
-deny_reason contains "required: 1000 < input.arguments.amountCents" if {
-	not allow
-	1000 >= input.arguments.amountCents
-}
-
-deny_reason contains "required: input.arguments.amountCents <= 20000" if {
-	not allow
-	input.arguments.amountCents > 20000
-}
-
-deny_reason contains "the passkey assertion is invalid" if {
-	not allow
-	not webauthn_verified(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)
-}
-
-deny_reason contains "the approval is not bound to this invoice" if {
-	not allow
-	not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)
-}
-
-deny_reason contains "the enrollment credential's issuer is not a trusted admin" if {
-	not allow
-	not enrolled_by_trusted_admin(input.parentEnrollment, input.trustedAdminDids)
-}
-
-deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
-	not allow
-	not signed_by_key(input.parentEnrollment.jws, input.parentEnrollment.adminKey)
-}
-
-deny_reason contains "required: input.parentEnrollment.claims.sub == input.parentApproval.credentialId" if {
-	not allow
-	input.parentEnrollment.claims.sub != input.parentApproval.credentialId
-}
-
-deny_reason contains "a credential is outside its validity window" if {
-	not allow
-	not within_window(input.parentEnrollment.claims.nbf, input.parentEnrollment.claims.exp, input.now)
-}
-
-deny_reason contains "required: input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"" if {
-	not allow
-	input.parentEnrollment.claims.vc.credentialSubject.role != "parent"
 }
 
 failed_checks contains "solo.invoice.signed_by_trusted_merchant" if {
@@ -249,6 +155,11 @@ failed_checks contains "solo.child_enrollment.sub_matches" if {
 failed_checks contains "solo.child_enrollment.within_window" if {
 	not allow
 	not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)
+}
+
+failed_checks contains "solo.child_enrollment.account_bound" if {
+	not allow
+	not account_bound(input.childEnrollment)
 }
 
 failed_checks contains "solo.child_enrollment.role_matches" if {
@@ -309,6 +220,11 @@ failed_checks contains "dual.child_enrollment.sub_matches" if {
 failed_checks contains "dual.child_enrollment.within_window" if {
 	not allow
 	not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)
+}
+
+failed_checks contains "dual.child_enrollment.account_bound" if {
+	not allow
+	not account_bound(input.childEnrollment)
 }
 
 failed_checks contains "dual.child_enrollment.role_matches" if {

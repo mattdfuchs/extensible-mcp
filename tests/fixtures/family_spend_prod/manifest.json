@@ -13,6 +13,8 @@
   "requesterMembership": {"$ref": "#/definitions/Membership"},
   "requestVC": {"$ref": "#/definitions/RequestVC"},
   "now": {"$ref": "#/definitions/Timestamp"},
+  "callerIdp": {"type": "string"},
+  "callerAccount": {"type": "string"},
   "authorizationVC": {"$ref": "#/definitions/AuthorizationVC"},
   "arguments": {"$ref": "#/definitions/CallArgs"},
   "approverMembership": {"$ref": "#/definitions/Membership"}},
@@ -74,7 +76,9 @@
   "MemSubject":
   {"type": "object",
    "required": ["role"],
-   "properties": {"role": {"$ref": "#/definitions/Role"}},
+   "properties":
+   {"role": {"$ref": "#/definitions/Role"},
+    "accounts": {"type": "array", "items": {"$ref": "#/definitions/Account"}}},
    "additionalProperties": true},
   "MemClaims":
   {"type": "object",
@@ -126,6 +130,11 @@
     "jti": {"type": "string"},
     "iss": {"$ref": "#/definitions/DID"},
     "exp": {"$ref": "#/definitions/Timestamp"}},
-   "additionalProperties": true}},
+   "additionalProperties": true},
+  "Account":
+  {"type": "object",
+   "required": ["idp", "account"],
+   "properties": {"idp": {"type": "string"}, "account": {"type": "string"}},
+   "additionalProperties": false}},
  "additionalProperties": false,
  "$schema": "http://json-schema.org/draft-07/schema#"}

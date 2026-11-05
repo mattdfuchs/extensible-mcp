@@ -1,0 +1,131 @@
+{"status":
+ "CERTIFIED MODULO THIS CONTRACT. The bridge theorem is generated: `<Goal>.cedarFaithful` says this bundle's decision pass allows exactly when some tier's every leaf holds in the policy, with axioms [propext, Classical.choice, Quot.sound] and no `sorry`. Its hypotheses are this contract plus the host model — the decision pass evaluated with no `probe` key, each leaf's guards holding, each leaf's expression committing to a boolean. `obligations` below are the **derivation** ones and they are the host's: no proof here can discharge them, because a hoisted leaf reads a witness set the host computed rather than applying the primitive itself. Over-inclusion is the dangerous direction — a witness set that is too LARGE makes a leaf hold where the policy does not — so each carries the three clauses the bridge step needs (`clauses`); `claim` is the first of them, kept as the headline. **`obligations` is not the whole hypothesis.** `hypotheses` below enumerates every component of the theorem's contract, who owns each, and which are still undischarged on our side — until 2026-11-05 this field said \"its hypotheses are this contract\" and listed only the derivation ones, which read as though they were all of them.",
+ "obligations":
+ [{"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "requestVCJwsClaimsIssDidWitnesses",
+   "clauses":
+   {"exact":
+    "context.requestVCJwsClaimsIssDidWitnesses is exactly {x.did | x ∈ [{did: input.requestVC.claims.iss}], verify_eddsa(input.requestVC.jws, key_from_did_key(x.did)) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.requestVC.claims.iss, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_eddsa(input.requestVC.jws, key_from_did_key(x.did)) decides, for a candidate x, exactly what the checks below ask of x.did — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.requestVCJwsClaimsIssDidWitnesses is exactly {x.did | x ∈ [{did: input.requestVC.claims.iss}], verify_eddsa(input.requestVC.jws, key_from_did_key(x.did)) holds} — every such x, and no other value",
+   "checks":
+   ["solo.request_vc.signed_by_did_key",
+    "full_chain.request_vc.signed_by_did_key"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "requesterMembershipJwsAdminKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.requesterMembershipJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.requesterMembership.adminKey}], verify_eddsa(input.requesterMembership.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.requesterMembership.adminKey, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_eddsa(input.requesterMembership.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.requesterMembershipJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.requesterMembership.adminKey}], verify_eddsa(input.requesterMembership.jws, x.key) holds} — every such x, and no other value",
+   "checks":
+   ["solo.requester_membership.signed_by_key",
+    "full_chain.requester_membership.signed_by_key"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "authorizationVCJwsClaimsIssDidWitnesses",
+   "clauses":
+   {"exact":
+    "context.authorizationVCJwsClaimsIssDidWitnesses is exactly {x.did | x ∈ [{did: input.authorizationVC.claims.iss}], verify_eddsa(input.authorizationVC.jws, key_from_did_key(x.did)) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.authorizationVC.claims.iss, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_eddsa(input.authorizationVC.jws, key_from_did_key(x.did)) decides, for a candidate x, exactly what the checks below ask of x.did — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.authorizationVCJwsClaimsIssDidWitnesses is exactly {x.did | x ∈ [{did: input.authorizationVC.claims.iss}], verify_eddsa(input.authorizationVC.jws, key_from_did_key(x.did)) holds} — every such x, and no other value",
+   "checks": ["full_chain.authorization_vc.signed_by_did_key"]},
+  {"kind": "bare",
+   "fn": "sha256",
+   "field": "requestVCJwsDigest",
+   "clauses":
+   {"exact":
+    "context.requestVCJwsDigest is exactly sha256(input.requestVC.jws)",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "sha256(input.requestVC.jws) is the value the checks below read — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "pure",
+   "claim": "context.requestVCJwsDigest is exactly sha256(input.requestVC.jws)",
+   "checks": ["full_chain.authorization_vc.hash_binds"]},
+  {"kind": "bare",
+   "fn": "concat",
+   "field": "requestVCJwsDigestConcat",
+   "clauses":
+   {"exact":
+    "context.requestVCJwsDigestConcat is exactly concat(\"\", [\"sha256:\", derived.requestVCJwsDigest])",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "concat(\"\", [\"sha256:\", derived.requestVCJwsDigest]) is the value the checks below read — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "pure",
+   "claim":
+   "context.requestVCJwsDigestConcat is exactly concat(\"\", [\"sha256:\", derived.requestVCJwsDigest])",
+   "checks": ["full_chain.authorization_vc.hash_binds"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "approverMembershipJwsAdminKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.approverMembershipJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.approverMembership.adminKey}], verify_eddsa(input.approverMembership.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.approverMembership.adminKey, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_eddsa(input.approverMembership.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.approverMembershipJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.approverMembership.adminKey}], verify_eddsa(input.approverMembership.jws, x.key) holds} — every such x, and no other value",
+   "checks": ["full_chain.approver_membership.signed_by_key"]}],
+ "hypotheses":
+ [{"says":
+   "the term-atom oracle answers what the host's primitive computes, for every atom the policy reaches",
+   "owner": "host",
+   "name": "atoms",
+   "enumerated_in": "obligations"},
+  {"says":
+   "the same, for Prop-level atoms: the oracle agrees with the host's verification",
+   "owner": "host",
+   "name": "patoms",
+   "enumerated_in": "obligations"},
+  {"says":
+   "every argument of a reached atom navigates in the context — what the leaf's `has` guards establish, and `guards_hold` is the matching half",
+   "owner": "host",
+   "name": "present"},
+  {"says":
+   "each reached call's actuals evaluate, and its rules' arity matches the call. The arity half is a fact about the policy and is ours; the evaluation half depends on the context and is the host's",
+   "owner": "shared",
+   "name": "calls"},
+  {"says":
+   "each reached quantifier's Cedar image decides what the quantifier decides. Ours to discharge, and **not yet discharged per bundle**: nothing instantiates the tools. The tools now cover every shape the emitter produces — `CedarCorrect.ex_mem_sound` and `ex_mem_left_sound` for membership against a value, `ex_fold_sound` for the hoisted fold, `ex_record_sound` for membership against a built record. `ex_record_sound` carries the manifest's field-set closure on the collection's elements and no key-order hypothesis; the fold ones carry canonicality of the host's witness set. Listed per literal below",
+   "owner": "supplier",
+   "name": "exSound",
+   "items":
+   [{"literal":
+     "∃ a ∈ p0.claims.vc.credentialSubject.accounts, p2.idp == p1.callerIdp ∧ p2.account == p1.callerAccount",
+     "head": "policybundle.examples.family_spend_prod.AccountBound"},
+    {"literal": "∃ d ∈ p1, p0.claims.iss == p2",
+     "head": "policybundle.examples.family_spend_prod.IssuedByTrustedAdmin"}]},
+  {"says":
+   "the decision pass evaluates with no `probe` key; the explaining pass sets it",
+   "owner": "host",
+   "name": "probe_absent"},
+  {"says": "every leaf's `has` guards evaluate true",
+   "owner": "host",
+   "name": "guards_hold"},
+  {"says":
+   "every leaf's condition commits to a boolean rather than raising. `CedarSem.eval_safe` is why it can: every emitted condition is `safe`, which `derive_cedar` checks per bundle",
+   "owner": "host",
+   "name": "total"}],
+ "goal": "policybundle.examples.family_spend_prod"}

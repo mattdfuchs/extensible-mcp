@@ -253,13 +253,16 @@ def test_an_integral_float_fails_validation_at_its_path(name):
     from pathlib import Path
 
     from extensible_mcp.bundle import PolicyBundle
+    from extensible_mcp.fetchplan import default_primitives
     from extensible_mcp.wasm_policy import default_builtins
 
-    # Two Rego fixtures declare verify_webauthn, which the load refuses to
-    # leave unregistered; the manifest under test is the same either way.
+    # The passkey fixtures declare verify_webauthn -- as a Rego builtin or a
+    # Cedar derive primitive -- which the load refuses to leave unregistered;
+    # the manifest under test is the same either way.
     builtins = default_builtins(webauthn_rp_id="wallet.example")
+    primitives = default_primitives(webauthn_rp_id="wallet.example")
     bundle = PolicyBundle.load(Path(__file__).parent / "fixtures" / name, name=name,
-                               builtins=builtins)
+                               builtins=builtins, primitives=primitives)
     for bad in (12.0, json.loads("1e3")):
         errors = bundle.validate_input({"now": bad})
         at_now = [e for e in errors if e.startswith("now:")]

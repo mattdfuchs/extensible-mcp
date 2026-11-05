@@ -1,0 +1,198 @@
+{"status":
+ "CERTIFIED MODULO THIS CONTRACT. The bridge theorem is generated: `<Goal>.cedarFaithful` says this bundle's decision pass allows exactly when some tier's every leaf holds in the policy, with axioms [propext, Classical.choice, Quot.sound] and no `sorry`. Its hypotheses are this contract plus the host model — the decision pass evaluated with no `probe` key, each leaf's guards holding, each leaf's expression committing to a boolean. `obligations` below are the **derivation** ones and they are the host's: no proof here can discharge them, because a hoisted leaf reads a witness set the host computed rather than applying the primitive itself. Over-inclusion is the dangerous direction — a witness set that is too LARGE makes a leaf hold where the policy does not — so each carries the three clauses the bridge step needs (`clauses`); `claim` is the first of them, kept as the headline. **`obligations` is not the whole hypothesis.** `hypotheses` below enumerates every component of the theorem's contract, who owns each, and which are still undischarged on our side — until 2026-11-05 this field said \"its hypotheses are this contract\" and listed only the derivation ones, which read as though they were all of them.",
+ "obligations":
+ [{"kind": "folded",
+   "fn": "verify_ed25519_raw",
+   "field": "invoiceCanonicalTrustedMerchantsMerchantIdWitnesses",
+   "clauses":
+   {"exact":
+    "context.invoiceCanonicalTrustedMerchantsMerchantIdWitnesses is exactly {x.merchantId | x ∈ input.trustedMerchants, verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, x.key) holds} — every such x, and no other value",
+    "covers":
+    "NOT APPLICABLE: the source leaf quantifies over input.trustedMerchants itself, so membership in the witness set is what the leaf asks rather than a side condition on it (CedarSem.contains_witness_iff)",
+    "applies":
+    "verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, x.key) decides, for a candidate x, exactly what the checks below ask of x.merchantId — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.invoiceCanonicalTrustedMerchantsMerchantIdWitnesses is exactly {x.merchantId | x ∈ input.trustedMerchants, verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, x.key) holds} — every such x, and no other value",
+   "checks":
+   ["solo.invoice.signed_by_trusted_merchant",
+    "dual.invoice.signed_by_trusted_merchant"]},
+  {"kind": "bare",
+   "fn": "parse_json",
+   "field": "invoiceCanonicalParsed",
+   "clauses":
+   {"exact":
+    "context.invoiceCanonicalParsed is exactly parse_json(input.invoice.canonical)",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "parse_json(input.invoice.canonical) is the value the checks below read — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "pure",
+   "claim":
+   "context.invoiceCanonicalParsed is exactly parse_json(input.invoice.canonical)",
+   "checks":
+   ["solo.invoice.signed_by_trusted_merchant",
+    "solo.invoice.unexpired",
+    "solo.invoice.total_matches",
+    "solo.invoice.merchant_matches",
+    "dual.invoice.signed_by_trusted_merchant",
+    "dual.invoice.unexpired",
+    "dual.invoice.total_matches",
+    "dual.invoice.merchant_matches"]},
+  {"kind": "folded",
+   "fn": "verify_webauthn",
+   "field":
+   "childApprovalAuthenticatorDataChildEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.childApprovalAuthenticatorDataChildEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses is exactly {x.key | x ∈ [{key: input.childEnrollment.claims.vc.credentialSubject.publicKey}], verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.childEnrollment.claims.vc.credentialSubject.publicKey, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.childApprovalAuthenticatorDataChildEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses is exactly {x.key | x ∈ [{key: input.childEnrollment.claims.vc.credentialSubject.publicKey}], verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, x.key) holds} — every such x, and no other value",
+   "checks":
+   ["solo.child_approval.webauthn_verified",
+    "dual.child_approval.webauthn_verified"]},
+  {"kind": "bare",
+   "fn": "parse_json",
+   "field": "childApprovalClientDataJSONDecodedParsed",
+   "clauses":
+   {"exact":
+    "context.childApprovalClientDataJSONDecodedParsed is exactly parse_json(base64url_decode(input.childApproval.clientDataJSON))",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "parse_json(base64url_decode(input.childApproval.clientDataJSON)) is the value the checks below read — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "pure",
+   "claim":
+   "context.childApprovalClientDataJSONDecodedParsed is exactly parse_json(base64url_decode(input.childApproval.clientDataJSON))",
+   "checks":
+   ["solo.child_approval.webauthn_verified",
+    "solo.child_approval.invoice_challenge_binds",
+    "dual.child_approval.webauthn_verified",
+    "dual.child_approval.invoice_challenge_binds"]},
+  {"kind": "bare",
+   "fn": "base64url_encode_no_pad",
+   "field": "invoiceCanonicalDigestEncoded",
+   "clauses":
+   {"exact":
+    "context.invoiceCanonicalDigestEncoded is exactly base64url_encode_no_pad(sha256(input.invoice.canonical))",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "base64url_encode_no_pad(sha256(input.invoice.canonical)) is the value the checks below read — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "pure",
+   "claim":
+   "context.invoiceCanonicalDigestEncoded is exactly base64url_encode_no_pad(sha256(input.invoice.canonical))",
+   "checks":
+   ["solo.child_approval.invoice_challenge_binds",
+    "dual.child_approval.invoice_challenge_binds",
+    "dual.parent_approval.invoice_challenge_binds"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "childEnrollmentJwsAdminKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.childEnrollmentJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.childEnrollment.adminKey}], verify_eddsa(input.childEnrollment.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.childEnrollment.adminKey, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_eddsa(input.childEnrollment.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.childEnrollmentJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.childEnrollment.adminKey}], verify_eddsa(input.childEnrollment.jws, x.key) holds} — every such x, and no other value",
+   "checks":
+   ["solo.child_enrollment.signed_by_key",
+    "dual.child_enrollment.signed_by_key"]},
+  {"kind": "folded",
+   "fn": "verify_webauthn",
+   "field":
+   "parentApprovalAuthenticatorDataParentEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.parentApprovalAuthenticatorDataParentEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses is exactly {x.key | x ∈ [{key: input.parentEnrollment.claims.vc.credentialSubject.publicKey}], verify_webauthn(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.parentEnrollment.claims.vc.credentialSubject.publicKey, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_webauthn(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.parentApprovalAuthenticatorDataParentEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses is exactly {x.key | x ∈ [{key: input.parentEnrollment.claims.vc.credentialSubject.publicKey}], verify_webauthn(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, x.key) holds} — every such x, and no other value",
+   "checks": ["dual.parent_approval.webauthn_verified"]},
+  {"kind": "bare",
+   "fn": "parse_json",
+   "field": "parentApprovalClientDataJSONDecodedParsed",
+   "clauses":
+   {"exact":
+    "context.parentApprovalClientDataJSONDecodedParsed is exactly parse_json(base64url_decode(input.parentApproval.clientDataJSON))",
+    "covers":
+    "NOT APPLICABLE: a bare entry computes a value, not a witness set",
+    "applies":
+    "parse_json(base64url_decode(input.parentApproval.clientDataJSON)) is the value the checks below read — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "pure",
+   "claim":
+   "context.parentApprovalClientDataJSONDecodedParsed is exactly parse_json(base64url_decode(input.parentApproval.clientDataJSON))",
+   "checks":
+   ["dual.parent_approval.webauthn_verified",
+    "dual.parent_approval.invoice_challenge_binds"]},
+  {"kind": "folded",
+   "fn": "verify_eddsa",
+   "field": "parentEnrollmentJwsAdminKeyWitnesses",
+   "clauses":
+   {"exact":
+    "context.parentEnrollmentJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.parentEnrollment.adminKey}], verify_eddsa(input.parentEnrollment.jws, x.key) holds} — every such x, and no other value",
+    "covers":
+    "DISCHARGED BY THE PLAN, not by you: the domain is the one-element candidate list built from input.parentEnrollment.adminKey, the very term the rule reads, so the projection offers it by construction (CedarSem.covers_of_singleton)",
+    "applies":
+    "verify_eddsa(input.parentEnrollment.jws, x.key) decides, for a candidate x, exactly what the checks below ask of x.key — the right primitive, to the right arguments (CedarSem.Fold.Applies)"},
+   "class": "key-consuming",
+   "claim":
+   "context.parentEnrollmentJwsAdminKeyWitnesses is exactly {x.key | x ∈ [{key: input.parentEnrollment.adminKey}], verify_eddsa(input.parentEnrollment.jws, x.key) holds} — every such x, and no other value",
+   "checks": ["dual.parent_enrollment.signed_by_key"]}],
+ "hypotheses":
+ [{"says":
+   "the term-atom oracle answers what the host's primitive computes, for every atom the policy reaches",
+   "owner": "host",
+   "name": "atoms",
+   "enumerated_in": "obligations"},
+  {"says":
+   "the same, for Prop-level atoms: the oracle agrees with the host's verification",
+   "owner": "host",
+   "name": "patoms",
+   "enumerated_in": "obligations"},
+  {"says":
+   "every argument of a reached atom navigates in the context — what the leaf's `has` guards establish, and `guards_hold` is the matching half",
+   "owner": "host",
+   "name": "present"},
+  {"says":
+   "each reached call's actuals evaluate, and its rules' arity matches the call. The arity half is a fact about the policy and is ours; the evaluation half depends on the context and is the host's",
+   "owner": "shared",
+   "name": "calls"},
+  {"says":
+   "each reached quantifier's Cedar image decides what the quantifier decides. Ours to discharge, and **not yet discharged per bundle**: nothing instantiates the tools. The tools now cover every shape the emitter produces — `CedarCorrect.ex_mem_sound` and `ex_mem_left_sound` for membership against a value, `ex_fold_sound` for the hoisted fold, `ex_record_sound` for membership against a built record. `ex_record_sound` carries the manifest's field-set closure on the collection's elements and no key-order hypothesis; the fold ones carry canonicality of the host's witness set. Listed per literal below",
+   "owner": "supplier",
+   "name": "exSound",
+   "items":
+   [{"literal":
+     "∃ m ∈ p1, policybundle.examples.family_spend_invoice.InvoiceMerchantMatches(p0.canonical, p2.merchantId) ∧ policybundle.examples.family_spend_invoice.VerifyEd25519Raw(p0.canonical, p0.signature, p2.key)",
+     "head": "policybundle.examples.family_spend_invoice.SignedByTrustedMerchant"},
+    {"literal":
+     "∃ a ∈ p0.claims.vc.credentialSubject.accounts, p2.idp == p1.callerIdp ∧ p2.account == p1.callerAccount",
+     "head": "policybundle.examples.family_spend_invoice.AccountBound"},
+    {"literal": "∃ d ∈ p1, p0.claims.iss == p2",
+     "head": "policybundle.examples.family_spend_webauthn.EnrolledByTrustedAdmin"}]},
+  {"says":
+   "the decision pass evaluates with no `probe` key; the explaining pass sets it",
+   "owner": "host",
+   "name": "probe_absent"},
+  {"says": "every leaf's `has` guards evaluate true",
+   "owner": "host",
+   "name": "guards_hold"},
+  {"says":
+   "every leaf's condition commits to a boolean rather than raising. `CedarSem.eval_safe` is why it can: every emitted condition is `safe`, which `derive_cedar` checks per bundle",
+   "owner": "host",
+   "name": "total"}],
+ "goal": "policybundle.examples.family_spend_invoice"}

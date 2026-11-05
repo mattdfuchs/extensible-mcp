@@ -40,9 +40,9 @@ Every bundle on either side lands in exactly one of three lists:
   a hand-authored bundle of the same name. Fails the run unless the bundle
   is in :data:`NOT_ADOPTED_BY_DECISION` with the reason.
 - **local only**: a local bundle no upstream directory pairs with -- the
-  hand-authored teaching bundles, and a reshape of an adopted bundle made
-  here (:data:`RESHAPED_FROM`), which is reported as such rather than as
-  unpaired.
+  hand-authored teaching bundles, and a frozen earlier emission of an
+  adopted bundle (:data:`FROZEN_FROM`), which is reported as such rather
+  than as unpaired.
 """
 
 from __future__ import annotations
@@ -75,18 +75,17 @@ NOT_ADOPTED_BY_DECISION = {
         "the local cel_family_spend is this repo's hand-authored teaching "
         "bundle, not this artifact; see rego/family_spend"
     ),
-    # The three Cedar production bundles are deferred, not declined: upstream
-    # is replacing its forbid-only emission with the permit-decides shape,
-    # and adopting them now would pin artifacts that move within the cycle.
-    # Issue #72 adopts all three in that shape, and removes these rows.
-    "cedar/family_spend_prod": (
-        "deferred until upstream emits the permit-decides shape (#72)"
-    ),
-    "cedar/family_spend_webauthn": (
-        "deferred until upstream emits the permit-decides shape (#72)"
-    ),
-    "cedar/family_spend_invoice": (
-        "deferred until upstream emits the permit-decides shape (#72)"
+    # Upstream's language-coverage examples: one Rego construct each (a
+    # bounded universal, a universal over a `data` relation table,
+    # aggregates, nested existentials), call-sourced only, no evidence, no
+    # twins, none a proxy filter. They surfaced when the deny_reason drop
+    # gave every upstream bundle a guidance.json. Declined 2026-11-05.
+    "rego/cart": "a language-coverage example, not a proxy filter; see rego/rebac",
+    "rego/networks": "a language-coverage example, not a proxy filter; see rego/rebac",
+    "rego/terraform": "a language-coverage example, not a proxy filter; see rego/rebac",
+    "rego/zanzibar": (
+        "a language-coverage example over a `data` relation table, not a proxy "
+        "filter and not an authority lookup; see rego/rebac"
     ),
 }
 
@@ -97,15 +96,15 @@ NOT_ADOPTED_BY_DECISION = {
 GUIDANCE_IS_LOCAL = {
     "cedar_family_spend": (
         "guidance.json is this repo's own, byte-identical to "
-        "family_spend/guidance.json (PROVENANCE.md)"
+        "cel_family_spend_bound/guidance.json (PROVENANCE.md)"
     ),
 }
 
-# Local bundles that are this repo's reshape of an adopted upstream bundle:
-# the same rule set and ids, a different policy-set shape. Not an adoption
-# of anything on its own, and not unpaired either.
-RESHAPED_FROM = {
-    "cedar_family_spend_compact": "cedar/family_spend",
+# Local bundles that are a frozen earlier emission of an adopted upstream
+# bundle, kept because the loader still accepts the shape and upstream no
+# longer emits it. Not an adoption of anything on its own, and not unpaired.
+FROZEN_FROM = {
+    "cedar_family_spend_forbid_only": "cedar/family_spend (forbid-only, as first emitted)",
 }
 
 
@@ -189,8 +188,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if is_hand_authored(directory):
             origin = "hand-authored"
-        elif directory.name in RESHAPED_FROM:
-            origin = f"this repo's reshape of the adopted {RESHAPED_FROM[directory.name]}"
+        elif directory.name in FROZEN_FROM:
+            origin = f"frozen earlier emission of the adopted {FROZEN_FROM[directory.name]}"
         else:
             origin = "no upstream " + "/, ".join(UPSTREAM_KINDS) + "/ pairing"
         local_only.append(f"{directory.name}: {origin}")

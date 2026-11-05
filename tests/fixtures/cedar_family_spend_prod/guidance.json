@@ -1,0 +1,235 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   [{"sentence": "a credential signature is invalid",
+     "remedy_class": "re-promptable",
+     "id": "solo.request_vc.signed_by_did_key",
+     "condition":
+     "not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "solo.request_vc.within_window",
+     "condition":
+     "not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.type == input.tool",
+     "remedy_class": "re-promptable",
+     "id": "solo.request_vc.type_matches",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.type != input.tool"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "solo.request_vc.amount_cents_matches",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant",
+     "remedy_class": "re-promptable",
+     "id": "solo.request_vc.merchant_matches",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant"},
+    {"sentence": "the membership credential's issuer is not a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.issued_by_trusted_admin",
+     "condition":
+     "not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.signed_by_key",
+     "condition":
+     "not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.sub_matches",
+     "condition":
+     "input.requesterMembership.claims.sub != input.requestVC.claims.iss"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.within_window",
+     "condition":
+     "not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)"},
+    {"sentence":
+     "the session's account is not bound to the member whose key signed the request: the person at the console and the signer must be one member, bound by the family admin",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.account_bound",
+     "condition": "not account_bound(input.requesterMembership)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "solo.requester_membership.role_matches",
+     "condition":
+     "input.requesterMembership.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 1000",
+     "remedy_class": "re-promptable",
+     "id": "solo.request_vc.amount_cents_at_most",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents > 1000"}]},
+  {"tier": 1,
+   "checks":
+   [{"sentence": "a credential signature is invalid",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.signed_by_did_key",
+     "condition":
+     "not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.within_window",
+     "condition":
+     "not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.type == input.tool",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.type_matches",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.type != input.tool"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.amount_cents_matches",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.merchant_matches",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant"},
+    {"sentence": "the membership credential's issuer is not a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.issued_by_trusted_admin",
+     "condition":
+     "not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.signed_by_key",
+     "condition":
+     "not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.sub_matches",
+     "condition":
+     "input.requesterMembership.claims.sub != input.requestVC.claims.iss"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.within_window",
+     "condition":
+     "not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)"},
+    {"sentence":
+     "the session's account is not bound to the member whose key signed the request: the person at the console and the signer must be one member, bound by the family admin",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.account_bound",
+     "condition": "not account_bound(input.requesterMembership)"},
+    {"sentence":
+     "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.requester_membership.role_matches",
+     "condition":
+     "input.requesterMembership.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence":
+     "required: 1000 < input.requestVC.claims.vc.credentialSubject.requests.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.amount_cents_above",
+     "condition":
+     "1000 >= input.requestVC.claims.vc.credentialSubject.requests.amountCents"},
+    {"sentence":
+     "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 20000",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.request_vc.amount_cents_at_most",
+     "condition":
+     "input.requestVC.claims.vc.credentialSubject.requests.amountCents > 20000"},
+    {"sentence": "a credential signature is invalid",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.authorization_vc.signed_by_did_key",
+     "condition":
+     "not signed_by_did_key(input.authorizationVC.jws, input.authorizationVC.claims.iss)"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.authorization_vc.within_window",
+     "condition":
+     "not within_window(input.authorizationVC.claims.nbf, input.authorizationVC.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.authorizationVC.claims.vc.credentialSubject.authorizes_request == input.requestVC.claims.jti",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.authorization_vc.authorizes_request_matches",
+     "condition":
+     "input.authorizationVC.claims.vc.credentialSubject.authorizes_request != input.requestVC.claims.jti"},
+    {"sentence": "the authorization is not bound to this request",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.authorization_vc.hash_binds",
+     "condition":
+     "not hash_binds(input.authorizationVC.claims.vc.credentialSubject.request_hash, input.requestVC.jws)"},
+    {"sentence": "the membership credential's issuer is not a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_membership.issued_by_trusted_admin",
+     "condition":
+     "not issued_by_trusted_admin(input.approverMembership, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_membership.signed_by_key",
+     "condition":
+     "not signed_by_key(input.approverMembership.jws, input.approverMembership.adminKey)"},
+    {"sentence":
+     "required: input.approverMembership.claims.sub == input.authorizationVC.claims.iss",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_membership.sub_matches",
+     "condition":
+     "input.approverMembership.claims.sub != input.authorizationVC.claims.iss"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_membership.within_window",
+     "condition":
+     "not within_window(input.approverMembership.claims.nbf, input.approverMembership.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.approverMembership.claims.vc.credentialSubject.role == \"parent\"",
+     "remedy_class": "re-promptable",
+     "id": "full_chain.approver_membership.role_matches",
+     "condition":
+     "input.approverMembership.claims.vc.credentialSubject.role != \"parent\""}]}],
+ "id_scheme": "named-split",
+ "guidance_digest":
+ {"value": "c776a057d78a4999",
+  "covers":
+  "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
+  "alg": "fnv1a64"},
+ "goal": "CanSpendProd",
+ "call_guards":
+ [{"required_in_tiers": [0, 1],
+   "field": "requestVC",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "tool",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "arguments",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [1],
+   "field": "authorizationVC",
+   "deciding_checks":
+   ["full_chain.request_vc.amount_cents_above",
+    "full_chain.request_vc.amount_cents_at_most"],
+   "always": false}],
+ "call_credentials":
+ [{"role_checks":
+   ["solo.requester_membership.role_matches",
+    "full_chain.requester_membership.role_matches"],
+   "issuer_role": "child",
+   "field": "requestVC",
+   "depends_on": []},
+  {"role_checks": ["full_chain.approver_membership.role_matches"],
+   "issuer_role": "parent",
+   "field": "authorizationVC",
+   "depends_on":
+   [{"field": "requestVC",
+     "binding_checks":
+     ["full_chain.authorization_vc.authorizes_request_matches",
+      "full_chain.authorization_vc.hash_binds"]}]}]}

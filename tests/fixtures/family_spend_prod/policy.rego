@@ -23,6 +23,7 @@ prod_common_checks if {
 	input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents
 	input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant
 	member_of(input.requesterMembership, input.requestVC.claims.iss, input.trustedAdminDids, input.now)
+	account_bound(input.requesterMembership)
 	input.requesterMembership.claims.vc.credentialSubject.role == "child"
 }
 
@@ -53,6 +54,20 @@ member_of(m, signer_iss, trusted, now) if {
 	within_window(m.claims.nbf, m.claims.exp, now)
 }
 
+account_bound(m) if {
+	not input.callerAccount
+}
+
+account_bound(m) if {
+	m.claims.sub == input.callerAccount
+}
+
+account_bound(m) if {
+	some a in m.claims.vc.credentialSubject.accounts
+	a.idp == input.callerIdp
+	a.account == input.callerAccount
+}
+
 issued_by_trusted_admin(m, trusted) if {
 	some d in trusted
 	m.claims.iss == d
@@ -68,116 +83,6 @@ signed_by_did_key(jws, did) if {
 
 signed_by_key(jws, jwk) if {
 	io.jwt.verify_eddsa(jws, jwk)
-}
-
-deny_reason contains "a credential signature is invalid" if {
-	not allow
-	not signed_by_did_key(input.requestVC.jws, input.requestVC.claims.iss)
-}
-
-deny_reason contains "a credential is outside its validity window" if {
-	not allow
-	not within_window(input.requestVC.claims.nbf, input.requestVC.claims.exp, input.now)
-}
-
-deny_reason contains "required: input.requestVC.claims.vc.credentialSubject.requests.type == input.tool" if {
-	not allow
-	input.requestVC.claims.vc.credentialSubject.requests.type != input.tool
-}
-
-deny_reason contains "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents == input.arguments.amountCents" if {
-	not allow
-	input.requestVC.claims.vc.credentialSubject.requests.amountCents != input.arguments.amountCents
-}
-
-deny_reason contains "required: input.requestVC.claims.vc.credentialSubject.requests.merchant == input.arguments.merchant" if {
-	not allow
-	input.requestVC.claims.vc.credentialSubject.requests.merchant != input.arguments.merchant
-}
-
-deny_reason contains "the membership credential's issuer is not a trusted admin" if {
-	not allow
-	not issued_by_trusted_admin(input.requesterMembership, input.trustedAdminDids)
-}
-
-deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
-	not allow
-	not signed_by_key(input.requesterMembership.jws, input.requesterMembership.adminKey)
-}
-
-deny_reason contains "required: input.requesterMembership.claims.sub == input.requestVC.claims.iss" if {
-	not allow
-	input.requesterMembership.claims.sub != input.requestVC.claims.iss
-}
-
-deny_reason contains "a credential is outside its validity window" if {
-	not allow
-	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
-}
-
-deny_reason contains "required: input.requesterMembership.claims.vc.credentialSubject.role == \"child\"" if {
-	not allow
-	input.requesterMembership.claims.vc.credentialSubject.role != "child"
-}
-
-deny_reason contains "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 1000" if {
-	not allow
-	input.requestVC.claims.vc.credentialSubject.requests.amountCents > 1000
-}
-
-deny_reason contains "required: 1000 < input.requestVC.claims.vc.credentialSubject.requests.amountCents" if {
-	not allow
-	1000 >= input.requestVC.claims.vc.credentialSubject.requests.amountCents
-}
-
-deny_reason contains "required: input.requestVC.claims.vc.credentialSubject.requests.amountCents <= 20000" if {
-	not allow
-	input.requestVC.claims.vc.credentialSubject.requests.amountCents > 20000
-}
-
-deny_reason contains "a credential signature is invalid" if {
-	not allow
-	not signed_by_did_key(input.authorizationVC.jws, input.authorizationVC.claims.iss)
-}
-
-deny_reason contains "a credential is outside its validity window" if {
-	not allow
-	not within_window(input.authorizationVC.claims.nbf, input.authorizationVC.claims.exp, input.now)
-}
-
-deny_reason contains "required: input.authorizationVC.claims.vc.credentialSubject.authorizes_request == input.requestVC.claims.jti" if {
-	not allow
-	input.authorizationVC.claims.vc.credentialSubject.authorizes_request != input.requestVC.claims.jti
-}
-
-deny_reason contains "the authorization is not bound to this request" if {
-	not allow
-	not hash_binds(input.authorizationVC.claims.vc.credentialSubject.request_hash, input.requestVC.jws)
-}
-
-deny_reason contains "the membership credential's issuer is not a trusted admin" if {
-	not allow
-	not issued_by_trusted_admin(input.approverMembership, input.trustedAdminDids)
-}
-
-deny_reason contains "a credential's signature could not be verified against its issuer's key" if {
-	not allow
-	not signed_by_key(input.approverMembership.jws, input.approverMembership.adminKey)
-}
-
-deny_reason contains "required: input.approverMembership.claims.sub == input.authorizationVC.claims.iss" if {
-	not allow
-	input.approverMembership.claims.sub != input.authorizationVC.claims.iss
-}
-
-deny_reason contains "a credential is outside its validity window" if {
-	not allow
-	not within_window(input.approverMembership.claims.nbf, input.approverMembership.claims.exp, input.now)
-}
-
-deny_reason contains "required: input.approverMembership.claims.vc.credentialSubject.role == \"parent\"" if {
-	not allow
-	input.approverMembership.claims.vc.credentialSubject.role != "parent"
 }
 
 failed_checks contains "solo.request_vc.signed_by_did_key" if {
@@ -223,6 +128,11 @@ failed_checks contains "solo.requester_membership.sub_matches" if {
 failed_checks contains "solo.requester_membership.within_window" if {
 	not allow
 	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
+}
+
+failed_checks contains "solo.requester_membership.account_bound" if {
+	not allow
+	not account_bound(input.requesterMembership)
 }
 
 failed_checks contains "solo.requester_membership.role_matches" if {
@@ -278,6 +188,11 @@ failed_checks contains "full_chain.requester_membership.sub_matches" if {
 failed_checks contains "full_chain.requester_membership.within_window" if {
 	not allow
 	not within_window(input.requesterMembership.claims.nbf, input.requesterMembership.claims.exp, input.now)
+}
+
+failed_checks contains "full_chain.requester_membership.account_bound" if {
+	not allow
+	not account_bound(input.requesterMembership)
 }
 
 failed_checks contains "full_chain.requester_membership.role_matches" if {

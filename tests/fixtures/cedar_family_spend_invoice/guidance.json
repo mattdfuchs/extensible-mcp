@@ -1,0 +1,205 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   [{"sentence": "the invoice is not signed by a trusted merchant",
+     "remedy_class": "re-promptable",
+     "id": "solo.invoice.signed_by_trusted_merchant",
+     "condition":
+     "not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)"},
+    {"sentence": "the invoice has expired",
+     "remedy_class": "re-promptable",
+     "id": "solo.invoice.unexpired",
+     "condition": "not invoice_unexpired(input.invoice.canonical, input.now)"},
+    {"sentence": "the invoice total is not the amount this call would pay",
+     "remedy_class": "re-promptable",
+     "id": "solo.invoice.total_matches",
+     "condition":
+     "not invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)"},
+    {"sentence": "the invoice is not from the merchant this call names",
+     "remedy_class": "re-promptable",
+     "id": "solo.invoice.merchant_matches",
+     "condition":
+     "not invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_approval.webauthn_verified",
+     "condition":
+     "not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this invoice",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_approval.invoice_challenge_binds",
+     "condition":
+     "not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)"},
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.enrolled_by_trusted_admin",
+     "condition":
+     "not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.sub == input.childApproval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.sub_matches",
+     "condition":
+     "input.childEnrollment.claims.sub != input.childApproval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.within_window",
+     "condition":
+     "not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)"},
+    {"sentence":
+     "the session's account is not bound to the member whose key approved the call: the person at the console and the approver must be one member, bound by the family admin",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.account_bound",
+     "condition": "not account_bound(input.childEnrollment)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "solo.child_enrollment.role_matches",
+     "condition":
+     "input.childEnrollment.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence": "required: input.arguments.amountCents <= 1000",
+     "remedy_class": "re-promptable",
+     "id": "solo.arguments.amount_cents_at_most",
+     "condition": "input.arguments.amountCents > 1000"}]},
+  {"tier": 1,
+   "checks":
+   [{"sentence": "the invoice is not signed by a trusted merchant",
+     "remedy_class": "re-promptable",
+     "id": "dual.invoice.signed_by_trusted_merchant",
+     "condition":
+     "not signed_by_trusted_merchant(input.invoice, input.trustedMerchants)"},
+    {"sentence": "the invoice has expired",
+     "remedy_class": "re-promptable",
+     "id": "dual.invoice.unexpired",
+     "condition": "not invoice_unexpired(input.invoice.canonical, input.now)"},
+    {"sentence": "the invoice total is not the amount this call would pay",
+     "remedy_class": "re-promptable",
+     "id": "dual.invoice.total_matches",
+     "condition":
+     "not invoice_total_matches(input.invoice.canonical, input.arguments.amountCents)"},
+    {"sentence": "the invoice is not from the merchant this call names",
+     "remedy_class": "re-promptable",
+     "id": "dual.invoice.merchant_matches",
+     "condition":
+     "not invoice_merchant_matches(input.invoice.canonical, input.arguments.merchantId)"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_approval.webauthn_verified",
+     "condition":
+     "not webauthn_verified(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this invoice",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_approval.invoice_challenge_binds",
+     "condition":
+     "not invoice_challenge_binds(input.childApproval.clientDataJSON, input.invoice.canonical)"},
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.enrolled_by_trusted_admin",
+     "condition":
+     "not enrolled_by_trusted_admin(input.childEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.childEnrollment.jws, input.childEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.sub == input.childApproval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.sub_matches",
+     "condition":
+     "input.childEnrollment.claims.sub != input.childApproval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.within_window",
+     "condition":
+     "not within_window(input.childEnrollment.claims.nbf, input.childEnrollment.claims.exp, input.now)"},
+    {"sentence":
+     "the session's account is not bound to the member whose key approved the call: the person at the console and the approver must be one member, bound by the family admin",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.account_bound",
+     "condition": "not account_bound(input.childEnrollment)"},
+    {"sentence":
+     "required: input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
+     "remedy_class": "re-promptable",
+     "id": "dual.child_enrollment.role_matches",
+     "condition":
+     "input.childEnrollment.claims.vc.credentialSubject.role != \"child\""},
+    {"sentence": "required: 1000 < input.arguments.amountCents",
+     "remedy_class": "re-promptable",
+     "id": "dual.arguments.amount_cents_above",
+     "condition": "1000 >= input.arguments.amountCents"},
+    {"sentence": "required: input.arguments.amountCents <= 20000",
+     "remedy_class": "re-promptable",
+     "id": "dual.arguments.amount_cents_at_most",
+     "condition": "input.arguments.amountCents > 20000"},
+    {"sentence": "the passkey assertion is invalid",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_approval.webauthn_verified",
+     "condition":
+     "not webauthn_verified(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey, input.webauthnOrigin)"},
+    {"sentence": "the approval is not bound to this invoice",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_approval.invoice_challenge_binds",
+     "condition":
+     "not invoice_challenge_binds(input.parentApproval.clientDataJSON, input.invoice.canonical)"},
+    {"sentence": "the enrollment credential's issuer is not a trusted admin",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.enrolled_by_trusted_admin",
+     "condition":
+     "not enrolled_by_trusted_admin(input.parentEnrollment, input.trustedAdminDids)"},
+    {"sentence":
+     "a credential's signature could not be verified against its issuer's key",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.signed_by_key",
+     "condition":
+     "not signed_by_key(input.parentEnrollment.jws, input.parentEnrollment.adminKey)"},
+    {"sentence":
+     "required: input.parentEnrollment.claims.sub == input.parentApproval.credentialId",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.sub_matches",
+     "condition":
+     "input.parentEnrollment.claims.sub != input.parentApproval.credentialId"},
+    {"sentence": "a credential is outside its validity window",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.within_window",
+     "condition":
+     "not within_window(input.parentEnrollment.claims.nbf, input.parentEnrollment.claims.exp, input.now)"},
+    {"sentence":
+     "required: input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"",
+     "remedy_class": "re-promptable",
+     "id": "dual.parent_enrollment.role_matches",
+     "condition":
+     "input.parentEnrollment.claims.vc.credentialSubject.role != \"parent\""}]}],
+ "id_scheme": "named-split",
+ "guidance_digest":
+ {"value": "d511c75035a69d5a",
+  "covers":
+  "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
+  "alg": "fnv1a64"},
+ "goal": "CanSpendInvoice",
+ "call_guards":
+ [{"required_in_tiers": [0, 1],
+   "field": "invoice",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "arguments",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0, 1],
+   "field": "childApproval",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [1],
+   "field": "parentApproval",
+   "deciding_checks":
+   ["dual.arguments.amount_cents_above", "dual.arguments.amount_cents_at_most"],
+   "always": false}],
+ "call_credentials": []}

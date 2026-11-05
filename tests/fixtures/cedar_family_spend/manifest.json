@@ -20,6 +20,8 @@
   "requestVCJwsDigest": {"type": "string"},
   "requestVC": {"$ref": "#/definitions/RequestVC"},
   "now": {"$ref": "#/definitions/Timestamp"},
+  "callerIdp": {"type": "string"},
+  "callerAccount": {"type": "string"},
   "authorizationVCJwsTrustRootJwkKeyWitnesses":
   {"type": "array", "items": {"type": "string"}},
   "authorizationVC": {"$ref": "#/definitions/AuthorizationVC"},
@@ -71,7 +73,8 @@
     "role": {"$ref": "#/definitions/Role"},
     "nbf": {"$ref": "#/definitions/Timestamp"},
     "iss": {"$ref": "#/definitions/DID"},
-    "exp": {"$ref": "#/definitions/Timestamp"}},
+    "exp": {"$ref": "#/definitions/Timestamp"},
+    "accounts": {"type": "array", "items": {"$ref": "#/definitions/Account"}}},
    "additionalProperties": true},
   "Membership":
   {"type": "object",
@@ -101,6 +104,11 @@
    "properties":
    {"jws": {"$ref": "#/definitions/JWS"},
     "claims": {"$ref": "#/definitions/AuthorizationVCClaims"}},
+   "additionalProperties": false},
+  "Account":
+  {"type": "object",
+   "required": ["idp", "account"],
+   "properties": {"idp": {"type": "string"}, "account": {"type": "string"}},
    "additionalProperties": false}},
  "additionalProperties": false,
  "$schema": "http://json-schema.org/draft-07/schema#"}

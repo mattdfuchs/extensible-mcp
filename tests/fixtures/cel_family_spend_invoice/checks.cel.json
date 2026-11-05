@@ -11,6 +11,7 @@
     "solo.child_enrollment.signed_by_key",
     "solo.child_enrollment.sub_matches",
     "solo.child_enrollment.within_window",
+    "solo.child_enrollment.account_bound",
     "solo.child_enrollment.role_matches",
     "solo.arguments.amount_cents_at_most"]},
   {"tier": 1,
@@ -25,6 +26,7 @@
     "dual.child_enrollment.signed_by_key",
     "dual.child_enrollment.sub_matches",
     "dual.child_enrollment.within_window",
+    "dual.child_enrollment.account_bound",
     "dual.child_enrollment.role_matches",
     "dual.arguments.amount_cents_above",
     "dual.arguments.amount_cents_at_most",
@@ -48,66 +50,67 @@
  "engine": "cel-v1",
  "checks":
  {"solo.invoice.unexpired":
-  "((input.now < parse_json(input.invoice.canonical).exp))",
+  "(input.now < parse_json(input.invoice.canonical).exp)",
   "solo.invoice.total_matches":
-  "((parse_json(input.invoice.canonical).totalCents == input.arguments.amountCents))",
+  "(parse_json(input.invoice.canonical).totalCents == input.arguments.amountCents)",
   "solo.invoice.signed_by_trusted_merchant":
-  "((((input.trustedMerchants.exists(m, (((parse_json(input.invoice.canonical).merchantId == m.merchantId)) && ((verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, m.key)))))))))",
+  "input.trustedMerchants.exists(m, (parse_json(input.invoice.canonical).merchantId == m.merchantId) && (verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, m.key)))",
   "solo.invoice.merchant_matches":
-  "((parse_json(input.invoice.canonical).merchantId == input.arguments.merchantId))",
+  "(parse_json(input.invoice.canonical).merchantId == input.arguments.merchantId)",
   "solo.child_enrollment.within_window":
-  "(((((input.childEnrollment.claims.nbf <= input.now)) && ((input.now < input.childEnrollment.claims.exp)))))",
+  "input.childEnrollment.claims.nbf <= input.now && input.now < input.childEnrollment.claims.exp",
   "solo.child_enrollment.sub_matches":
-  "((input.childEnrollment.claims.sub == input.childApproval.credentialId))",
+  "input.childEnrollment.claims.sub == input.childApproval.credentialId",
   "solo.child_enrollment.signed_by_key":
-  "((verify_eddsa(input.childEnrollment.jws, input.childEnrollment.adminKey)))",
+  "(verify_eddsa(input.childEnrollment.jws, input.childEnrollment.adminKey))",
   "solo.child_enrollment.role_matches":
-  "((input.childEnrollment.claims.vc.credentialSubject.role == \"child\"))",
+  "input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
   "solo.child_enrollment.enrolled_by_trusted_admin":
-  "((((input.trustedAdminDids.exists(d, (((input.childEnrollment.claims.iss == d))))))))",
+  "input.trustedAdminDids.exists(d, input.childEnrollment.claims.iss == d)",
+  "solo.child_enrollment.account_bound":
+  "!has(input.callerAccount) || input.callerAccount == false || has(input.childEnrollment.claims.vc.credentialSubject.accounts) && input.childEnrollment.claims.vc.credentialSubject.accounts.exists(a, a.idp == input.callerIdp && a.account == input.callerAccount)",
   "solo.child_approval.webauthn_verified":
-  "((verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.childApproval.clientDataJSON)).origin == input.webauthnOrigin))",
+  "(verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.childApproval.clientDataJSON)).origin == input.webauthnOrigin)",
   "solo.child_approval.invoice_challenge_binds":
-  "((parse_json(base64url_decode(input.childApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical))))",
-  "solo.arguments.amount_cents_at_most":
-  "((input.arguments.amountCents <= 1000))",
+  "(parse_json(base64url_decode(input.childApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical)))",
+  "solo.arguments.amount_cents_at_most": "input.arguments.amountCents <= 1000",
   "dual.parent_enrollment.within_window":
-  "(has(input.parentEnrollment) && ((((input.parentEnrollment.claims.nbf <= input.now)) && ((input.now < input.parentEnrollment.claims.exp)))))",
+  "has(input.parentEnrollment) && input.parentEnrollment.claims.nbf <= input.now && input.now < input.parentEnrollment.claims.exp",
   "dual.parent_enrollment.sub_matches":
-  "(has(input.parentEnrollment) && has(input.parentApproval) && (input.parentEnrollment.claims.sub == input.parentApproval.credentialId))",
+  "has(input.parentEnrollment) && has(input.parentApproval) && input.parentEnrollment.claims.sub == input.parentApproval.credentialId",
   "dual.parent_enrollment.signed_by_key":
-  "(has(input.parentEnrollment) && (verify_eddsa(input.parentEnrollment.jws, input.parentEnrollment.adminKey)))",
+  "has(input.parentEnrollment) && (verify_eddsa(input.parentEnrollment.jws, input.parentEnrollment.adminKey))",
   "dual.parent_enrollment.role_matches":
-  "(has(input.parentEnrollment) && (input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"))",
+  "has(input.parentEnrollment) && input.parentEnrollment.claims.vc.credentialSubject.role == \"parent\"",
   "dual.parent_enrollment.enrolled_by_trusted_admin":
-  "(has(input.parentEnrollment) && (((input.trustedAdminDids.exists(d, (((input.parentEnrollment.claims.iss == d))))))))",
+  "has(input.parentEnrollment) && input.trustedAdminDids.exists(d, input.parentEnrollment.claims.iss == d)",
   "dual.parent_approval.webauthn_verified":
-  "(has(input.parentApproval) && has(input.parentEnrollment) && (verify_webauthn(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.parentApproval.clientDataJSON)).origin == input.webauthnOrigin))",
+  "has(input.parentApproval) && has(input.parentEnrollment) && (verify_webauthn(input.parentApproval.authenticatorData, input.parentApproval.clientDataJSON, input.parentApproval.signature, input.parentEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.parentApproval.clientDataJSON)).origin == input.webauthnOrigin)",
   "dual.parent_approval.invoice_challenge_binds":
-  "(has(input.parentApproval) && (parse_json(base64url_decode(input.parentApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical))))",
+  "has(input.parentApproval) && (parse_json(base64url_decode(input.parentApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical)))",
   "dual.invoice.unexpired":
-  "((input.now < parse_json(input.invoice.canonical).exp))",
+  "(input.now < parse_json(input.invoice.canonical).exp)",
   "dual.invoice.total_matches":
-  "((parse_json(input.invoice.canonical).totalCents == input.arguments.amountCents))",
+  "(parse_json(input.invoice.canonical).totalCents == input.arguments.amountCents)",
   "dual.invoice.signed_by_trusted_merchant":
-  "((((input.trustedMerchants.exists(m, (((parse_json(input.invoice.canonical).merchantId == m.merchantId)) && ((verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, m.key)))))))))",
+  "input.trustedMerchants.exists(m, (parse_json(input.invoice.canonical).merchantId == m.merchantId) && (verify_ed25519_raw(input.invoice.canonical, input.invoice.signature, m.key)))",
   "dual.invoice.merchant_matches":
-  "((parse_json(input.invoice.canonical).merchantId == input.arguments.merchantId))",
+  "(parse_json(input.invoice.canonical).merchantId == input.arguments.merchantId)",
   "dual.child_enrollment.within_window":
-  "(((((input.childEnrollment.claims.nbf <= input.now)) && ((input.now < input.childEnrollment.claims.exp)))))",
+  "input.childEnrollment.claims.nbf <= input.now && input.now < input.childEnrollment.claims.exp",
   "dual.child_enrollment.sub_matches":
-  "((input.childEnrollment.claims.sub == input.childApproval.credentialId))",
+  "input.childEnrollment.claims.sub == input.childApproval.credentialId",
   "dual.child_enrollment.signed_by_key":
-  "((verify_eddsa(input.childEnrollment.jws, input.childEnrollment.adminKey)))",
+  "(verify_eddsa(input.childEnrollment.jws, input.childEnrollment.adminKey))",
   "dual.child_enrollment.role_matches":
-  "((input.childEnrollment.claims.vc.credentialSubject.role == \"child\"))",
+  "input.childEnrollment.claims.vc.credentialSubject.role == \"child\"",
   "dual.child_enrollment.enrolled_by_trusted_admin":
-  "((((input.trustedAdminDids.exists(d, (((input.childEnrollment.claims.iss == d))))))))",
+  "input.trustedAdminDids.exists(d, input.childEnrollment.claims.iss == d)",
+  "dual.child_enrollment.account_bound":
+  "!has(input.callerAccount) || input.callerAccount == false || has(input.childEnrollment.claims.vc.credentialSubject.accounts) && input.childEnrollment.claims.vc.credentialSubject.accounts.exists(a, a.idp == input.callerIdp && a.account == input.callerAccount)",
   "dual.child_approval.webauthn_verified":
-  "((verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.childApproval.clientDataJSON)).origin == input.webauthnOrigin))",
+  "(verify_webauthn(input.childApproval.authenticatorData, input.childApproval.clientDataJSON, input.childApproval.signature, input.childEnrollment.claims.vc.credentialSubject.publicKey) && parse_json(base64url_decode(input.childApproval.clientDataJSON)).origin == input.webauthnOrigin)",
   "dual.child_approval.invoice_challenge_binds":
-  "((parse_json(base64url_decode(input.childApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical))))",
-  "dual.arguments.amount_cents_at_most":
-  "((input.arguments.amountCents <= 20000))",
-  "dual.arguments.amount_cents_above":
-  "((1000 < input.arguments.amountCents))"}}
+  "(parse_json(base64url_decode(input.childApproval.clientDataJSON)).challenge == base64url_encode_no_pad(sha256(input.invoice.canonical)))",
+  "dual.arguments.amount_cents_at_most": "input.arguments.amountCents <= 20000",
+  "dual.arguments.amount_cents_above": "1000 < input.arguments.amountCents"}}
