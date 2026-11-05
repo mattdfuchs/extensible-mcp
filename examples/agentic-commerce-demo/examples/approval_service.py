@@ -89,6 +89,12 @@ from extensible_mcp_vc.oauth import (
     AuthorizationServer,
     DemoUserStore,
     OAuthError,
+    ExternalIssuer,
+    ExternalIssuerConfig,
+    ExternalIssuerError,
+    check_amr,
+    eligible_roles,
+    select_role,
 )
 from extensible_mcp_vc.invoice import (
     InvoiceError,
@@ -176,20 +182,38 @@ _admin_signer = _load_admin_signer()
 _users = DemoUserStore(_WORKSPACE)
 _auth = AuthorizationServer(users=_users)
 
+# External-issuer mode: with APPROVAL_ISSUER set, the realm's tokens are the
+# only ones accepted, /authorize sends the browser to the provider and /token
+# forwards the exchange. One mode per process; see oauth.py.
+_external_config = ExternalIssuerConfig.from_env()
+_external: ExternalIssuer | None = (
+    ExternalIssuer(_external_config) if _external_config is not None else None
+)
 
-def _require_token(request: Request) -> dict[str, Any]:
+_OAUTH_STATUS = {"invalid_token": 401, "insufficient_scope": 403}
+
+
+def _refused(e: OAuthError) -> HTTPException:
+    headers = {"WWW-Authenticate": 'Bearer realm="approval"'} if e.code == "invalid_token" else None
+    return HTTPException(_OAUTH_STATUS.get(e.code, 400), f"{e.code}: {e.description}", headers=headers)
+
+
+async def _require_token(request: Request) -> dict[str, Any]:
     """Claims for the caller's bearer token, or a 401 the browser can act on.
 
     Enforced on the *endpoint*, not on page delivery: the threat is a process
-    that never loads the page and POSTs straight here.
+    that never loads the page and POSTs straight here. A provider that cannot
+    be reached is a 503, not a 401: the token was not judged.
     """
+    header = request.headers.get("Authorization")
     try:
-        return _auth.verify_token(request.headers.get("Authorization"))
+        if _external is not None:
+            return await _external.verify_token(header)
+        return _auth.verify_token(header)
     except OAuthError as e:
-        raise HTTPException(
-            401, f"{e.code}: {e.description}",
-            headers={"WWW-Authenticate": 'Bearer realm="approval"'},
-        ) from e
+        raise _refused(e) from e
+    except ExternalIssuerError as e:
+        raise HTTPException(503, str(e)) from e
 
 
 def _p256_jwk_string(public_key) -> str:
@@ -302,14 +326,23 @@ def _settle_if_ready(p: dict[str, Any]) -> None:
 async def register(request: Request) -> JSONResponse:
     """Enrol a passkey under the authenticated caller's role.
 
-    The role comes from the token and any ``role`` in the body is ignored. A
-    caller who could name its own role would self-assign authority and the
-    admin would sign it, which is the whole reason this endpoint is
-    authenticated -- authenticating the requester while still believing the
-    body would close nothing.
+    The role comes from the token. A caller who could name its own role would
+    self-assign authority and the admin would sign it, which is the whole
+    reason this endpoint is authenticated -- authenticating the requester
+    while still believing the body would close nothing. A ``role`` in the
+    body only selects when the token grants both roles, and is ignored
+    otherwise. In external-issuer mode the sign-in must also have used a
+    required authentication method (``amr``): enrollment is the first link
+    of the chain, and a password at the provider does not get to forge it.
     """
-    claims = _require_token(request)
+    claims = await _require_token(request)
     body = await request.json()
+    try:
+        role = select_role(claims, body.get("role") if isinstance(body, dict) else None)
+        if _external is not None:
+            check_amr(claims, _external.config.required_amr)
+    except OAuthError as e:
+        raise _refused(e) from e
     try:
         cred_id, public_key = parse_registration(
             _b64url_decode(body["attestationObject"])
@@ -317,7 +350,6 @@ async def register(request: Request) -> JSONResponse:
     except (WebAuthnError, KeyError, ValueError) as e:
         raise HTTPException(400, f"registration failed: {e}") from e
     cred_id_b64 = b64url_encode(cred_id)
-    role = claims["role"]
     _credentials[cred_id_b64] = {"key": public_key, "role": role}
     if _admin_signer is not None:
         _enrollments[cred_id_b64] = _mint_enrollment_vc(cred_id_b64, role, public_key)
@@ -467,7 +499,7 @@ async def approve(approval_id: str, request: Request) -> JSONResponse:
     # The assertion already proves possession of an enrolled key, so this is
     # defence in depth rather than the load-bearing check -- but an approval
     # surface that anything on the network can POST to is not one either.
-    _require_token(request)
+    await _require_token(request)
     p = _pending.get(approval_id)
     if p is None:
         raise HTTPException(404, "unknown approval")
@@ -694,7 +726,7 @@ h2{margin-top:1.4em}#status{background:#eef;padding:1em;border-radius:6px}</styl
 <h1>WebAuthn approval demo</h1>
 <p>Open a second window as the other role for a two-party approval.</p>
 <h2>1. Enroll this window</h2>
-<div>Signed in as <b id=who>\u2026</b> \u2014 this window enrolls and approves
+<div>Signed in as <b id=who>\u2026</b> <select id=rolepick hidden></select> \u2014 this window enrolls and approves
 as that role.</div>
 <button onclick=enroll()>Enroll with biometric</button>
 <h2>2. What is pending</h2>
@@ -752,24 +784,31 @@ async function boot(){
   const r=await fetch('/me',{headers:auth()});
   if(r.status===401){S.removeItem('tok');await signIn();return}
   const me=await r.json(); myRole=me.role;
-  document.getElementById('who').textContent=me.sub+' ('+me.role+')';
-  log('signed in as',me.sub,'role',me.role);
+  // A token granting both roles (an external issuer can) leaves the choice
+  // to the human; the server still only accepts a role the token grants.
+  const pick=document.getElementById('rolepick');
+  if(!myRole&&me.roles.length>1){pick.innerHTML=me.roles.map(x=>'<option>'+x+'</option>').join('');pick.hidden=false;}
+  document.getElementById('who').textContent=me.sub+' ('+(myRole||me.roles.join('/'))+')';
+  log('signed in as',me.sub,'role',myRole||me.roles.join('/'));
 }
 
 async function enroll(){
   if(!token){await signIn();return}
+  const role=myRole||document.getElementById('rolepick').value;
   const c=await navigator.credentials.create({publicKey:{
     challenge:crypto.getRandomValues(new Uint8Array(32)),
     rp:{id:location.hostname,name:'Approval demo'},
-    user:{id:crypto.getRandomValues(new Uint8Array(16)),name:myRole,displayName:myRole},
+    user:{id:crypto.getRandomValues(new Uint8Array(16)),name:role,displayName:role},
     pubKeyCredParams:[{type:'public-key',alg:-7}],
     authenticatorSelection:{userVerification:'required',residentKey:'preferred'},
     attestation:'none'}});
-  // No role in the body: the server takes it from the token. Sending one
-  // would be ignored, and relying on it is the bug this flow removes.
+  // The server takes the role from the token; a role in the body only
+  // selects between two the token already grants, and is otherwise ignored.
+  // Relying on the body is the bug this flow removes.
   const r=await fetch('/register',{method:'POST',
     headers:{'content-type':'application/json',...auth()},
-    body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject)})});
+    body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject),
+      ...(myRole?{}:{role})})});
   if(r.status===401){log('session expired; signing in again');S.removeItem('tok');await signIn();return}
   const j=await r.json(); credentialId=j.credentialId; log('enrolled as',j.role,'('+credentialId.slice(0,10)+'\\u2026)');
 }
@@ -837,14 +876,20 @@ boot(); setInterval(poll,1500); poll();
 
 # -- OAuth 2.0: authorization code + PKCE ---------------------------------- #
 #
-# The demo is its own authorization server, and today the only one it accepts:
-# `verify_token` trusts no external issuer. The page speaks the flow a real IdP
-# speaks so that a later swap to Entra, Keycloak, Okta or Auth0 replaces these
-# three endpoints and the verifier, not the page (issue #47).
+# The demo is its own authorization server unless APPROVAL_ISSUER points it at
+# an external one. The page speaks the flow a real IdP speaks, so the swap is
+# these three endpoints and the verifier, never the page: in external mode
+# GET /authorize redirects to the provider, POST /token forwards the code
+# exchange, and the login form is gone.
+
+
+def _absolute(request: Request, redirect_uri: str) -> str:
+    """The page registers ``/`` as its redirect; a provider needs it absolute."""
+    return _origin(request) + redirect_uri if redirect_uri.startswith("/") else redirect_uri
 
 
 @app.get("/authorize")
-async def authorize_form(request: Request) -> HTMLResponse:
+async def authorize_form(request: Request) -> Response:
     q = request.query_params
     try:
         _auth.validate_authorization_request(
@@ -856,6 +901,16 @@ async def authorize_form(request: Request) -> HTMLResponse:
         )
     except OAuthError as e:
         raise HTTPException(400, f"{e.code}: {e.description}") from e
+    if _external is not None:
+        try:
+            target = await _external.authorize_url(
+                redirect_uri=_absolute(request, q["redirect_uri"]),
+                code_challenge=q["code_challenge"],
+                state=q.get("state", ""),
+            )
+        except ExternalIssuerError as e:
+            raise HTTPException(503, str(e)) from e
+        return RedirectResponse(target, status_code=302)
     return HTMLResponse(
         _LOGIN_PAGE.replace("__REDIRECT_URI__", html.escape(q["redirect_uri"], quote=True))
         .replace("__CHALLENGE__", html.escape(q["code_challenge"], quote=True))
@@ -865,6 +920,8 @@ async def authorize_form(request: Request) -> HTMLResponse:
 
 @app.post("/authorize")
 async def authorize_submit(request: Request) -> Response:
+    if _external is not None:
+        raise HTTPException(404, "sign-in is at the identity provider in external-issuer mode")
     form = await request.form()
     try:
         _auth.validate_authorization_request(
@@ -900,6 +957,21 @@ async def authorize_submit(request: Request) -> Response:
 @app.post("/token")
 async def token(request: Request) -> JSONResponse:
     form = await request.form()
+    if _external is not None:
+        try:
+            status, body = await _external.exchange_code(
+                code=str(form.get("code", "")),
+                code_verifier=str(form.get("code_verifier", "")),
+                redirect_uri=_absolute(request, str(form.get("redirect_uri", ""))),
+                client_id=str(form.get("client_id", "")),
+            )
+        except OAuthError as e:
+            return JSONResponse(
+                {"error": e.code, "error_description": e.description}, status_code=400
+            )
+        except ExternalIssuerError as e:
+            raise HTTPException(503, str(e)) from e
+        return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
     try:
         granted = _auth.exchange_code(
             code=str(form.get("code", "")),
@@ -917,9 +989,13 @@ async def token(request: Request) -> JSONResponse:
 @app.get("/me")
 async def me(request: Request) -> JSONResponse:
     """Who the token says you are. The page reads its role from here rather
-    than from a control the user can set."""
-    claims = _require_token(request)
-    return JSONResponse({"sub": claims["sub"], "role": claims["role"]})
+    than from a control the user can set; ``role`` is null when the token
+    grants both and the human has to pick."""
+    claims = await _require_token(request)
+    roles = eligible_roles(claims)
+    return JSONResponse(
+        {"sub": claims["sub"], "role": roles[0] if len(roles) == 1 else None, "roles": roles}
+    )
 
 
 @app.get("/")
@@ -931,7 +1007,14 @@ if __name__ == "__main__":
     # Printed on every start, because the human needs them and they are
     # random. In the containerized demo this lands in the log served at
     # :7300/logs.
-    print(_users.banner(), flush=True)
+    if _external is not None:
+        print(
+            f"[approval] sign-in via external issuer {_external.config.issuer} "
+            f"(client {_external.config.client_id}); the local passwords do not apply",
+            flush=True,
+        )
+    else:
+        print(_users.banner(), flush=True)
     uvicorn.run(
         app,
         host=os.environ.get("APPROVAL_HOST", "127.0.0.1"),
