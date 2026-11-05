@@ -144,6 +144,21 @@ recipe's "Point the demo at it" section is the one-command way to run it
 alongside and sign in against it. [`keycloak/README.md`](keycloak/README.md)
 says what each mapper is for and what silently breaks without it.
 
+**The business shape.** Run that way, the family side is an organization
+with its own security infrastructure: Keycloak is its identity provider,
+the proxy is its enforcement point over HTTP with a verified principal on
+every call (the console signs in at Keycloak and holds one MCP session per
+signed-in person, presenting that person's token for the proxy's own
+audience), the approval service is its passkey authority, and the parlor is
+the other organization. The memberships the admin signs at first boot carry
+each member's account at the provider, so the production bundles'
+`account_bound` check ties the console session to the wallet that signed:
+Keycloak says who is at the console, the admin says which member that
+account is, and the member's key says what was requested. A prompt-injected
+assistant holding a stolen request credential fails because the session is
+not that member. Without the issuer, the default `up` is the home shape:
+one household on loopback, no inbound auth, every principal `None`.
+
 **What is still open.** Three endpoints on `:7500` remain unauthenticated
 because their callers are other processes rather than humans, and giving them
 service credentials is separate work: `/trust-merchant` (configuration
