@@ -81,3 +81,14 @@ So a regeneration does not drop them as "demo noise":
   is no `aud` claim at all.
 - Profile fields on both users, so `VERIFY_PROFILE` does not block the first
   login.
+- A **second client**, `family-console`, for the chat console: its own
+  redirect and web origin (`:7300`), its own audience mapper (`family-proxy`),
+  the same role and AMR mappers, and its own `scopeMappings` entry. One
+  client per browser surface and one audience per resource server, so a
+  token for the passkey page is never a token for the proxy.
+- The two users' **`id`s**, pinned. Keycloak keeps an `id` the import file
+  carries (measured on the pinned version), and `setup.py` binds
+  `(issuer, id)` into each member's membership credential at first boot,
+  before anyone has signed in; a regenerated export would mint new ids and
+  silently unbind every membership. `tests/test_keycloak_realm.py` pins the
+  values.
