@@ -193,14 +193,24 @@ delivered to 12 Main St"):
    what it can sign.
 2. **Invoice** — `request_invoice` returns the merchant-signed terms
    (items, prices, total, delivery address, expiry, single-use nonce).
-3. **Approve + settle** — `request_invoice_approval` sends it to the
-   family side: the approval service refuses untrusted merchants outright,
-   the required humans passkey-sign the **invoice hash** in the `:7500`
-   tab, and on full approval the rail (mock by default, or Stripe with the
-   Stripe-enabled build plus `SETTLEMENT=stripe` + `STRIPE_API_KEY` — see
-   "Stripe is opt-in at build time" above) is charged once and returns a
-   settlement-signed **receipt**.
-4. **Fulfill** — the chat console's assistant presents the receipt to the
+3. **Approve** — `request_invoice_approval` sends it to the family side:
+   the approval service refuses untrusted merchants outright, and otherwise
+   opens an approval *task* and returns at once (`input_required`, a task
+   id, and the window the merchant signed). The assistant tells the human
+   to approve and ends its turn; nothing waits. The required humans
+   passkey-sign the **invoice hash** in the `:7500` tab, the service
+   announces the task's terminal state on its event stream (the id and
+   status only, never the evidence), and the console resumes the
+   conversation. The assistant fetches the outcome by id with
+   `approval_result`. A task nobody acts on expires on its own when the
+   invoice does. This is the shape of the MCP Tasks extension, carried by
+   the demo until the SDK carries it.
+4. **Settle** — `charge_invoice` with the evidence: the rail (mock by
+   default, or Stripe with the Stripe-enabled build plus
+   `SETTLEMENT=stripe` + `STRIPE_API_KEY` — see "Stripe is opt-in at build
+   time" above) is charged once and returns a settlement-signed
+   **receipt**.
+5. **Fulfill** — the chat console's assistant presents the receipt to the
    parlor's `fulfill` tool; the merchant verifies it against the rail it
    trusts and the invoice it actually issued (single-use), schedules the
    delivery, and returns a merchant-signed **fulfillment commitment**.
