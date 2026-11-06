@@ -30,6 +30,8 @@ _loads = itertools.count()
 
 
 class FakeAgent:
+    busy = False
+
     def __init__(self, label):
         self.label, self.turns = label, []
 
@@ -208,6 +210,20 @@ def test_without_a_provider_the_console_is_anonymous_and_has_no_sign_in(monkeypa
         assert r.status_code == 200 and r.json()["reply"] == "household heard: hi"
         assert mod.opened == []
         assert "const EXTERNAL = false;" in c.get("/").text
+
+
+def test_a_message_while_the_assistant_is_busy_is_refused_with_the_reply_to_show(monkeypatch):
+    mod = load_console(monkeypatch)
+    with TestClient(mod.app) as c:
+        mod.app.state.agent.busy = True
+        r = c.post("/chat", json={"message": "did you send it?"})
+        assert r.status_code == 409
+        assert r.json()["detail"] == mod.BUSY_REPLY
+        assert mod.app.state.agent.turns == []
+        mod.app.state.agent.busy = False
+        assert c.post("/chat", json={"message": "hi"}).status_code == 200
+        page = c.get("/").text
+    assert "res.status === 409" in page and "input.disabled = true" in page
 
 
 def test_the_page_knows_which_mode_it_is_in(external):
