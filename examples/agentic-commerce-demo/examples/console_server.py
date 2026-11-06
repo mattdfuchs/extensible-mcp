@@ -45,7 +45,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from extensible_mcp.client_manager import negotiate
 
-from extensible_mcp_vc.chat_agent import ChatAgent
+from extensible_mcp_vc.chat_agent import BUSY_REPLY, AgentBusy, ChatAgent
 from extensible_mcp_vc.oauth import (
     CONSOLE_CLIENT_ID,
     PROXY_AUDIENCE,
@@ -261,9 +261,15 @@ async def chat(request: Request) -> JSONResponse:
         agent, who = seat.agent, f"user {seat.sub}"
     else:
         agent, who = request.app.state.agent, "user"
+    if agent.busy:
+        # Not logged as the user's line: the turn it would interleave with
+        # is still narrating, and this message never reaches the model.
+        raise HTTPException(409, BUSY_REPLY)
     _log(f"{who}: {message}")
     try:
         reply = await agent.turn(message)
+    except AgentBusy as e:
+        raise HTTPException(409, str(e)) from e
     except Exception as e:  # noqa: BLE001 - surfaced to the chat, not a bare 500
         _log(f"error: {e}")
         raise HTTPException(502, str(e)) from e
@@ -487,6 +493,9 @@ form.addEventListener('submit', async (e) => {
   input.value = '';
   addMessage('user', message);
   const pending = addMessage('pending', 'thinking...');
+  // One message in flight at a time: the server refuses a second one with
+  // 409 anyway, but a disabled box says so before the user types it.
+  input.disabled = true;
   try {
     const res = await fetch('/chat', {
       method: 'POST',
@@ -496,10 +505,15 @@ form.addEventListener('submit', async (e) => {
     if (res.status === 401 && EXTERNAL) { pending.remove(); S.removeItem('tok'); await signIn(); return; }
     const data = await res.json();
     pending.remove();
-    addMessage('assistant', res.ok ? data.reply : ('Error: ' + (data.detail || res.status)));
+    if (res.ok) addMessage('assistant', data.reply);
+    else if (res.status === 409) addMessage('assistant', data.detail);
+    else addMessage('assistant', 'Error: ' + (data.detail || res.status));
   } catch (err) {
     pending.remove();
     addMessage('assistant', 'Error: ' + err);
+  } finally {
+    input.disabled = false;
+    input.focus();
   }
 });
 boot();
