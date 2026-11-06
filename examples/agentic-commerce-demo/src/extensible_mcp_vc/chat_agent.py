@@ -17,12 +17,29 @@ process that owns the MCP session and Anthropic client this class is handed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 DEFAULT_MODEL = "claude-sonnet-5"
+
+BUSY_REPLY = (
+    "I'm still working on your previous message — if it asked for an "
+    "approval, it is waiting on the passkey tab. Approve or decline there, "
+    "and I'll answer once that finishes."
+)
+
+
+class AgentBusy(RuntimeError):
+    """A turn is already running on this agent.
+
+    Turns are not queued on purpose: the approval leg waits minutes for a
+    passkey ceremony, and a message queued behind it would hang the
+    browser with no explanation. The console turns this into an immediate
+    reply instead.
+    """
 
 DEFAULT_SYSTEM = (
     "You are a household assistant reachable through a chat window. You "
@@ -119,12 +136,36 @@ class ChatAgent:
     log: LogFn = field(default=lambda line: None)
     max_tool_rounds: int = 20
     history: list[dict[str, Any]] = field(default_factory=list)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    @property
+    def busy(self) -> bool:
+        return self._lock.locked()
 
     async def turn(self, user_message: str) -> str:
         """Run one full turn: the user's message, any number of tool calls
         against the proxy, until Claude produces a final text reply — or
         ``max_tool_rounds`` is hit, which surfaces as a plain error string
-        rather than looping forever against a stuck approval."""
+        rather than looping forever against a stuck approval.
+
+        One turn at a time: a second message while one is running raises
+        :class:`AgentBusy` rather than interleaving with it, because the
+        history is one conversation and every ``tool_use`` must be answered
+        by the very next message. A turn that raises rolls the history back
+        to where it started for the same reason: a dangling ``tool_use`` or
+        a stray user message would make every later turn fail too.
+        """
+        if self._lock.locked():
+            raise AgentBusy(BUSY_REPLY)
+        async with self._lock:
+            mark = len(self.history)
+            try:
+                return await self._turn(user_message)
+            except BaseException:
+                del self.history[mark:]
+                raise
+
+    async def _turn(self, user_message: str) -> str:
         self.history.append({"role": "user", "content": user_message})
         tools = _mcp_tools_to_anthropic(await self.session.list_tools())
         for _ in range(self.max_tool_rounds):
