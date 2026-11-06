@@ -9,11 +9,12 @@ before an infinite loop against a permanently-denying tool."""
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from extensible_mcp_vc.chat_agent import ChatAgent, DEFAULT_MODEL
+from extensible_mcp_vc.chat_agent import BUSY_REPLY, AgentBusy, ChatAgent, DEFAULT_MODEL
 
 # -- stub MCP session ------------------------------------------------------- #
 
@@ -182,3 +183,72 @@ async def test_log_records_call_and_result(tools):
 
 def test_default_model_is_a_claude_5_family_model():
     assert DEFAULT_MODEL.startswith("claude-")
+
+
+# -- one turn at a time, and a failed turn leaves no trace ------------------- #
+
+
+class BlockingAnthropic:
+    """``create()`` parks until released — a turn stuck on the model, or on
+    a tool call the model made, looks the same from the outside."""
+
+    def __init__(self, response):
+        self._response = response
+        self.release = asyncio.Event()
+
+    async def create(self, **kwargs):
+        await self.release.wait()
+        return self._response
+
+
+async def test_a_second_message_mid_turn_is_refused_not_interleaved(tools):
+    session = StubSession(tools, call_tool_fn=lambda name, args: pytest.fail("unused"))
+    anthropic = BlockingAnthropic(_response("end_turn", [_text_block("done")]))
+    agent = ChatAgent(session=session, anthropic_messages=anthropic)
+
+    first = asyncio.create_task(agent.turn("order a pizza"))
+    await asyncio.sleep(0)  # let the first turn take the lock and park
+    assert agent.busy
+
+    with pytest.raises(AgentBusy) as excinfo:
+        await agent.turn("did you send it?")
+    assert str(excinfo.value) == BUSY_REPLY
+
+    anthropic.release.set()
+    assert await first == "done"
+    assert not agent.busy
+    # the refused message never entered the conversation
+    assert [m["content"] for m in agent.history if m["role"] == "user"] == ["order a pizza"]
+
+
+class FailingAnthropic:
+    """Answers one tool_use, then the API refuses the conversation."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return _response(
+                "tool_use", [_tool_use_block("t1", "search_tools", {"query": "pizza"})]
+            )
+        if self.calls == 2:
+            raise RuntimeError("Error code: 400 - invalid_request_error")
+        return _response("end_turn", [_text_block("Second time lucky.")])
+
+
+async def test_a_turn_that_raises_rolls_the_history_back_so_the_next_turn_works(tools):
+    session = StubSession(tools, call_tool_fn=lambda name, args: _text_result("[]"))
+    agent = ChatAgent(session=session, anthropic_messages=FailingAnthropic())
+
+    with pytest.raises(RuntimeError, match="400"):
+        await agent.turn("order a pizza")
+
+    # nothing of the failed turn survives: not the user line, not the
+    # tool_use, not the tool_result that answered it
+    assert agent.history == []
+    assert not agent.busy
+
+    assert await agent.turn("try again") == "Second time lucky."
+    assert [m["role"] for m in agent.history] == ["user", "assistant"]
