@@ -135,6 +135,13 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
 
   Signing in as `parent` is what makes that window the parent — enrollment
   takes the role from the token, not from a control on the page.
+- **Approve logs `rejected ... invalid_token: token has expired`** — the
+  passkey page's sign-in lasts an hour. The page now signs you in again when
+  that happens (before the Touch ID prompt when it can tell, after the 401
+  when it cannot) and keeps the enrolled credential across that round trip,
+  so enter the password again and press Approve once more; do not re-enroll.
+  If the invoice expired meanwhile (the Log says `EXPIRED`), ask the
+  assistant to order again.
 - **Passkey prompt errors / credential not found** — you enrolled before a
   container restart (in-memory), or opened `127.0.0.1` instead of
   `localhost`. Re-enroll both roles.
