@@ -400,3 +400,25 @@ def test_console_client_redirects_to_the_console(realm: dict) -> None:
     assert console["redirectUris"] == ["http://localhost:7300/*"]
     assert console["webOrigins"] == ["http://localhost:7300"]
     assert console["attributes"]["pkce.code.challenge.method"] == "S256"
+
+
+# --------------------------------------------------------------------------- #
+# the first passkey is an operator step the recipe ships, not an admin-console tour
+# --------------------------------------------------------------------------- #
+
+
+def test_first_passkey_commands_exist_and_are_documented() -> None:
+    """The realm has no mail server, so Keycloak's own action link cannot be
+    sent; the recipe's two commands are the way the users get their first
+    passkey, and the recipe must send people to them rather than to a
+    Credential Reset that only emails."""
+    script = DEPLOY / "first_passkeys.py"
+    assert script.exists()
+    text = script.read_text()
+    for needle in ('"arm"', '"seal"', "webauthn-register-passwordless",
+                   "webauthn-passwordless-browser", "KEYCLOAK_URL"):
+        assert needle in text
+    recipe = RECIPE.read_text()
+    assert "first_passkeys.py arm" in recipe and "first_passkeys.py seal" in recipe
+    assert "Copy link" not in recipe.replace("no link to copy", "")
+    assert "Private window" in recipe
