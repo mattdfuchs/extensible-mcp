@@ -765,7 +765,8 @@ request can only be created by a merchant-signed invoice, never from this page.<
 <div id=status>no request yet</div>
 <h2>Log</h2><pre id=log></pre>
 <script>
-const log=(...a)=>document.getElementById('log').textContent=a.join(' ')+"\\n"+document.getElementById('log').textContent;
+const log=(...a)=>document.getElementById('log').textContent=
+  new Date().toLocaleTimeString()+' '+a.join(' ')+"\\n"+document.getElementById('log').textContent;
 const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
 const unb64=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s),c=>c.charCodeAt(0))};
 let credentialId=null, myRole=null, token=null;
@@ -801,6 +802,17 @@ async function completeSignIn(){
 }
 
 const auth=()=>({'authorization':'Bearer '+token});
+// The token's own exp, read here only so a Touch ID is not spent on a request
+// the server is about to refuse; the server's check is the one that counts,
+// and a 401 from any endpoint ends in signIn() regardless.
+function tokenExpired(){
+  try{const c=JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    return typeof c.exp==='number'&&c.exp*1000<Date.now()+30000;}
+  catch(e){return false}
+}
+async function sessionExpired(){
+  log('session expired; signing in again'); S.removeItem('tok'); await signIn();
+}
 
 async function boot(){
   await completeSignIn();
@@ -809,6 +821,9 @@ async function boot(){
   const r=await fetch('/me',{headers:auth()});
   if(r.status===401){S.removeItem('tok');await signIn();return}
   const me=await r.json(); myRole=me.role;
+  // The enrolled credential survives a sign-in round trip the same way the
+  // token does, so an expired session does not mean enrolling again.
+  if(S.getItem('cred')&&(!myRole||S.getItem('cred_role')===myRole)) credentialId=S.getItem('cred');
   // A token granting both roles (an external issuer can) leaves the choice
   // to the human; the server still only accepts a role the token grants.
   const pick=document.getElementById('rolepick');
@@ -819,6 +834,7 @@ async function boot(){
 
 async function enroll(){
   if(!token){await signIn();return}
+  if(tokenExpired()){await sessionExpired();return}
   const role=myRole||document.getElementById('rolepick').value;
   const c=await navigator.credentials.create({publicKey:{
     challenge:crypto.getRandomValues(new Uint8Array(32)),
@@ -834,16 +850,21 @@ async function enroll(){
     headers:{'content-type':'application/json',...auth()},
     body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject),
       ...(myRole?{}:{role})})});
-  if(r.status===401){log('session expired; signing in again');S.removeItem('tok');await signIn();return}
-  const j=await r.json(); credentialId=j.credentialId; log('enrolled as',j.role,'('+credentialId.slice(0,10)+'\\u2026)');
+  if(r.status===401){await sessionExpired();return}
+  const j=await r.json(); credentialId=j.credentialId;
+  S.setItem('cred',credentialId); S.setItem('cred_role',j.role);
+  log('enrolled as',j.role,'('+credentialId.slice(0,10)+'\\u2026)');
 }
 async function approve(){
   if(!credentialId){log('enroll this window first');return}
+  if(!token){await signIn();return}
+  if(tokenExpired()){await sessionExpired();return}
   const pr=await fetch('/pending');
   if(!pr.ok){log('no request to approve');return}
   const cur=await pr.json();
+  if(cur.status!=='pending'){log('nothing is awaiting approval (the last request is '+cur.status+')');return}
   const s=cur.action||cur.invoice||{}; const who=s.merchant?(' at '+s.merchant):'';
-  const desc='$'+((s.amountCents||0)/100).toFixed(2)+who;
+  const desc='$'+((s.amountCents||s.totalCents||0)/100).toFixed(2)+who;
   let a; try{
     a=await navigator.credentials.get({publicKey:{
       challenge:unb64(cur.challenge),rpId:location.hostname,
@@ -853,7 +874,10 @@ async function approve(){
     headers:{'content-type':'application/json',...auth()},
     body:JSON.stringify({credentialId,authenticatorData:b64(a.response.authenticatorData),
       clientDataJSON:b64(a.response.clientDataJSON),signature:b64(a.response.signature)})});
+  if(r.status===401){await sessionExpired();return}
   const j=await r.json();
+  if(r.status===400&&String(j.detail||'').startsWith('unknown credential')){
+    S.removeItem('cred'); S.removeItem('cred_role'); credentialId=null;}
   log(r.ok?('approved '+desc+' by '+myRole+' \\u2014 '+j.status):('rejected '+desc+': '+(j.detail||JSON.stringify(j))));
 }
 // The amt/merch fields and the section-3 status both mirror the live
