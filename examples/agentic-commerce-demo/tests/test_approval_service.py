@@ -320,3 +320,14 @@ def test_page_recovers_from_an_expired_session_without_re_enrolling(client):
     assert "S.setItem('cred',credentialId)" in page
     assert "credentialId=S.getItem('cred')" in page
     assert "new Date().toLocaleTimeString()" in page
+
+
+def test_page_reports_a_refused_enrolment_and_signs_in_afresh(client):
+    """A 403 from /register (the sign-in was not by passkey) used to leave
+    the page silent, with "enroll this window first" as the only symptom
+    later; it now logs the server's sentence and asks the provider for a
+    new authentication rather than a silent re-issue of the same token."""
+    page = client.get("/").text
+    assert "log('enrolment refused: '+(j.detail||JSON.stringify(j)))" in page
+    assert "if(r.status===403){" in page and "await signIn(true)" in page
+    assert "if(fresh) q.set('prompt','login');" in page

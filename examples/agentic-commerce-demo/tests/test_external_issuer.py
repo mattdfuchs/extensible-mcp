@@ -214,6 +214,18 @@ def test_authorize_sends_the_browser_to_the_provider(client):
     }
 
 
+def test_only_prompt_login_crosses_to_the_provider(client):
+    """After a refused enrolment the page asks for a fresh authentication
+    (``prompt=login``); nothing else the address bar carries is relayed."""
+    r = client.get("/authorize", params={**PAGE_QUERY, "prompt": "login"}, follow_redirects=False)
+    assert r.status_code == 302
+    assert parse_qs(urlparse(r.headers["location"]).query)["prompt"] == ["login"]
+    r = client.get("/authorize", params={**PAGE_QUERY, "prompt": "none"}, follow_redirects=False)
+    assert "prompt" not in parse_qs(urlparse(r.headers["location"]).query)
+    r = client.get("/authorize", params=PAGE_QUERY, follow_redirects=False)
+    assert "prompt" not in parse_qs(urlparse(r.headers["location"]).query)
+
+
 def test_authorize_still_validates_the_request_before_redirecting(client):
     r = client.get("/authorize", params={**PAGE_QUERY, "code_challenge_method": "plain"})
     assert r.status_code == 400

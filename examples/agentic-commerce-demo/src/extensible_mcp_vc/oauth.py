@@ -537,9 +537,17 @@ class ExternalIssuer:
             raise OAuthError("invalid_token", "token names nobody")
         return claims
 
-    async def authorize_url(self, *, redirect_uri: str, code_challenge: str, state: str) -> str:
+    async def authorize_url(
+        self, *, redirect_uri: str, code_challenge: str, state: str, fresh: bool = False
+    ) -> str:
         """Where to send the browser: the provider's authorize endpoint, as
-        published (the browser reaches the provider at the public issuer)."""
+        published (the browser reaches the provider at the public issuer).
+
+        ``fresh`` asks the provider to authenticate again (``prompt=login``)
+        rather than reuse its session: the page needs that when its token
+        was not produced by a passkey, since a silent re-issue from the same
+        session would carry the same ``amr``.
+        """
         endpoint = (await self.discovery())["authorization_endpoint"]
         query = {
             "response_type": "code",
@@ -551,6 +559,8 @@ class ExternalIssuer:
         }
         if state:
             query["state"] = state
+        if fresh:
+            query["prompt"] = "login"
         return endpoint + ("&" if "?" in endpoint else "?") + urlencode(query)
 
     async def exchange_code(

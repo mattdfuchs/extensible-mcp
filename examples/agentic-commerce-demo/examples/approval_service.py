@@ -753,11 +753,15 @@ const S=sessionStorage;
 const rnd=n=>b64(crypto.getRandomValues(new Uint8Array(n)));
 async function s256(v){return b64(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)))}
 
-async function signIn(){
+// fresh: authenticate again at the provider (prompt=login) rather than
+// reuse its session. After a refused enrolment the token itself is the
+// problem, and a silent re-issue from the same session would be the same.
+async function signIn(fresh){
   const verifier=rnd(48); S.setItem('pkce_v',verifier);
   const state=rnd(12); S.setItem('pkce_s',state);
   const q=new URLSearchParams({response_type:'code',client_id:'approval-page',
     redirect_uri:'/',state,code_challenge:await s256(verifier),code_challenge_method:'S256'});
+  if(fresh) q.set('prompt','login');
   location.href='/authorize?'+q;
 }
 
@@ -826,7 +830,17 @@ async function enroll(){
     body:JSON.stringify({credentialId:b64(c.rawId),attestationObject:b64(c.response.attestationObject),
       ...(myRole?{}:{role})})});
   if(r.status===401){await sessionExpired();return}
-  const j=await r.json(); credentialId=j.credentialId;
+  const j=await r.json();
+  if(!r.ok){
+    // Say so: a refusal that reached only the console left "enroll this
+    // window first" as the one visible symptom, minutes later.
+    log('enrolment refused: '+(j.detail||JSON.stringify(j)));
+    // insufficient_scope: this sign-in did not use a passkey (a password at
+    // the provider, say). Only a new sign-in can change that.
+    if(r.status===403){log('signing in again, with your passkey this time');S.removeItem('tok');await signIn(true);}
+    return;
+  }
+  credentialId=j.credentialId;
   S.setItem('cred',credentialId); S.setItem('cred_role',j.role);
   log('enrolled as',j.role,'('+credentialId.slice(0,10)+'\\u2026)');
 }
@@ -931,6 +945,9 @@ async def authorize_form(request: Request) -> Response:
                 redirect_uri=_absolute(request, q["redirect_uri"]),
                 code_challenge=q["code_challenge"],
                 state=q.get("state", ""),
+                # Only this one value crosses to the provider; anything else
+                # the page could put in the address bar stays here.
+                fresh=q.get("prompt") == "login",
             )
         except ExternalIssuerError as e:
             raise HTTPException(503, str(e)) from e
