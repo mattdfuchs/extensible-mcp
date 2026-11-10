@@ -422,3 +422,7 @@ def test_first_passkey_commands_exist_and_are_documented() -> None:
     assert "first_passkeys.py arm" in recipe and "first_passkeys.py seal" in recipe
     assert "Copy link" not in recipe.replace("no link to copy", "")
     assert "Private window" in recipe
+    # After seal: a new window, not a reload. The page keeps its sign-in in
+    # the window, and the arm step's cannot enrol (no hwk) -- the live test.
+    assert "closes their window and opens a new one" in recipe
+    assert "Everyone reloads" not in recipe and "Everyone reloads" not in text

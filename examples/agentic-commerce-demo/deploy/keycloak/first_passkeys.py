@@ -134,7 +134,11 @@ def seal(kc: Admin) -> None:
     for u in users:
         kinds = sorted(c["type"] for c in kc.credentials(u["id"]))
         print(f"  {u['username']:<8} credentials: {', '.join(kinds)}")
-    print("\nEveryone reloads their window and signs in with username plus passkey.")
+    print(
+        "\nEveryone closes their window and opens a new one at the approval page:"
+        "\nthe sign-in is now username plus passkey, and the page cannot enrol under"
+        "\nthe one the arm step left in the old window."
+    )
 
 
 def main(argv: list[str]) -> int:

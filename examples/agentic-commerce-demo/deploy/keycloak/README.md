@@ -125,8 +125,8 @@ Then, once:
 1. Give `parent` and `child` their first passkey with the two commands in
    [The users, and their first passkey](#the-users-and-their-first-passkey);
    the realm ships the users with no credential.
-2. Open `http://localhost:7500`. The page sends you to Keycloak; sign in with
-   the passkey; you come back signed in as that user, and **Enrol** mints the
+2. Open `http://localhost:7500` in a new window, not one left from step 1.
+   The page sends you to Keycloak; sign in with the passkey; you come back signed in as that user, and **Enrol** mints the
    admin-signed enrollment under the role the token carries. A user holding
    both roles is asked which one to enrol under. The other role does the same
    in a **Private window**: Keycloak signs a whole browser window in with one
@@ -314,7 +314,10 @@ python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py seal
 
 refuses until every user holds a `webauthn-passwordless` credential, puts
 the passwordless flow back, deletes the passwords and ends every session.
-Everyone reloads, and the sign-in is now username plus passkey. Neither
+Everyone then **closes their window and opens a new one** at
+`http://localhost:7500`: the page keeps its sign-in in the window, and the
+one from the arm step cannot enrol (the token carries no `hwk`); a reload
+would keep it, a new window asks for username plus passkey. Neither
 command touches the committed realm file; `KEYCLOAK_URL`, `KEYCLOAK_ADMIN`,
 `KEYCLOAK_ADMIN_PASSWORD` and `KEYCLOAK_REALM` override the overlay's
 defaults.
