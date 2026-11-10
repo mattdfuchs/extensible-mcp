@@ -109,10 +109,10 @@ def arm(kc: Admin) -> None:
         kc.put(f"/users/{u['id']}", {"requiredActions": [REGISTER]})
         print(f"  {u['username']:<8} {password}")
     print(
-        "\nEach person: open http://localhost:7500 in a browser window of their own\n"
-        "(two roles need two cookie jars: a Private window for the second), sign in\n"
-        "with the password above, register the passkey when asked, and stop there.\n"
-        "Then run: first_passkeys.py seal"
+        "\nEach person: open http://localhost:7500/first-passkey in a browser window\n"
+        "of their own (a Private window for the second role), sign in with the\n"
+        "password above, register the passkey when asked, and close the window at\n"
+        "\"Thank you\". Then run: first_passkeys.py seal"
     )
 
 
@@ -135,9 +135,9 @@ def seal(kc: Admin) -> None:
         kinds = sorted(c["type"] for c in kc.credentials(u["id"]))
         print(f"  {u['username']:<8} credentials: {', '.join(kinds)}")
     print(
-        "\nEveryone closes their window and opens a new one at the approval page:"
-        "\nthe sign-in is now username plus passkey, and the page cannot enrol under"
-        "\nthe one the arm step left in the old window."
+        "\nNow, each in a new window of their own (a Private window for the second\n"
+        "role): open http://localhost:7500, sign in with username plus passkey, and\n"
+        "press Enroll. Then the child opens http://localhost:7300 for the assistant."
     )
 
 

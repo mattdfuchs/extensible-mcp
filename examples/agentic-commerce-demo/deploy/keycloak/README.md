@@ -123,10 +123,12 @@ What the fragment sets, and why each line is there:
 Then, once:
 
 1. Give `parent` and `child` their first passkey with the two commands in
-   [The users, and their first passkey](#the-users-and-their-first-passkey);
-   the realm ships the users with no credential.
-2. Open `http://localhost:7500` in a new window, not one left from step 1.
-   The page sends you to Keycloak; sign in with the passkey; you come back signed in as that user, and **Enrol** mints the
+   [The users, and their first passkey](#the-users-and-their-first-passkey):
+   `arm`, a sign-in by each at `http://localhost:7500/first-passkey` that
+   registers the passkey and ends at a thank-you page, then `seal`. The realm
+   ships the users with no credential.
+2. Open `http://localhost:7500` in a new window. The page sends you to
+   Keycloak; sign in with the passkey; you come back signed in as that user, and **Enrol** mints the
    admin-signed enrollment under the role the token carries. A user holding
    both roles is asked which one to enrol under. The other role does the same
    in a **Private window**: Keycloak signs a whole browser window in with one
@@ -302,11 +304,13 @@ python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py arm
 
 points the realm's browser flow at Keycloak's built-in password flow, gives
 each user a one-off password, prints it, and arms the register-passkey
-required action. Each person then opens `http://localhost:7500` in a window
-of their own (a Private window for the second role), signs in with that
-password, registers the passkey with the authenticator when the flow asks,
-and stops there — the token this sign-in produced carries `pwd`, not `hwk`,
-so the page would refuse to enrol under it anyway. Then
+required action. Each person then opens `http://localhost:7500/first-passkey`
+in a window of their own (a Private window for the second role), signs in
+with that password, registers the passkey with the authenticator when the
+flow asks, and lands on a page that says thank you and nothing else: it
+exchanges no code and keeps no token, since a sign-in by password carries no
+`hwk` and could not enrol anyway, and a token left in the window is what
+sent the live test astray. Close the window. Then
 
 ```sh
 python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py seal
@@ -314,10 +318,9 @@ python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py seal
 
 refuses until every user holds a `webauthn-passwordless` credential, puts
 the passwordless flow back, deletes the passwords and ends every session.
-Everyone then **closes their window and opens a new one** at
-`http://localhost:7500`: the page keeps its sign-in in the window, and the
-one from the arm step cannot enrol (the token carries no `hwk`); a reload
-would keep it, a new window asks for username plus passkey. Neither
+Everyone then opens `http://localhost:7500` in a new window (a Private
+window for the second role), signs in with username plus passkey, and
+presses Enroll; the child opens `http://localhost:7300` as well. Neither
 command touches the committed realm file; `KEYCLOAK_URL`, `KEYCLOAK_ADMIN`,
 `KEYCLOAK_ADMIN_PASSWORD` and `KEYCLOAK_REALM` override the overlay's
 defaults.

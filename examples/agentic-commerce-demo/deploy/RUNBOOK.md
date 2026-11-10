@@ -137,8 +137,9 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
   takes the role from the token, not from a control on the page.
 - **Keycloak mode: the sign-in page has no way in, or "Something went
   wrong" at Keycloak** — the realm's users start with no credential; run
-  `keycloak/first_passkeys.py arm`, have each person sign in once at `:7500`
-  with the printed password and register the passkey, then run `seal`. See
+  `keycloak/first_passkeys.py arm`, have each person sign in once at
+  `:7500/first-passkey` with the printed password and register the passkey,
+  then run `seal`. See
   the Keycloak README, "The users, and their first passkey". The second
   role needs a Private window: one browser window is one Keycloak sign-in.
   Keycloak's own account console is not usable for these users, by design.
