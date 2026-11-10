@@ -160,7 +160,9 @@ async def test_max_tool_rounds_stops_instead_of_looping_forever(tools):
 
     reply = await agent.turn("do something")
 
-    assert "stuck waiting on an approval" in reply
+    # The sentence changed with the approval leg: an approval no longer holds
+    # the turn, so a pending one reaches the agent on its own.
+    assert "without finishing" in reply and "passkey page" in reply
     assert len(session.calls) == 3
 
 
