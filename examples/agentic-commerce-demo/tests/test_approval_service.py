@@ -227,6 +227,10 @@ class TestEnrollmentRequiresIdentity:
         claims = _json.loads(
             base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         assert claims["vc"]["credentialSubject"]["role"] == "parent"
+        # The home shape has no principal at the proxy, so the enrollment
+        # binds no account; the organization shape's is in
+        # test_external_issuer.py.
+        assert "accounts" not in claims["vc"]["credentialSubject"]
 
 
 class TestTheFlowItself:
