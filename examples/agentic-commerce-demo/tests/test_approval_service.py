@@ -303,3 +303,20 @@ class TestTheFlowItself:
         for user in client.app.state.users.users:
             assert user.password != user.username
             assert len(user.password) >= 12
+
+
+def test_page_recovers_from_an_expired_session_without_re_enrolling(client):
+    """The page's approve path signs in again on a 401 (as enroll already
+    did), checks the token's own exp before spending a Touch ID, and keeps
+    the enrolled credential in sessionStorage across that round trip; the
+    amount it logs is the invoice's totalCents, not 0. Markup only: the
+    browser is not in the loop here, so this guards the strings the fix
+    consists of."""
+    page = client.get("/").text
+    approve = page[page.index("async function approve()"):page.index("let lastLoggedId")]
+    assert "if(r.status===401){await sessionExpired();return}" in approve
+    assert "if(tokenExpired()){await sessionExpired();return}" in approve
+    assert "s.amountCents||s.totalCents||0" in approve
+    assert "S.setItem('cred',credentialId)" in page
+    assert "credentialId=S.getItem('cred')" in page
+    assert "new Date().toLocaleTimeString()" in page
