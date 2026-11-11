@@ -305,6 +305,10 @@ class TestTheFlowItself:
             assert len(user.password) >= 12
 
 
+def test_the_first_passkey_route_exists_only_under_an_external_issuer(client):
+    """The home shape's users have passwords on this service and enrol on the
+    page itself; the thank-you route is the Keycloak recipe's."""
+    assert client.get("/first-passkey").status_code == 404
 # -- a pending approval is a task: it expires on its own, and says so -------- #
 
 

@@ -69,6 +69,7 @@ import base64
 import html
 import json
 import os
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -96,6 +97,7 @@ from extensible_mcp_vc.oauth import (
     check_amr,
     eligible_roles,
     select_role,
+    pkce_challenge,
 )
 from extensible_mcp_vc.invoice import (
     InvoiceError,
@@ -990,6 +992,52 @@ boot(); setInterval(poll,1500); poll();
 # these three endpoints and the verifier, never the page: in external mode
 # GET /authorize redirects to the provider, POST /token forwards the code
 # exchange, and the login form is gone.
+
+
+_FIRST_PASSKEY_PAGE = """<!doctype html><meta charset=utf-8><title>Passkey registered</title>
+<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style>
+<h1>Thank you for signing in to Keycloak.</h1>
+<p>Your passkey is registered. You may close this window.</p>
+<p>Once everyone has done this, the operator runs <code>first_passkeys.py seal</code>.
+Then open <a href="/">the approval page</a> in a <strong>new</strong> window and sign in
+with username plus passkey.</p>
+"""
+
+_FIRST_PASSKEY_FAILED = """<!doctype html><meta charset=utf-8><title>Sign-in did not finish</title>
+<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style>
+<h1>Keycloak reported <code>__ERROR__</code>.</h1>
+<p><a href="/first-passkey">Try again</a>.</p>
+"""
+
+
+@app.get("/first-passkey")
+async def first_passkey(request: Request) -> Response:
+    """The users' first passkey, in external-issuer mode: a sign-in at the
+    provider for its own sake. ``first_passkeys.py arm`` has armed the
+    register-passkey required action, so the provider's flow registers the
+    passkey before it sends the browser back here, and this page only says
+    thank you. No code exchange and no token kept: the sign-in that
+    registered the passkey was by password and could not enrol anyway, and
+    a token left in the window was what sent the live test astray. The
+    approval page is for after ``seal``.
+    """
+    if _external is None:
+        raise HTTPException(404, "no external issuer")
+    q = request.query_params
+    if "error" in q:
+        return HTMLResponse(_FIRST_PASSKEY_FAILED.replace("__ERROR__", html.escape(q["error"])))
+    if "code" in q:
+        return HTMLResponse(_FIRST_PASSKEY_PAGE)
+    try:
+        target = await _external.authorize_url(
+            redirect_uri=_origin(request) + "/first-passkey",
+            # A verifier nobody keeps: the code that comes back is never exchanged.
+            code_challenge=pkce_challenge(secrets.token_urlsafe(48)),
+            state=secrets.token_urlsafe(12),
+        )
+    except ExternalIssuerError as e:
+        raise HTTPException(503, str(e)) from e
+    return RedirectResponse(target, status_code=302)
 
 
 def _absolute(request: Request, redirect_uri: str) -> str:
