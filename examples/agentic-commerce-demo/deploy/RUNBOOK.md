@@ -148,6 +148,12 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
 - **The assistant seems stuck retrying a tool call** — it gives up after a
   bounded number of tool rounds and says so in the chat; check `/logs` for
   what it was actually calling.
+- **Nothing happens after you approve** — the assistant speaks up on its
+  own once the passkey page is done, because the console listens to the
+  approval service's event stream and resumes the conversation. If it
+  never does, look for `watching approval tasks` in `/logs`; without it the
+  console could not reach `:7500`'s `/events`. An approval nobody acts on
+  expires with the invoice (five minutes), and the assistant says so.
 - **`Failed to connect to 'pizza'` in family logs** — parlor wasn't ready;
   the entrypoint gates on it, so this normally means the parlor crashed:
   check `logs pizzaparlor`.
