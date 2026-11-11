@@ -3,6 +3,234 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.4.0] - 2026-11-11
+
+The proxy over Streamable HTTP, as a shared enforcement point that knows who
+is calling. One process serves many people; every request carries a verified
+principal; what a person can see, call and load is a function of who they
+are; a policy can read who the session acts for from the proxy and never from
+the call; and the demo runs as an organization on its own identity provider.
+The protocol underneath moved too: this release is built on FastMCP 4 and MCP
+SDK 2, the 2026-07-28 revision, which has no session, so the one guarantee
+this proxy always made is now keyed on the person rather than the connection.
+
+**Upgrading.** `fastmcp>=4.1,<5` and `mcp>=2.3,<3`, with `httpx2` as a direct
+dependency; the bounds stay below the next majors so a revision this proxy has
+not been run against cannot arrive by resolution. 0.3.6, the patch on the
+0.3.x line, bounded FastMCP below 4 and gave the stdio CLI a `single_session`
+flag; neither is needed here and neither exists here, since discovery keys on
+the principal, or on the process when there is none. A downstream server on
+either revision connects: the proxy sends `server/discover` and falls back to
+the legacy `initialize` handshake on any refusal of the probe (GitHub's
+official server refuses it with code 0), except from a server that advertises
+only the modern revision, which has nothing in common with the legacy path. A
+stdio deployment with no `auth` block runs exactly as before. Every bundle that
+loaded on 0.3.5 loads here, with two exceptions stated below under validation
+and Cedar.
+
+**Added: inbound identity.** An `auth` block builds FastMCP's `JWTVerifier`,
+resource-server mode only: `issuer`, `audience`, and a `jwks_uri` or one public
+key; a client secret in the block is refused, since `config.json` is
+committed. The verified claims become a frozen `Principal` (`sub`, `iss`,
+`roles`, `client_id`, `auth_time`, `amr`, `acr`; never the raw token) that
+rides on every request through all four pipelines, read per request rather
+than cached, so a token that changes hands mid-conversation is seen. A verified
+token with no `sub` or `iss` is refused, not treated as anonymous. The
+`principal` block names the roles claim by dotted path and an optional
+`role_map`, which is total: an unmapped value is dropped and logged once; no
+map is the identity case. `create_server(require_principal=...)` is the
+deployment-mode selector, enforced in the handlers ahead of every pipeline
+rather than as a filter, because an unset filter permits: `True` refuses every
+request without a principal, `False` is single tenant on purpose, unset is what
+the HTTP gate decides.
+
+**Added: `--transport http`, and the gate in front of it.** There was no
+transport flag before, and that absence was accidentally load-bearing: a
+shared deployment could not be misconfigured because it could not be asked
+for. Now it can, so the CLI refuses the configurations that were sound only
+because one process served one person: no `auth` block (unless
+`--allow-anonymous` says this is one person's proxy, which is itself refused
+beside an `auth` block and on a non-loopback host), and a configured tokens
+file, flat, since one bearer per server per process is one downstream identity
+presented for every caller. Each refusal is an exit before the server is
+built. Runtime loading stays a stdio capability: over HTTP `load_mcp_server`
+is refused at the handler with a message saying servers on a shared proxy are
+configured, not loaded. Refused rather than hidden, since a hidden tool is a
+suggestion.
+
+**Added: per-role scoping.** `filters.access_control.by_role` maps a role to
+the downstream servers it may see (`"*"` for everything not globally denied)
+and whether it may load one at runtime. Roles are additive and the global deny
+lists stay a floor. Present, it fails closed: a principal whose roles match no
+entry, or no principal at all, sees nothing, local tools included, and every
+call and load is refused, because a catalogue filter that loses its principal
+would otherwise leak another caller's tools. One index; the same rule on
+search, call and load.
+
+**Added: the `caller` fetch-plan source, and the token/evidence seam.** A
+policy can read who the session acts for, from the principal the proxy
+verified and never from the call: `params.field` names one fact,
+`params.fields` several as one object, from a fixed vocabulary checked at
+load. The augmenter advertises nothing for it, since nothing about it is
+call-sourced, and with no principal the lookup fails closed and renders as a
+denial. The membership credential gains `credentialSubject.accounts`, a list
+of `{idp, account}` the admin signs beside the role, and the `did-server`
+gains `--account IDP=ACCOUNT` to issue it; the field is optional and absent by
+default, so every credential issued before it existed is unchanged. With the
+two together a bundle can state the one condition that joins a session to the
+evidence it carries: the session is bound to the requester when the
+membership's subject is the caller's account, or `{idp, account}` is among the
+accounts the admin bound. With no principal the condition holds, because
+requiring a principal is `require_principal`'s job and not the bundle's. The
+teaching CEL bundle `cel_family_spend_bound` is that condition written out;
+the three supplied production policies carry it as `account_bound`, one check
+per tier, re-pinned to the toolchain's current emission (the policies also
+dropped their inline `deny_reason` rules, since every engine renders through
+the guidance layer, and are a third smaller for it).
+
+**Added: a policy set.** `policyset.json` declares the routes a deployment
+runs: each names a server type (a bundle directory), the tools it governs and
+a wire adapter, and the selection map's values are route ids. The filter chain
+attaches to the server type when the deployment registers it and is never in
+the declaration, so a route cannot declare a composition, let alone a wrong
+one. `PolicySet.load` refuses every dangling reference and unknown key;
+`bind` refuses, in both directions, a type or adapter declared but not
+registered or registered but not declared, then loads every bundle and builds
+every chain before any server is admitted. The per-route tool list is
+load-bearing: a certified policy that binds merchant and total cannot bind a
+tool name its evidence never signs, so a second gated tool on the same server
+would accept a replayed approval, and the demo's one shared gated-actions set
+had exactly that shape. Every admission leaves a record and the boot log
+prints one line per server and a closing count, so whether every configured
+server ended up under the gate it was meant to is answerable from something
+other than the absence of denials. `SelectionResult.route` replaces the field
+that named a bundle: the value was false for one of the demo's three routes,
+which is a route over a bundle with a different adapter and not a bundle at
+all.
+
+**Added: Cedar's PARC head is the proxy's own, and `in` is refused.** The
+head is built per evaluation: `principal` is `Caller::"<sub>"` when the input
+carries a `caller`-sourced object with a `sub`, else `Caller::"anonymous"`;
+`action` is `Action::"<tool>"`; `resource` is the server type the bundle
+governs, a label with provenance rather than an input; everything evidential
+is `context`, since a request carries several evidence identities and
+`principal` is singular. The entity store is empty in this release, so `in`,
+entity attributes and a schema are unsupported, and `in` is refused at load:
+measured against an empty store, a `forbid` on group membership returns Allow
+with no diagnostic, a policy hole that looks like a passing test, and cedarpy
+exposes a policy's effect and annotations but not its conditions, so the
+policy text is the only handle. A Cedar bundle that used `in` and loaded on
+0.3.5 is refused here, naming the line. Populating the store from the fetch
+plan is the next Cedar release's work. The three production policies are now
+adopted on Cedar too, in the permit-decides shape, held to their Rego twins by
+the corpus test, and every production scenario runs on all three engines.
+
+**Added: `emit: false`.** A fetch-plan entry is resolved into scratch, readable
+by later `$input` references, and left out of the assembled input, so a plan
+can derive from the wire bytes and then drop them: the raw JWS feeds a
+`sha256` entry, the rule reads the digest, and a closed manifest has no raw
+property to reject. The credential partition is decided by source kind alone
+and is independent of the flag, so an unemitted credential is still surfaced
+on the search side and still stripped before the downstream call. An unemitted
+field the manifest still requires is refused at load.
+
+**Changed: an integral float is not an integer.** JSON Schema lets `12.0` and
+`1e3` through an `integer` field, and the three engines disagreed on them:
+Rego decides, CEL raises, Cedar cannot build the request, and the certificate
+a bundle ships with maps a float to nothing at all. The validator now runs the
+manifest with `integer` redefined as a JSON integer, `int` and not `bool`,
+the one exclusion the schema cannot state. An input 0.3.5 accepted at an
+integer field may now be refused; a conforming input is unaffected. A
+validation error now also explains an engine fault, so a float from the clock
+or from the model ends as the same denial at the same path on every engine
+rather than as "could not be evaluated"; a policy's own denial is still the
+reason the caller sees. Found by the external policy-authoring toolchain's
+randomized differential.
+
+**Changed, in the direction of fewer silent failures.** The call and response
+pipelines rebuild the object they hand each filter with `dataclasses.replace`,
+naming only the fields a filter may rewrite, so the next field added to a
+request type rides through without the pipeline being told; the
+field-propagation invariant that 0.3.5 shipped as an expected failure now
+passes, and an aliasing test runs two requests through every pipeline at once.
+The downstream's `structuredContent` rides on `CallResponse` as
+`structured_content`, forwarded and not rewritable. A wallet lookup whose
+subject roots at `tool` or `arguments`, directly or through a `derive` entry,
+is refused at load: the shipped bundles always keyed their lookups on a field
+inside a signed credential, and that was a convention nothing checked. The
+loser of a reservation race on one credential is told the approval may still
+be live and that a retry is the way out, rather than that it was used. A CEL
+fault's text carries the check and the error and never the input, which
+cel-python appends whole, credentials included; the filter bounds what it
+logs of any engine's exception. A filter given no executor assembles with the
+`derive` vocabulary its bundle was validated against, rather than the default
+one: the first shipped plan that derives with a configured primitive showed
+the difference. Result fields are read in the SDK's snake_case, so the suites
+run with no deprecation warning.
+
+**Changed: the index builds in batches of eight, with the ONNX arena off.**
+The whole catalogue went to fastembed as one batch, padded to the longest
+description, so peak memory scaled with batch size times padded length
+squared, about 1 GB for 120 tools; eight is the measured knee, and with the
+arena on, Linux held the build's peak for the life of the process. A text's
+embedding does not depend on its batch, so search is unchanged; this is a
+memory setting, not a relevance one. Both are constructor parameters on
+`VectorStore`. Reported, with measurements, by @johnrufusone.
+
+**The demo: an organization on its own identity provider.** A compose overlay
+starts the committed Keycloak realm (26.8.1) beside the two demo containers
+and puts the family side on it: Keycloak is the organization's identity
+provider, the proxy its enforcement point with a verified principal on every
+call, the console holds one MCP session per signed-in person and presents that
+person's token, the approval service is its passkey authority and accepts the
+provider's tokens on the same terms the proxy does, and the parlor is the
+other organization. First boot binds each member's account at the provider
+into the admin-signed memberships, and enrolment mints the account that
+enrolled the passkey into the enrollment credential, so the production
+policies tie the console session to the member whose key signed. A sign-in
+that did not use a passkey (no `hwk` in `amr`) cannot enrol one, since
+enrolment is the chain's first link. Two operator commands give the realm's
+users, who ship with no credential so that the file carries no secret, their
+first passkey: `arm`, a sign-in by each at a thank-you page that keeps no
+token, `seal`. The Keycloak README has a step-by-step run sheet from a clean
+machine. Without the overlay the home shape stands: one household on
+loopback, no inbound auth, every principal `None`.
+
+The approval leg no longer holds the conversation open. `request_invoice_approval`
+opens the approval and returns at once as a task, in the vocabulary of the MCP
+Tasks extension (`input_required`, a task id, the window the merchant signed);
+`approval_result` fetches the outcome by id once a human has signed; the
+approval service announces terminal states on an event stream carrying the id
+and status only, never the evidence; and the console resumes the conversation
+when the task completes. A pending approval expires with the invoice it is
+for. The console takes one chat turn at a time, answers a second message
+with a busy sentence, and rolls the history back when a turn fails, so one
+refused API call no longer leaves the agent dead until a restart. The passkey
+page signs in again when its session has expired, keeps the enrolled
+credential across that round trip, and reports a refused enrolment instead of
+failing silently. The deploy documents say what a restart, a `down` and a
+switch between the two shapes each keep, and where the home shape's passwords
+are printed. Every one of these came out of running the two shapes by hand
+before the release.
+
+**Documentation.** The README's Usage shows both transports and what the HTTP
+gate refuses; the Authentication section states that over HTTP a grant
+credential is the proxy's service identity, with per-person authorization at
+the proxy and delegated identity by token exchange a later release; the
+Cedar section states the empty entity store; the Status, overview and
+test-count statements are current.
+
+**Tests.** The proxy suite is 1193 passed and one skip; no expected failure
+remains. The demo suite is 236 passed and two skips, one for a test that
+needs the workspace admin key and one that runs only against a live Keycloak.
+The identity suite is 55. Twenty directories under `tests/fixtures/`:
+seventeen call-gate bundles, the three production policies and the teaching
+policy on all three engines among them, plus the selection classifier and two
+expression-shape tables that are not bundles. The in-memory tests run in the
+client's sessionless mode, so the suite exercises the revision this release
+claims; two people over real HTTP cannot see each other's discoveries, and
+one person keeps theirs across connections.
+
 ## [0.3.6] - 2026-11-02
 
 Two changes, and the first is urgent for anyone installing fresh.
