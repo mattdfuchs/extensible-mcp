@@ -227,6 +227,10 @@ class TestEnrollmentRequiresIdentity:
         claims = _json.loads(
             base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         assert claims["vc"]["credentialSubject"]["role"] == "parent"
+        # The home shape has no principal at the proxy, so the enrollment
+        # binds no account; the organization shape's is in
+        # test_external_issuer.py.
+        assert "accounts" not in claims["vc"]["credentialSubject"]
 
 
 class TestTheFlowItself:
@@ -303,3 +307,93 @@ class TestTheFlowItself:
         for user in client.app.state.users.users:
             assert user.password != user.username
             assert len(user.password) >= 12
+
+
+def test_the_first_passkey_route_exists_only_under_an_external_issuer(client):
+    """The home shape's users have passwords on this service and enrol on the
+    page itself; the thank-you route is the Keycloak recipe's."""
+    assert client.get("/first-passkey").status_code == 404
+# -- a pending approval is a task: it expires on its own, and says so -------- #
+
+
+def test_a_pending_invoice_carries_the_merchants_window_and_expires_past_it():
+    from .webauthn_fixtures import load_approval_module
+
+    mod = load_approval_module()
+    with TestClient(mod.app) as client:
+        merchant = trust_merchant(client)
+        ck, cid = _enroll(client, "child")
+        req = _issue(client, merchant, SOLO).json()
+        assert req["status"] == "pending"
+        assert req["expires_at"] == SOLO["exp"]  # the merchant's signed expiry, not ours
+        assert req["invoice_signature"]  # evidence fetched by id is complete
+
+        seen: list[dict] = []
+        q = mod.asyncio.Queue()
+        q.put_nowait = seen.append  # type: ignore[method-assign]
+        mod._subscribers.add(q)
+
+        # the window closes: the next read reports it, the approval is refused
+        mod._pending[req["id"]]["exp"] = 0
+        r = client.get(f"/pending/{req['id']}")
+        assert r.json()["status"] == "expired"
+        assert seen == [{"task_id": req["id"], "status": "expired"}]
+        r = _approve(client, req["id"], ck, cid, invoice_challenge(SOLO))
+        assert r.status_code == 409 and "expired" in r.json()["detail"]
+        # reported once, not on every read
+        client.get(f"/pending/{req['id']}")
+        assert len(seen) == 1
+
+
+def test_full_approval_is_announced_with_the_id_and_status_only():
+    from .webauthn_fixtures import load_approval_module
+
+    mod = load_approval_module()
+    with TestClient(mod.app) as client:
+        merchant = trust_merchant(client)
+        ck, cid = _enroll(client, "child")
+        req = _issue(client, merchant, SOLO).json()
+        seen: list[dict] = []
+        q = mod.asyncio.Queue()
+        q.put_nowait = seen.append  # type: ignore[method-assign]
+        mod._subscribers.add(q)
+
+        r = _approve(client, req["id"], ck, cid, invoice_challenge(SOLO))
+        assert r.status_code == 200 and r.json()["status"] == "approved"
+        assert seen == [{"task_id": req["id"], "status": "approved"}]
+        assert set(seen[0]) == {"task_id", "status"}  # never the evidence
+
+
+def test_the_events_stream_opens_as_server_sent_events():
+    client = TestClient(load_approval_app())
+    with client:
+        with client.stream("GET", "/events") as r:
+            assert r.status_code == 200
+            assert r.headers["content-type"].startswith("text/event-stream")
+            assert next(r.iter_lines()) == ": connected"
+def test_page_recovers_from_an_expired_session_without_re_enrolling(client):
+    """The page's approve path signs in again on a 401 (as enroll already
+    did), checks the token's own exp before spending a Touch ID, and keeps
+    the enrolled credential in sessionStorage across that round trip; the
+    amount it logs is the invoice's totalCents, not 0. Markup only: the
+    browser is not in the loop here, so this guards the strings the fix
+    consists of."""
+    page = client.get("/").text
+    approve = page[page.index("async function approve()"):page.index("let lastLoggedId")]
+    assert "if(r.status===401){await sessionExpired();return}" in approve
+    assert "if(tokenExpired()){await sessionExpired();return}" in approve
+    assert "s.amountCents||s.totalCents||0" in approve
+    assert "S.setItem('cred',credentialId)" in page
+    assert "credentialId=S.getItem('cred')" in page
+    assert "new Date().toLocaleTimeString()" in page
+
+
+def test_page_reports_a_refused_enrolment_and_signs_in_afresh(client):
+    """A 403 from /register (the sign-in was not by passkey) used to leave
+    the page silent, with "enroll this window first" as the only symptom
+    later; it now logs the server's sentence and asks the provider for a
+    new authentication rather than a silent re-issue of the same token."""
+    page = client.get("/").text
+    assert "log('enrolment refused: '+(j.detail||JSON.stringify(j)))" in page
+    assert "if(r.status===403){" in page and "await signIn(true)" in page
+    assert "if(fresh) q.set('prompt','login');" in page

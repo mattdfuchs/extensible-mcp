@@ -160,7 +160,9 @@ async def test_max_tool_rounds_stops_instead_of_looping_forever(tools):
 
     reply = await agent.turn("do something")
 
-    assert "stuck waiting on an approval" in reply
+    # The sentence changed with the approval leg: an approval no longer holds
+    # the turn, so a pending one reaches the agent on its own.
+    assert "without finishing" in reply and "passkey page" in reply
     assert len(session.calls) == 3
 
 
@@ -252,3 +254,40 @@ async def test_a_turn_that_raises_rolls_the_history_back_so_the_next_turn_works(
 
     assert await agent.turn("try again") == "Second time lucky."
     assert [m["role"] for m in agent.history] == ["user", "assistant"]
+
+
+# -- an event the console delivers waits its turn; tool calls are observed --- #
+
+
+async def test_a_resume_waits_for_the_running_turn_instead_of_being_refused(tools):
+    session = StubSession(tools, call_tool_fn=lambda name, args: pytest.fail("unused"))
+    anthropic = BlockingAnthropic(_response("end_turn", [_text_block("ok")]))
+    agent = ChatAgent(session=session, anthropic_messages=anthropic)
+
+    first = asyncio.create_task(agent.turn("order a pizza"))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(agent.resume("task t-1 is completed"))
+    await asyncio.sleep(0)
+    assert not second.done()  # queued behind the first, not refused
+
+    anthropic.release.set()
+    assert await first == "ok"
+    assert await second == "ok"
+    assert [m["content"] for m in agent.history if m["role"] == "user"] == [
+        "order a pizza", "task t-1 is completed",
+    ]
+
+
+async def test_the_tool_observer_sees_each_call_and_its_result(tools):
+    session = StubSession(tools, call_tool_fn=lambda name, args: _text_result('{"task_id": "t-9"}'))
+    anthropic = ScriptedAnthropic([
+        _response("tool_use", [_tool_use_block("t1", "call_tool", {"tool_name": "request_invoice_approval"})]),
+        _response("end_turn", [_text_block("waiting")]),
+    ])
+    seen = []
+    agent = ChatAgent(session=session, anthropic_messages=anthropic,
+                      tool_observer=lambda name, args, text: seen.append((name, args, text)))
+
+    await agent.turn("order")
+
+    assert seen == [("call_tool", {"tool_name": "request_invoice_approval"}, '{"task_id": "t-9"}')]
