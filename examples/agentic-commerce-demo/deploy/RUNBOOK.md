@@ -64,7 +64,8 @@ volume. Watch until healthy:
 
 ```sh
 docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml logs -f family
-# expect: "trusted merchant dominos" and the console's startup banner
+# expect: "trusted merchant dominos", then "[family] passkey page sign-in: child/... parent/..."
+#         (the two passwords for step 3; random per workspace), then the console's startup banner
 ```
 
 ## 3. Browser tabs (use `localhost`, never `127.0.0.1`)
@@ -73,7 +74,7 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml logs 
 |-----|---------|
 | http://localhost:7300 | **Chat** — type the order here instead of running `claude`. |
 | http://localhost:7300/logs | **Live log** — every tool call, policy verdict, and settlement step, streamed. Put this on the projector. |
-| http://localhost:7500 ×2 windows | **Sign in, then enroll passkeys**: window A as `child`, window B as `parent` — the role comes from who you sign in as, so there is nothing to choose afterwards. Once per container lifetime; enrollments are in-memory. These windows are also where Touch ID prompts appear. |
+| http://localhost:7500 ×2 windows | **Sign in, then enroll passkeys**: window A as `child`, window B as `parent`, with the passwords from the `passkey page sign-in` line in step 2 — the role comes from who you sign in as, so there is nothing to choose afterwards. Once per container lifetime; enrollments are in-memory. These windows are also where Touch ID prompts appear. |
 | http://localhost:7500/audit | The evidence-chain view — an alternative to `/logs` for a more narrative projector view. |
 
 ## 4. Run a flow
