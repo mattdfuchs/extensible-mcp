@@ -143,7 +143,6 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
   the Keycloak README, "The users, and their first passkey". The second
   role needs a Private window: one browser window is one Keycloak sign-in.
   Keycloak's own account console is not usable for these users, by design.
-
 - **Approve logs `rejected ... invalid_token: token has expired`** — the
   passkey page's sign-in lasts an hour. The page now signs you in again when
   that happens (before the Touch ID prompt when it can tell, after the 401
