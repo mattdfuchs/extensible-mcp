@@ -14,6 +14,7 @@ is set."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from urllib.parse import parse_qs, urlparse
@@ -47,13 +48,13 @@ def provider(keypair) -> FakeProvider:
     return FakeProvider(keypair)
 
 
-def load_external(monkeypatch, provider, **env: str):
+def load_external(monkeypatch, provider, *, with_admin_key: bool = False, **env: str):
     """The service module in external mode, pointed at the fake provider."""
     monkeypatch.setenv("APPROVAL_ISSUER", ISSUER)
     monkeypatch.setenv("APPROVAL_ISSUER_INTERNAL", INTERNAL)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    mod = load_approval_module()
+    mod = load_approval_module(with_admin_key=with_admin_key)
     assert mod._external is not None
     mod._external = ExternalIssuer(
         mod._external.config,
@@ -78,6 +79,31 @@ def register(client, headers, **body):
         "attestationObject", b64url_encode(attestation_object(key.public_key(), b"cred-ext"))
     )
     return client.post("/register", json=body, headers=headers)
+
+
+# -- the enrollment binds the passkey to the account that enrolled it ------- #
+
+
+def test_the_enrollment_names_the_account_the_passkey_was_enrolled_from(
+    monkeypatch, provider, keypair
+):
+    """The invoice bundle's ``account_bound`` check reads the enrollment VC's
+    ``accounts`` against the console session's principal; the sign-in that
+    enrolled the passkey is what says which account that is. Found in the
+    organization shape's live test: without this list every charge was
+    denied as unbound, with both approvals in."""
+    mod = load_external(monkeypatch, provider, with_admin_key=True)
+    client = TestClient(mod.app)
+    r = register(client, bearer(mint(keypair, ["child"], sub="child-uuid")))
+    assert r.status_code == 200, r.text
+    assert r.json()["adminAttested"] is True
+    e = client.get(f"/enrollment/{r.json()['credentialId']}").json()
+    subject = e["claims"]["vc"]["credentialSubject"]
+    assert subject["role"] == "child"
+    assert subject["accounts"] == [{"idp": ISSUER, "account": "child-uuid"}]
+    payload = e["jws"].split(".")[1]
+    signed = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert signed == e["claims"]
 
 
 # -- verification ----------------------------------------------------------- #
@@ -224,6 +250,25 @@ def test_only_prompt_login_crosses_to_the_provider(client):
     assert "prompt" not in parse_qs(urlparse(r.headers["location"]).query)
     r = client.get("/authorize", params=PAGE_QUERY, follow_redirects=False)
     assert "prompt" not in parse_qs(urlparse(r.headers["location"]).query)
+def test_the_first_passkey_route_is_a_sign_in_that_keeps_nothing(client, provider):
+    """``first_passkeys.py arm`` sends each person here: the provider's flow
+    registers the passkey, and the page that comes back only says thank you.
+    It exchanges no code, so no token from a password sign-in is left in
+    the window to be refused at Enroll later."""
+    r = client.get("/first-passkey", follow_redirects=False)
+    assert r.status_code == 302, r.text
+    target = urlparse(r.headers["location"])
+    assert f"{target.scheme}://{target.netloc}{target.path}" == f"{ISSUER}/protocol/openid-connect/auth"
+    q = {k: v[0] for k, v in parse_qs(target.query).items()}
+    assert q["client_id"] == CLIENT_ID
+    assert q["redirect_uri"] == "http://testserver/first-passkey"
+    assert q["code_challenge_method"] == "S256" and len(q["code_challenge"]) == 43
+    before = len(provider.token_requests)
+    r = client.get("/first-passkey", params={"code": "abc", "state": q["state"]})
+    assert r.status_code == 200 and "Thank you" in r.text and "close this window" in r.text
+    assert len(provider.token_requests) == before
+    r = client.get("/first-passkey", params={"error": "access_denied"})
+    assert r.status_code == 200 and "access_denied" in r.text and "Try again" in r.text
 
 
 def test_authorize_still_validates_the_request_before_redirecting(client):

@@ -122,25 +122,29 @@ What the fragment sets, and why each line is there:
 
 Then, once:
 
-1. Open `http://localhost:8080` (admin / admin), realm `household`, and
-   register a passkey for `parent` and for `child` as
-   [The users, and the enrolment step you have to do by hand](#the-users-and-the-enrolment-step-you-have-to-do-by-hand)
-   describes; the realm ships the users with no credential.
-2. Open `http://localhost:7500`. The page sends you to Keycloak; sign in with
-   the passkey; you come back signed in as that user, and **Enrol** mints the
+1. Give `parent` and `child` their first passkey with the two commands in
+   [The users, and their first passkey](#the-users-and-their-first-passkey):
+   `arm`, a sign-in by each at `http://localhost:7500/first-passkey` that
+   registers the passkey and ends at a thank-you page, then `seal`. The realm
+   ships the users with no credential.
+2. Open `http://localhost:7500` in a new window. The page sends you to
+   Keycloak; sign in with the passkey; you come back signed in as that user, and **Enrol** mints the
    admin-signed enrollment under the role the token carries. A user holding
-   both roles is asked which one to enrol under.
-3. Open `http://localhost:7300`. The console sends you to Keycloak too (its
-   own client); sign in as `child`, and every call the assistant makes
-   carries your token: the proxy knows who it is representing, the wallet
-   that signs the request must be bound to your account, and a request the
-   assistant steers at the other member's wallet is denied with the binding
-   sentence. The business shape in one sign-in: the organization's
-   identity provider, its proxy, its passkey authority, the merchant on the
-   other side.
+   both roles is asked which one to enrol under. The other role does the same
+   in a **Private window**: Keycloak signs a whole browser window in with one
+   cookie, so two roles in one window would both come back as the first.
+3. Open `http://localhost:7300` in the child's window. The console sends you
+   to Keycloak too (its own client) and comes back as `child` on the same
+   session, and every call the assistant makes carries your token: the
+   proxy knows who it is representing, the wallet that signs the request
+   must be bound to your account, and a request the assistant steers at
+   the other member's wallet is denied with the binding sentence. The
+   business shape in one sign-in: the organization's identity provider, its
+   proxy, its passkey authority, the merchant on the other side.
 
-`docker compose logs family` prints `[approval] sign-in via external issuer`
-instead of the local passwords, which do not apply in this mode.
+The shared demo log (`:7300/logs`, or `workspace/demo.log` in the family
+container) says `[approval] sign-in via external issuer` instead of printing
+local passwords, which do not apply in this mode.
 
 The opt-in test runs the service's provider client against the live
 container, rewrite included, and is skipped without the variable:
@@ -279,7 +283,7 @@ Importing a custom flow does **not** suppress the built-in ones: after import,
 `clients`, `first broker login` and `docker auth` alongside ours, and the
 other realm bindings still point at them. Only `browserFlow` is overridden.
 
-### The users, and the enrolment step you have to do by hand
+### The users, and their first passkey
 
 `parent` and `child` are present with their roles, and with **no credentials
 at all** — the import leaves them with zero (confirmed against
@@ -287,13 +291,48 @@ at all** — the import leaves them with zero (confirmed against
 `webauthn-register-passwordless` as a required action.
 
 A user with no credential cannot start a passwordless login, so somebody has
-to enrol the first passkey. That is deliberate: the alternative is a
-committed password. Use the admin console — Users → *parent* → Credentials →
-Credential Reset → `webauthn-register-passwordless` → Send/Copy link — and
-open the link in the browser holding the authenticator. The realm also carries
-profile fields for both users, because `VERIFY_PROFILE` is a default required
-action and a user without a first name, last name and email cannot complete a
-login until it is satisfied.
+to open the door once. That is deliberate: the alternative is a committed
+password. Keycloak's own door is an action link sent by **email**, and the
+realm has no mail server (the admin console's Credential Reset only sends;
+there is no link to copy). So the recipe ships two commands,
+[`first_passkeys.py`](first_passkeys.py), standard library only, against the
+admin API of the running overlay:
+
+```sh
+python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py arm
+```
+
+points the realm's browser flow at Keycloak's built-in password flow, gives
+each user a one-off password, prints it, and arms the register-passkey
+required action. Each person then opens `http://localhost:7500/first-passkey`
+in a window of their own (a Private window for the second role), signs in
+with that password, registers the passkey with the authenticator when the
+flow asks, and lands on a page that says thank you and nothing else: it
+exchanges no code and keeps no token, since a sign-in by password carries no
+`hwk` and could not enrol anyway, and a token left in the window is what
+sent the live test astray. Close the window. Then
+
+```sh
+python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py seal
+```
+
+refuses until every user holds a `webauthn-passwordless` credential, puts
+the passwordless flow back, deletes the passwords and ends every session.
+Everyone then opens `http://localhost:7500` in a new window (a Private
+window for the second role), signs in with username plus passkey, and
+presses Enroll; the child opens `http://localhost:7300` as well. Neither
+command touches the committed realm file; `KEYCLOAK_URL`, `KEYCLOAK_ADMIN`,
+`KEYCLOAK_ADMIN_PASSWORD` and `KEYCLOAK_REALM` override the overlay's
+defaults.
+
+Two consequences of the realm's design, so nobody debugs them: the users
+carry exactly the realm's role vocabulary and none of Keycloak's account
+roles, because the roles claim is what the proxy maps, so Keycloak's
+**account console shows "Something went wrong"** for them and the admin
+console's **Impersonate** (which opens it) ends the same way — neither is
+needed. And the realm carries profile fields for both users, because
+`VERIFY_PROFILE` is a default required action and a user without a first
+name, last name and email cannot complete a login until it is satisfied.
 
 ## Client authentication: public with PKCE
 

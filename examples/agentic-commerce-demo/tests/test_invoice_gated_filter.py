@@ -319,3 +319,109 @@ async def test_denies_nonce_naming_a_different_invoice(
     result = await f.check(request)
     assert result.allowed is False
     assert "nonce" in result.reason
+
+
+# -- the enrollment the approval service mints, under a principal ----------- #
+#
+# The organization shape: the console's bearer is the proxy's principal, and
+# the bundle's account_bound check reads the *enrollment VC* -- the one the
+# approval service mints at /register -- for the account that passkey belongs
+# to. The live test found the service minting none, so every charge under a
+# principal was denied as unbound with both approvals in. This takes the
+# service's own enrollment, not a hand-built one, through the real filter.
+
+
+def _service_in_external_mode(monkeypatch, provider):
+    from extensible_mcp_vc.oauth import ExternalIssuer
+
+    from .idp_fixtures import INTERNAL, ISSUER, mock_client
+    from .webauthn_fixtures import load_approval_module
+
+    monkeypatch.setenv("APPROVAL_ISSUER", ISSUER)
+    monkeypatch.setenv("APPROVAL_ISSUER_INTERNAL", INTERNAL)
+    mod = load_approval_module(with_admin_key=True)
+    mod._external = ExternalIssuer(mod._external.config, http_client=mock_client(provider))
+    return mod
+
+
+async def _charge_under(principal, *, enrollment, admin, merchant_key, child_passkey, cred_id):
+    from extensible_mcp.types import Principal  # noqa: F401 - the type under test
+
+    invoice_fields = _invoice_fields(total_cents=400, nonce="urn:uuid:bound")
+    signature = _sign(invoice_fields, merchant_key)
+    bundle = PolicyBundle.load(
+        BUNDLE_DIR, name="family_spend_invoice",
+        builtins=default_builtins(webauthn_rp_id=RP_ID),
+    )
+
+    async def wallet_lookup(subject: str):
+        if subject != cred_id:
+            return None
+        # What family_proxy_server's enrollment_lookup does: the service's
+        # {jws, claims} with the issuer's key attached.
+        return {**enrollment, "adminKey": json.dumps(admin["key"].as_dict(private=False))}
+
+    trusted = [{"merchantId": MERCHANT_ID, "key": _b64u(merchant_key.public_key().public_bytes_raw())}]
+    f = InvoiceGatedFilter(
+        bundle,
+        base_config={"webauthnOrigin": ORIGIN, "trustedAdminDids": [admin["did"]]},
+        wallet_lookup=wallet_lookup,
+        trusted_merchants_client=_StubTrustedMerchantsClient(trusted),
+    )
+    request = CallRequest(
+        tool_name="settlement__charge_invoice",
+        arguments={
+            "amountCents": 400, "merchantId": MERCHANT_ID, "nonce": "urn:uuid:bound",
+            "invoice": {**invoice_fields, "signature": signature},
+            "childApproval": _child_approval(child_passkey, cred_id=cred_id, invoice_fields=invoice_fields),
+        },
+        server_name="settlement",
+        principal=principal,
+    )
+    return await f.check(request)
+
+
+async def test_the_services_enrollment_binds_the_console_session_to_the_approver(
+    monkeypatch, merchant_key, child_passkey
+):
+    from fastapi.testclient import TestClient
+    from fastmcp.server.auth.providers.jwt import RSAKeyPair
+
+    from extensible_mcp.types import Principal
+    from extensible_mcp_vc.webauthn import b64url_encode
+
+    from .idp_fixtures import ISSUER, FakeProvider, bearer, mint
+    from .webauthn_fixtures import attestation_object
+
+    keypair = RSAKeyPair.generate()
+    mod = _service_in_external_mode(monkeypatch, FakeProvider(keypair))
+    client = TestClient(mod.app)
+
+    # The child, signed in at the provider as account child-uuid, enrols.
+    r = client.post("/register", json={
+        "attestationObject": b64url_encode(attestation_object(child_passkey.public_key(), b"cred-bound")),
+    }, headers=bearer(mint(keypair, ["child"], sub="child-uuid")))
+    assert r.status_code == 200, r.text
+    cred_id = r.json()["credentialId"]
+    enrollment = client.get(f"/enrollment/{cred_id}").json()
+    kw = dict(enrollment=enrollment, admin=mod._admin_signer, merchant_key=merchant_key,
+              child_passkey=child_passkey, cred_id=cred_id)
+
+    # The same person at the console: allowed.
+    same = Principal(sub="child-uuid", iss=ISSUER, roles=frozenset({"child"}))
+    result = await _charge_under(same, **kw)
+    assert result.allowed is True, result.reason
+
+    # Another account at the console, holding the child's approval: denied,
+    # and the sentence names the binding.
+    other = Principal(sub="someone-else", iss=ISSUER, roles=frozenset({"child"}))
+    result = await _charge_under(other, **kw)
+    assert result.allowed is False
+    assert "not bound to the member" in result.reason
+
+    # The same account at a different provider is a different account.
+    elsewhere = Principal(sub="child-uuid", iss="http://other.test/realms/x", roles=frozenset({"child"}))
+    assert (await _charge_under(elsewhere, **kw)).allowed is False
+
+    # No principal (the home shape): the check is vacuous, as before.
+    assert (await _charge_under(None, **kw)).allowed is True

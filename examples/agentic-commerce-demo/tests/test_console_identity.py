@@ -33,17 +33,22 @@ class FakeAgent:
     busy = False
 
     def __init__(self, label):
-        self.label, self.turns = label, []
+        self.label, self.turns, self.resumed = label, [], []
 
     async def turn(self, message):
         self.turns.append(message)
         return f"{self.label} heard: {message}"
+
+    async def resume(self, message):
+        self.resumed.append(message)
+        return f"{self.label} resumed: {message}"
 
 
 def load_console(monkeypatch, provider=None):
     """A fresh console module, in external mode when a provider is given.
     The agent factory and the anonymous connection are stubbed, so no proxy
     and no model are needed; what is under test is who gets which session."""
+    monkeypatch.setenv("APPROVAL_URL", "")  # no approval service to watch here
     if provider is None:
         monkeypatch.delenv("APPROVAL_ISSUER", raising=False)
     else:
@@ -229,3 +234,60 @@ def test_a_message_while_the_assistant_is_busy_is_refused_with_the_reply_to_show
 def test_the_page_knows_which_mode_it_is_in(external):
     with TestClient(external.app) as c:
         assert "const EXTERNAL = true;" in c.get("/").text
+
+
+# -- approval tasks: opened in a conversation, finished by a human elsewhere -- #
+
+
+def test_a_task_the_conversation_opened_is_remembered_by_its_id(monkeypatch):
+    mod = load_console(monkeypatch)
+    with TestClient(mod.app):
+        app = mod.app
+        mod._note_task(app, mod.HOUSEHOLD, "call_tool",
+                       {"tool_name": "request_invoice_approval"}, '{"task_id": "t-1", "status": "input_required"}')
+        # other calls, and results that are not a task, leave no trace
+        mod._note_task(app, mod.HOUSEHOLD, "search_tools", {"query": "x"}, "Found 2")
+        mod._note_task(app, mod.HOUSEHOLD, "call_tool", {"tool_name": "pizza__negotiate"}, '{"reply": "hi"}')
+        mod._note_task(app, mod.HOUSEHOLD, "call_tool", {"tool_name": "request_invoice_approval"}, "not json")
+        assert app.state.tasks == {"t-1": mod.HOUSEHOLD}
+
+
+async def test_a_terminal_event_resumes_the_conversation_and_fills_its_inbox(monkeypatch):
+    mod = load_console(monkeypatch)
+    with TestClient(mod.app) as c:
+        app = mod.app
+        app.state.tasks["t-1"] = mod.HOUSEHOLD
+        await mod._on_event(app, {"task_id": "t-1", "status": "approved"})
+        agent = app.state.agent
+        assert len(agent.resumed) == 1
+        assert "t-1 is approved" in agent.resumed[0] and "approval_result" in agent.resumed[0]
+        assert agent.turns == []  # not a person's message
+        assert "t-1" not in app.state.tasks  # delivered once
+        # the page collects it, and it is gone after that
+        assert c.get("/chat/inbox").json()["replies"] == [f"household resumed: {agent.resumed[0]}"]
+        assert c.get("/chat/inbox").json()["replies"] == []
+        # a task nobody here opened is ignored, not resumed
+        await mod._on_event(app, {"task_id": "t-other", "status": "expired"})
+        assert len(agent.resumed) == 1
+
+
+async def test_in_external_mode_the_event_reaches_the_person_who_opened_the_task(external, keypair):
+    with TestClient(external.app) as c:
+        child = bearer(mint(keypair, ["child"], sub="child-1", audience=PROXY_AUDIENCE))
+        parent = bearer(mint(keypair, ["parent"], sub="parent-1", audience=PROXY_AUDIENCE, amr=("hwk", "user")))
+        c.post("/chat", json={"message": "order"}, headers=child)
+        c.post("/chat", json={"message": "hello"}, headers=parent)
+        app = external.app
+        app.state.tasks["t-2"] = "child-1"
+        await external._on_event(app, {"task_id": "t-2", "status": "approved"})
+        assert len(app.state.seats["child-1"].agent.resumed) == 1
+        assert app.state.seats["parent-1"].agent.resumed == []
+        assert c.get("/chat/inbox", headers=parent).json()["replies"] == []
+        assert len(c.get("/chat/inbox", headers=child).json()["replies"]) == 1
+        assert c.get("/chat/inbox").status_code == 401  # no bearer, no inbox
+
+
+def test_the_event_stream_is_read_for_its_data_lines(monkeypatch):
+    mod = load_console(monkeypatch)
+    lines = [": connected", "", "data: {\"task_id\": \"t-1\", \"status\": \"approved\"}", ": keepalive", "data: not json"]
+    assert list(mod._sse_events(lines)) == [{"task_id": "t-1", "status": "approved"}]

@@ -26,20 +26,26 @@ from typing import Any, Protocol
 DEFAULT_MODEL = "claude-sonnet-5"
 
 BUSY_REPLY = (
-    "I'm still working on your previous message — if it asked for an "
-    "approval, it is waiting on the passkey tab. Approve or decline there, "
-    "and I'll answer once that finishes."
+    "I'm still working on your previous message; give me a moment and "
+    "send that again."
 )
 
 
 class AgentBusy(RuntimeError):
     """A turn is already running on this agent.
 
-    Turns are not queued on purpose: the approval leg waits minutes for a
-    passkey ceremony, and a message queued behind it would hang the
-    browser with no explanation. The console turns this into an immediate
-    reply instead.
+    A person's message is not queued behind another turn: the console turns
+    this into an immediate reply instead, and the page keeps its input
+    disabled while a message is in flight, so it is rare. An event the
+    console delivers on the person's behalf (:meth:`ChatAgent.resume`)
+    does wait, since dropping it would lose the resumption.
     """
+
+ToolObserver = Callable[[str, dict[str, Any], str], None]
+"""Sees every tool call the model makes: ``(tool_name, arguments,
+result_text)``. The console uses it to learn the ids of the tasks a
+conversation has opened, so it knows whose conversation to resume when
+one of them finishes."""
 
 DEFAULT_SYSTEM = (
     "You are a household assistant reachable through a chat window. You "
@@ -54,20 +60,24 @@ DEFAULT_SYSTEM = (
     "every tool without exception. When a gated action needs a signed "
     "credential (a request VC, an authorization VC, or a WebAuthn passkey "
     "approval), call the tool that requests it, tell the human which "
-    "browser tab to approve in, and retry the gated call once they have. "
+    "browser tab to approve in, and end your turn; you will be told when "
+    "they have, and can then retry the gated call. "
     "Narrate what you're doing in plain language between tool calls; the "
     "human sees only your text, never your tool calls.\n\n"
     "For ordering food, always use this exact sequence, never the direct "
     "order_pizza tool or the spend tool (those route approval to the "
     "kid/parent wallet pages, which are not reachable in this deployment):\n"
     "  1. pizza__negotiate and pizza__request_invoice\n"
-    "  2. request_invoice_approval — blocks until the human approves at the "
-    "passkey page (:7500), then returns the invoice, signature, and "
-    "approval evidence together\n"
+    "  2. request_invoice_approval — returns at once with a task_id and "
+    "status input_required; tell the human to approve at the passkey page "
+    "(:7500) and end your turn. Never poll. A later message will tell you "
+    "the task is completed or failed; then call approval_result with the "
+    "task_id, which returns the invoice, signature, and approval evidence "
+    "together\n"
     "  3. settlement__charge_invoice — pass amountCents/merchantId/nonce "
-    "plus the invoice and approval(s) exactly as request_invoice_approval "
-    "returned them; the nonce is the invoice's own nonce, and names which "
-    "invoice to settle\n"
+    "plus the invoice and approval(s) exactly as approval_result returned "
+    "them; the nonce is the invoice's own nonce, and names which invoice "
+    "to settle\n"
     "  4. pizza__fulfill with the receipt charge_invoice returned\n"
     "  5. record_fulfillment with the commitment fulfill returned — this is "
     "the last step; only report the order complete once it succeeds."
@@ -134,6 +144,7 @@ class ChatAgent:
     model: str = DEFAULT_MODEL
     system: str = DEFAULT_SYSTEM
     log: LogFn = field(default=lambda line: None)
+    tool_observer: ToolObserver = field(default=lambda name, args, text: None)
     max_tool_rounds: int = 20
     history: list[dict[str, Any]] = field(default_factory=list)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -157,6 +168,17 @@ class ChatAgent:
         """
         if self._lock.locked():
             raise AgentBusy(BUSY_REPLY)
+        return await self._guarded(user_message)
+
+    async def resume(self, event_message: str) -> str:
+        """A turn the console starts on the person's behalf, to deliver an
+        event: an approval task that completed or failed. It waits for a
+        running turn rather than being refused, since nobody would resend
+        it, and it enters the history as a user message, which is the only
+        way anything reaches the model."""
+        return await self._guarded(event_message)
+
+    async def _guarded(self, user_message: str) -> str:
         async with self._lock:
             mark = len(self.history)
             try:
@@ -199,9 +221,9 @@ class ChatAgent:
                 {"role": "user", "content": await self._run_tool_calls(response.content)}
             )
         return (
-            "I've gone through several tool calls without finishing — something "
-            "may be stuck waiting on an approval. Try again once you've approved "
-            "in the browser tab."
+            "I've gone through several tool calls without finishing. If an "
+            "approval is pending, it will reach me when the passkey page is "
+            "done; otherwise tell me how to proceed."
         )
 
     async def _run_tool_calls(self, blocks: list[Any]) -> list[dict[str, Any]]:
@@ -217,6 +239,7 @@ class ChatAgent:
             except Exception as e:  # noqa: BLE001 - surfaced to the model, not swallowed
                 content, is_error = f"error: {e}", True
             self.log(f"<- {block.name}: {_truncate(content)}")
+            self.tool_observer(block.name, block.input, content)
             results.append(
                 {
                     "type": "tool_result",
