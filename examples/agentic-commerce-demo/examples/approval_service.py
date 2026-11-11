@@ -69,14 +69,16 @@ import base64
 import html
 import json
 import os
+import secrets
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -95,6 +97,7 @@ from extensible_mcp_vc.oauth import (
     check_amr,
     eligible_roles,
     select_role,
+    pkce_challenge,
 )
 from extensible_mcp_vc.invoice import (
     InvoiceError,
@@ -114,7 +117,16 @@ from extensible_mcp_vc.webauthn import (
     verify_webauthn_assertion,
 )
 
-app = FastAPI(title="WebAuthn approval service")
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    sweep = asyncio.create_task(_sweep_expiries())
+    try:
+        yield
+    finally:
+        sweep.cancel()
+
+
+app = FastAPI(title="WebAuthn approval service", lifespan=_lifespan)
 
 # The family-spend policy's solo limit: at/under this, only the child is required.
 _SOLO_LIMIT_CENTS = 1000
@@ -127,6 +139,40 @@ _credentials: dict[str, dict[str, Any]] = {}
 # sign, so both flows share /approve.
 _pending: dict[str, dict[str, Any]] = {}
 _latest_id: str | None = None
+
+# A pending approval is a task in the sense of the MCP Tasks extension: it is
+# created by one request, reaches a terminal state on its own, and its outcome
+# is fetched by id. Nothing waits on it here. The window is the invoice's own
+# signed expiry, or this default for a request that carries none; after it,
+# the entry is `expired` and the humans are no longer shown it.
+_PENDING_TTL_SECONDS = 300
+_TERMINAL = ("approved", "expired")
+_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+
+
+def _publish(approval_id: str, status: str) -> None:
+    """Announce a terminal state to every ``/events`` subscriber: the id and
+    the status, never the evidence, which a subscriber fetches by id."""
+    for q in list(_subscribers):
+        q.put_nowait({"task_id": approval_id, "status": status})
+
+
+def _expire_if_due(approval_id: str, p: dict[str, Any], now: int | None = None) -> bool:
+    """Move a pending entry past its window to ``expired`` (once) and say so."""
+    now = int(time.time()) if now is None else now
+    if p["status"] != "pending" or now < p["exp"]:
+        return False
+    p["status"] = "expired"
+    _log_event(p, "expired: nobody approved within the window")
+    _publish(approval_id, "expired")
+    return True
+
+
+async def _sweep_expiries() -> None:
+    while True:
+        await asyncio.sleep(1.0)
+        for approval_id, p in list(_pending.items()):
+            _expire_if_due(approval_id, p)
 # merchantId -> Ed25519 public key; the closed set of merchants the buyer will
 # transact with (mirrors the trusted-admin set for the humans' memberships).
 _trusted_merchants: dict[str, Ed25519PublicKey] = {}
@@ -282,9 +328,10 @@ def _log_event(p: dict[str, Any], label: str) -> None:
 
 
 def _new_pending(kind: str, subject: dict[str, Any], challenge: bytes,
-                 amount_cents: int) -> str:
+                 amount_cents: int, *, expires_at: int | None = None) -> str:
     global _latest_id
     approval_id = str(uuid.uuid4())
+    now = int(time.time())
     _pending[approval_id] = {
         "kind": kind,
         "subject": subject,
@@ -292,13 +339,15 @@ def _new_pending(kind: str, subject: dict[str, Any], challenge: bytes,
         "required_roles": _required_roles_for(amount_cents),
         "approvals": {},
         "status": "pending",
-        "created": int(time.time()),
+        "created": now,
+        "exp": now + _PENDING_TTL_SECONDS if expires_at is None else int(expires_at),
     }
     _latest_id = approval_id
     return approval_id
 
 
 def _summary(approval_id: str, p: dict[str, Any]) -> dict[str, Any]:
+    _expire_if_due(approval_id, p)
     out = {
         "id": approval_id,
         "required_roles": p["required_roles"],
@@ -306,8 +355,13 @@ def _summary(approval_id: str, p: dict[str, Any]) -> dict[str, Any]:
         "remaining_roles": [r for r in p["required_roles"] if r not in p["approvals"]],
         "status": p["status"],
         "challenge": b64url_encode(p["challenge"]),
+        "expires_at": p["exp"],
     }
     out[p["kind"]] = p["subject"]  # "action" or "invoice"
+    if "subject_signature" in p:
+        # the merchant's signature over the invoice, so the evidence fetched
+        # by id is complete without the requester keeping a copy
+        out["invoice_signature"] = p["subject_signature"]
     if "receipt" in p:  # present once settled; public signed evidence for the merchant
         out["receipt"] = p["receipt"]
         out["receipt_signature"] = p["receipt_signature"]
@@ -438,8 +492,11 @@ async def request_invoice(request: Request) -> JSONResponse:
         verify_invoice(invoice, body["signature"], trusted_merchants=_trusted_merchants)
     except InvoiceError as e:
         raise HTTPException(400, f"invoice rejected: {e}") from e
+    # The window is the merchant's: the approval cannot usefully outlive the
+    # quote, since the charge_invoice policy refuses an expired invoice.
     approval_id = _new_pending(
-        "invoice", invoice, invoice_challenge(invoice), int(invoice["totalCents"])
+        "invoice", invoice, invoice_challenge(invoice), int(invoice["totalCents"]),
+        expires_at=int(invoice["exp"]),
     )
     p = _pending[approval_id]
     p["subject_signature"] = body["signature"]
@@ -519,6 +576,32 @@ async def pending(approval_id: str) -> JSONResponse:
     return JSONResponse(_summary(approval_id, p))
 
 
+@app.get("/events")
+async def events() -> StreamingResponse:
+    """Terminal state changes, as server-sent events: ``{task_id, status}``
+    with status ``approved`` or ``expired``, and nothing else. Whoever asked
+    for the approval fetches its outcome by id; the stream only says that
+    there is one. (CIBA's ping mode, not its push mode: evidence is fetched
+    by an authenticated caller, never delivered to a listener.)"""
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    _subscribers.add(q)
+
+    async def gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {json.dumps(ev)}\n\n"
+        finally:
+            _subscribers.discard(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 @app.post("/approve/{approval_id}")
 async def approve(approval_id: str, request: Request) -> JSONResponse:
     # The assertion already proves possession of an enrolled key, so this is
@@ -528,6 +611,9 @@ async def approve(approval_id: str, request: Request) -> JSONResponse:
     p = _pending.get(approval_id)
     if p is None:
         raise HTTPException(404, "unknown approval")
+    _expire_if_due(approval_id, p)
+    if p["status"] == "expired":
+        raise HTTPException(409, "approval expired: the window closed before every approval was in")
     body = await request.json()
     cred = _credentials.get(body.get("credentialId", ""))
     if cred is None:
@@ -562,6 +648,7 @@ async def approve(approval_id: str, request: Request) -> JSONResponse:
     }
     if all(r in p["approvals"] for r in p["required_roles"]):
         p["status"] = "approved"
+        _publish(approval_id, "approved")
         # Settlement is no longer an automatic side effect of full approval —
         # see /settle. For the "action" kind (raw self-asserted spend) there
         # was never a settlement step here at all; this just stops the
@@ -930,6 +1017,52 @@ boot(); setInterval(poll,1500); poll();
 # these three endpoints and the verifier, never the page: in external mode
 # GET /authorize redirects to the provider, POST /token forwards the code
 # exchange, and the login form is gone.
+
+
+_FIRST_PASSKEY_PAGE = """<!doctype html><meta charset=utf-8><title>Passkey registered</title>
+<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style>
+<h1>Thank you for signing in to Keycloak.</h1>
+<p>Your passkey is registered. You may close this window.</p>
+<p>Once everyone has done this, the operator runs <code>first_passkeys.py seal</code>.
+Then open <a href="/">the approval page</a> in a <strong>new</strong> window and sign in
+with username plus passkey.</p>
+"""
+
+_FIRST_PASSKEY_FAILED = """<!doctype html><meta charset=utf-8><title>Sign-in did not finish</title>
+<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style>
+<h1>Keycloak reported <code>__ERROR__</code>.</h1>
+<p><a href="/first-passkey">Try again</a>.</p>
+"""
+
+
+@app.get("/first-passkey")
+async def first_passkey(request: Request) -> Response:
+    """The users' first passkey, in external-issuer mode: a sign-in at the
+    provider for its own sake. ``first_passkeys.py arm`` has armed the
+    register-passkey required action, so the provider's flow registers the
+    passkey before it sends the browser back here, and this page only says
+    thank you. No code exchange and no token kept: the sign-in that
+    registered the passkey was by password and could not enrol anyway, and
+    a token left in the window was what sent the live test astray. The
+    approval page is for after ``seal``.
+    """
+    if _external is None:
+        raise HTTPException(404, "no external issuer")
+    q = request.query_params
+    if "error" in q:
+        return HTMLResponse(_FIRST_PASSKEY_FAILED.replace("__ERROR__", html.escape(q["error"])))
+    if "code" in q:
+        return HTMLResponse(_FIRST_PASSKEY_PAGE)
+    try:
+        target = await _external.authorize_url(
+            redirect_uri=_origin(request) + "/first-passkey",
+            # A verifier nobody keeps: the code that comes back is never exchanged.
+            code_challenge=pkce_challenge(secrets.token_urlsafe(48)),
+            state=secrets.token_urlsafe(12),
+        )
+    except ExternalIssuerError as e:
+        raise HTTPException(503, str(e)) from e
+    return RedirectResponse(target, status_code=302)
 
 
 def _absolute(request: Request, redirect_uri: str) -> str:

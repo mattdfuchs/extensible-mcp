@@ -135,6 +135,14 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
 
   Signing in as `parent` is what makes that window the parent — enrollment
   takes the role from the token, not from a control on the page.
+- **Keycloak mode: the sign-in page has no way in, or "Something went
+  wrong" at Keycloak** — the realm's users start with no credential; run
+  `keycloak/first_passkeys.py arm`, have each person sign in once at
+  `:7500/first-passkey` with the printed password and register the passkey,
+  then run `seal`. See
+  the Keycloak README, "The users, and their first passkey". The second
+  role needs a Private window: one browser window is one Keycloak sign-in.
+  Keycloak's own account console is not usable for these users, by design.
 - **Approve logs `rejected ... invalid_token: token has expired`** — the
   passkey page's sign-in lasts an hour. The page now signs you in again when
   that happens (before the Touch ID prompt when it can tell, after the 401
@@ -148,6 +156,12 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
 - **The assistant seems stuck retrying a tool call** — it gives up after a
   bounded number of tool rounds and says so in the chat; check `/logs` for
   what it was actually calling.
+- **Nothing happens after you approve** — the assistant speaks up on its
+  own once the passkey page is done, because the console listens to the
+  approval service's event stream and resumes the conversation. If it
+  never does, look for `watching approval tasks` in `/logs`; without it the
+  console could not reach `:7500`'s `/events`. An approval nobody acts on
+  expires with the invoice (five minutes), and the assistant says so.
 - **`Failed to connect to 'pizza'` in family logs** — parlor wasn't ready;
   the entrypoint gates on it, so this normally means the parlor crashed:
   check `logs pizzaparlor`.

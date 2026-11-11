@@ -495,7 +495,7 @@ def main() -> None:
         if jwk is not None:
             preresolved[did] = jwk
 
-    approval_http = httpx.AsyncClient(base_url=APPROVAL_URL, timeout=310.0)
+    approval_http = httpx.AsyncClient(base_url=APPROVAL_URL, timeout=30.0)
     router, resolver, policy_set = build_bundle_router(
         trusted=trusted,
         preresolved=preresolved,

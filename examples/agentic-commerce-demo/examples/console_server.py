@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
 import re
 import time
@@ -58,6 +59,12 @@ from extensible_mcp_vc.oauth import (
 
 PROJECT = Path(__file__).resolve().parent.parent
 PROXY_URL = os.environ.get("PROXY_URL", "http://127.0.0.1:7400/mcp/")
+# The approval service's event stream, which says when an approval task has
+# reached a terminal state. Empty disables the watcher (tests, or a
+# deployment without the passkey rail).
+APPROVAL_URL = os.environ.get("APPROVAL_URL", "http://127.0.0.1:7500")
+HOUSEHOLD = "household"  # the one anonymous conversation's key, in the home shape
+_WATCH_RETRY_DELAY = 2.0
 LOG_FILE = Path(
     os.environ.get("DEMO_LOG_FILE", str(PROJECT / "workspace" / "demo.log"))
 )
@@ -185,28 +192,132 @@ async def _open_agent(app: FastAPI, seat: Seat) -> Any:
     """The seat's agent: a session of its own, presenting the seat's bearer."""
     client = httpx2.AsyncClient(auth=_SeatBearer(seat), timeout=httpx2.Timeout(300.0))
     session = await _connect(seat.stack, client)
-    return ChatAgent(session=session, anthropic_messages=app.state.anthropic, log=_log)
+    return ChatAgent(
+        session=session, anthropic_messages=app.state.anthropic, log=_log,
+        tool_observer=_observer_for(app, seat.sub),
+    )
+
+
+# -- approval tasks: opened in a conversation, finished by a human elsewhere -- #
+#
+# The approval leg returns at once with a task id (see meta_tools), so the
+# conversation is never held open across a passkey ceremony. The console
+# remembers which conversation opened each task, listens to the approval
+# service for terminal states, and resumes that conversation with the news.
+# The model then fetches the outcome by id and carries on. The event names
+# the task and its status only; the evidence is fetched, never pushed.
+
+
+def _observer_for(app: FastAPI, key: str) -> Any:
+    def observe(name: str, arguments: dict[str, Any], text: str) -> None:
+        _note_task(app, key, name, arguments, text)
+    return observe
+
+
+def _note_task(app: FastAPI, key: str, name: str, arguments: dict[str, Any], text: str) -> None:
+    """Remember a task the conversation ``key`` just opened."""
+    if name != "call_tool" or arguments.get("tool_name") != "request_invoice_approval":
+        return
+    try:
+        task_id = json.loads(text).get("task_id")
+    except (ValueError, AttributeError):
+        return
+    if task_id:
+        app.state.tasks[task_id] = key
+        _log(f"console: task {task_id} opened by {key}")
+
+
+def _agent_for_key(app: FastAPI, key: str) -> Any:
+    if key == HOUSEHOLD:
+        return app.state.agent
+    seat = app.state.seats.get(key)
+    return seat.agent if seat else None
+
+
+async def _on_event(app: FastAPI, event: dict[str, Any]) -> None:
+    """Resume the conversation that opened the task, and leave the
+    assistant's reply in that conversation's inbox for the page to show."""
+    task_id, status = event.get("task_id"), event.get("status")
+    key = app.state.tasks.pop(task_id, None)
+    if key is None:
+        return  # a task this console did not open (another console, or a page test)
+    agent = _agent_for_key(app, key)
+    if agent is None:
+        _log(f"console: task {task_id} is {status}, but its conversation is gone")
+        return
+    _log(f"console: task {task_id} is {status}; resuming {key}")
+    message = (
+        f"[event] approval task {task_id} is {status}. Fetch its outcome with "
+        "approval_result and continue the order from where you left off; if "
+        "it failed, tell me why and stop."
+    )
+    try:
+        reply = await agent.resume(message)
+    except Exception as e:  # noqa: BLE001 - the page shows it, the watcher lives on
+        reply = f"Error: {e}"
+    _log(f"assistant: {reply}")
+    app.state.inbox.setdefault(key, []).append(reply)
+
+
+def _sse_events(lines: Any) -> Any:
+    """The ``data:`` payloads of a server-sent event stream, parsed."""
+    for line in lines:
+        if line.startswith("data:"):
+            try:
+                yield json.loads(line[5:].strip())
+            except ValueError:
+                continue
+
+
+async def _watch_approvals(app: FastAPI) -> None:
+    """Follow the approval service's event stream for the life of the
+    process, reconnecting when it drops; the service may start after us."""
+    url = APPROVAL_URL.rstrip("/") + "/events"
+    announced = False
+    while True:
+        try:
+            async with httpx2.AsyncClient(timeout=httpx2.Timeout(None)) as http:
+                async with http.stream("GET", url) as r:
+                    r.raise_for_status()
+                    if not announced:
+                        _log(f"console: watching approval tasks at {url}")
+                        announced = True
+                    async for line in r.aiter_lines():
+                        for event in _sse_events([line]):
+                            asyncio.create_task(_on_event(app, event))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - keep watching
+            _log(f"console: approval events unavailable ({e}); retrying in {_WATCH_RETRY_DELAY}s")
+            announced = False
+            await asyncio.sleep(_WATCH_RETRY_DELAY)
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.anthropic = anthropic.AsyncAnthropic().messages
     app.state.seats = {}
+    app.state.tasks = {}  # task id -> the conversation that opened it
+    app.state.inbox = {}  # conversation -> replies the person has not seen yet
     async with AsyncExitStack() as stack:
         if _external is None:
             # The home shape: one anonymous session for the one household.
             session = await _connect(stack)
             app.state.agent = ChatAgent(
                 session=session, anthropic_messages=app.state.anthropic, log=_log,
+                tool_observer=_observer_for(app, HOUSEHOLD),
             )
         else:
             # Nobody has signed in yet, and the proxy refuses an anonymous
             # session; each person's session opens on their first message.
             app.state.agent = None
             _log(f"console: sign-in via {_external.config.issuer}; a session per person")
+        watcher = asyncio.create_task(_watch_approvals(app)) if APPROVAL_URL else None
         try:
             yield
         finally:
+            if watcher is not None:
+                watcher.cancel()
             for seat in list(app.state.seats.values()):
                 await seat.stack.aclose()
 
@@ -275,6 +386,15 @@ async def chat(request: Request) -> JSONResponse:
         raise HTTPException(502, str(e)) from e
     _log(f"assistant: {reply}")
     return JSONResponse({"reply": reply})
+
+
+@app.get("/chat/inbox")
+async def chat_inbox(request: Request) -> JSONResponse:
+    """Replies the assistant produced on its own, when an approval task
+    finished: the page polls this, since a plain request/response chat has
+    no other way to show a message nobody asked for."""
+    key = (await _seat_for(request)).sub if _external is not None else HOUSEHOLD
+    return JSONResponse({"replies": request.app.state.inbox.pop(key, [])})
 
 
 # -- sign-in at the organization's provider, relayed as the passkey page does -- #
@@ -476,6 +596,15 @@ async function boot(){
   const me = await r.json();
   document.getElementById('who').textContent = '— signed in as ' + me.sub + ' (' + me.roles.join('/') + ')';
 }
+
+async function inbox(){
+  try {
+    const r = await fetch('/chat/inbox', {headers: auth()});
+    if (!r.ok) return;
+    for (const text of (await r.json()).replies) addMessage('assistant', text);
+  } catch (err) {}
+}
+setInterval(inbox, 2000);
 
 function addMessage(cls, text) {
   const div = document.createElement('div');

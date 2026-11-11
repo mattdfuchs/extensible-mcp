@@ -212,30 +212,22 @@ async def request_invoice_approval(
     approval_client: httpx.AsyncClient,
     invoice: dict[str, Any],
     signature: str,
-    *,
-    poll_interval_seconds: float = 2.0,
-    timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
-    """The invoice-bound purchase leg's approval-collection half, standalone
-    and testable — the ``LocalTool`` handler built by :func:`build_invoice_tools`
+    """The invoice-bound purchase leg's request half, standalone and
+    testable — the ``LocalTool`` handler built by :func:`build_invoice_tools`
     just calls this.
 
-    The merchant's signed invoice goes to the approval service, which (1)
-    refuses it unless the merchant is in the buyer's trusted set, and (2)
-    binds each human's passkey approval to the invoice hash — approving
-    *these terms*, no others. Once every required role has signed, this
-    returns the collected evidence for the caller to submit to a
-    following, separately gated ``charge_invoice`` call — it does not
-    settle anything itself (that decision belongs to the proxy's certified
-    policy, not this polling loop).
-
-    The returned ``invoice`` carries ``signature`` embedded as one of its
-    own keys (not a sibling top-level field, unlike this function's own
-    ``invoice``/``signature`` *parameters*) — the certified
-    ``family_spend_invoice`` bundle's fetch plan has exactly one call-
-    sourced credential field named ``invoice``, so the gated
-    ``charge_invoice`` call needs exactly one object to pass straight
-    through, signature and all, not two values to recombine."""
+    The merchant's signed invoice goes to the approval service, which
+    refuses it unless the merchant is in the buyer's trusted set, and
+    otherwise opens a pending approval that each required human signs with
+    a passkey bound to the invoice hash. This returns **at once**, in the
+    shape of the MCP Tasks extension: ``status`` ``input_required``, a
+    ``task_id``, and the window the merchant signed. Nothing waits on the
+    humans here; the console learns when the task reaches a terminal state
+    and the outcome is fetched by id with :func:`approval_result`. The
+    conversation is therefore never held open across a passkey ceremony,
+    which is what used to make a second message break it.
+    """
     logger.info(
         "[INV] request_invoice_approval: merchant=%r total=%s nonce=%s",
         invoice.get("merchantId"), invoice.get("totalCents"), invoice.get("nonce"),
@@ -249,61 +241,89 @@ async def request_invoice_approval(
     if r.status_code != 200:
         return {"error": f"approval service refused the invoice: {r.text}"}
     summary = r.json()
-    approval_id = summary["id"]
     required_roles = summary.get("required_roles", [])
     logger.info(
-        "[INV] → pending %s; needs %s (browser passkeys), timeout %ss",
-        approval_id, " + ".join(required_roles), timeout_seconds,
+        "[INV] → task %s input_required; needs %s (browser passkeys), until %s",
+        summary["id"], " + ".join(required_roles), summary.get("expires_at"),
     )
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
-    while asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(poll_interval_seconds)
-        try:
-            p = await approval_client.get(f"/pending/{approval_id}")
-        except httpx.RequestError:
-            continue
-        if p.status_code != 200:
-            continue
-        s = p.json()
-        if s.get("status") in ("approved", "settled"):
-            result: dict[str, Any] = {
-                "status": "approved",
-                "invoice": {**invoice, "signature": signature},
-            }
-            for role, key in (("child", "childApproval"), ("parent", "parentApproval")):
-                if role not in required_roles:
-                    continue
-                a = await approval_client.get(f"/assertion/{approval_id}/{role}")
-                if a.status_code == 200:
-                    result[key] = a.json()
-            logger.info(
-                "[INV] ✓ approved (%s); evidence ready for charge_invoice",
-                " + ".join(required_roles),
-            )
-            return result
     return {
-        "error": (
-            f"not fully approved within {timeout_seconds:.0f}s; an approver "
-            "may not have the passkey page open."
-        )
+        "status": "input_required",
+        "task_id": summary["id"],
+        "required_roles": required_roles,
+        "expires_at": summary.get("expires_at"),
+        "status_message": (
+            f"waiting for {' and '.join(required_roles)} to approve on the "
+            "passkey page; you will be told when that has happened"
+        ),
     }
 
 
-def build_invoice_tools(
-    *,
-    approval_client: httpx.AsyncClient,
-    poll_interval_seconds: float = 2.0,
-    timeout_seconds: float = 300.0,
-) -> list[LocalTool]:
-    """Build ``request_invoice_approval`` (see the standalone function of
-    the same name above for the actual logic) and ``record_fulfillment``."""
+async def approval_result(
+    approval_client: httpx.AsyncClient, task_id: str
+) -> dict[str, Any]:
+    """The outcome of an approval task, by id — what the Tasks extension's
+    result fetch will be once the SDK carries it.
+
+    ``completed`` carries the evidence for the following, separately gated
+    ``charge_invoice`` call: the invoice with the merchant's signature
+    embedded as one of its own keys (the certified ``family_spend_invoice``
+    bundle's fetch plan has exactly one call-sourced credential field named
+    ``invoice``, so the gated call needs one object to pass straight
+    through), and each required role's retained WebAuthn assertion. A task
+    still waiting reports ``input_required``; one whose window closed
+    reports ``failed``.
+    """
+    try:
+        p = await approval_client.get(f"/pending/{task_id}")
+    except httpx.RequestError as e:
+        return {"error": f"could not reach the approval service: {e}"}
+    if p.status_code == 404:
+        return {"status": "failed", "task_id": task_id, "status_message": "unknown task"}
+    if p.status_code != 200:
+        return {"error": f"approval service refused the lookup: {p.text}"}
+    s = p.json()
+    required_roles = s.get("required_roles", [])
+    if s.get("status") == "expired":
+        return {
+            "status": "failed", "task_id": task_id,
+            "status_message": "expired: the window closed before every approval was in",
+        }
+    if s.get("status") not in ("approved", "settled"):
+        remaining = s.get("remaining_roles", required_roles)
+        return {
+            "status": "input_required", "task_id": task_id,
+            "status_message": f"still waiting for {' and '.join(remaining)} to approve",
+        }
+    result: dict[str, Any] = {
+        "status": "completed",
+        "task_id": task_id,
+        "invoice": {**s["invoice"], "signature": s["invoice_signature"]},
+    }
+    for role, key in (("child", "childApproval"), ("parent", "parentApproval")):
+        if role not in required_roles:
+            continue
+        a = await approval_client.get(f"/assertion/{task_id}/{role}")
+        if a.status_code == 200:
+            result[key] = a.json()
+    logger.info(
+        "[INV] ✓ task %s completed (%s); evidence ready for charge_invoice",
+        task_id, " + ".join(required_roles),
+    )
+    return result
+
+
+def build_invoice_tools(*, approval_client: httpx.AsyncClient) -> list[LocalTool]:
+    """Build ``request_invoice_approval``, ``approval_result`` and
+    ``record_fulfillment`` (see the standalone functions above for the
+    actual logic)."""
 
     async def request_invoice_approval_handler(arguments: dict[str, Any]) -> dict[str, Any]:
         return await request_invoice_approval(
-            approval_client, arguments["invoice"], arguments["signature"],
-            poll_interval_seconds=poll_interval_seconds,
-            timeout_seconds=timeout_seconds,
+            approval_client, arguments["invoice"], arguments["signature"]
         )
+
+    async def approval_result_handler(arguments: dict[str, Any]) -> dict[str, Any]:
+        return await approval_result(approval_client, arguments["task_id"])
 
     async def record_fulfillment_handler(arguments: dict[str, Any]) -> dict[str, Any]:
         commitment = arguments["commitment"]
@@ -326,20 +346,15 @@ def build_invoice_tools(
             name="request_invoice_approval",
             description=(
                 "Submit a merchant-signed invoice ({invoice, signature} from "
-                "request_invoice) for human passkey approval. Waits for every "
-                "required role (child always; parent too, above the $10 solo "
-                "threshold) to approve with a biometric bound to these exact "
-                "invoice terms, then returns the collected evidence "
-                "{invoice (with the merchant's signature embedded — pass it "
-                "straight through, do not split it apart), childApproval, "
-                "parentApproval?} — pass this straight through as arguments to "
-                "the settlement server's gated `charge_invoice` tool (via "
-                "call_tool, alongside the same amountCents/merchantId you "
-                "already used) to actually charge the rail; this tool only "
-                "collects approvals, it does not charge anything itself. "
-                "Returns `{\"error\": ...}` if the "
-                "merchant is untrusted, an approver declines, or the wait "
-                "times out."
+                "request_invoice) for human passkey approval. Returns at once "
+                "with {status: 'input_required', task_id, required_roles, "
+                "expires_at}: every required role (child always; parent too, "
+                "above the $10 solo threshold) must approve on the passkey "
+                "page with a biometric bound to these exact invoice terms. "
+                "Do not poll: tell the human to approve there and end your "
+                "turn; you will be told when the task is completed or has "
+                "failed, and then fetch its outcome with approval_result. "
+                "Returns `{\"error\": ...}` if the merchant is untrusted."
             ),
             input_schema={
                 "type": "object",
@@ -350,6 +365,27 @@ def build_invoice_tools(
                 "required": ["invoice", "signature"],
             },
             handler=request_invoice_approval_handler,
+        ),
+        LocalTool(
+            name="approval_result",
+            description=(
+                "The outcome of an approval task by its task_id. When "
+                "{status: 'completed'} it carries the evidence {invoice (with "
+                "the merchant's signature embedded — pass it straight through, "
+                "do not split it apart), childApproval, parentApproval?} — "
+                "pass this straight through as arguments to the settlement "
+                "server's gated `charge_invoice` tool (via call_tool, alongside "
+                "the same amountCents/merchantId you already used) to actually "
+                "charge the rail. {status: 'input_required'} means the humans "
+                "have not finished; {status: 'failed'} means the window closed "
+                "or the task is unknown."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+            },
+            handler=approval_result_handler,
         ),
         LocalTool(
             name="record_fulfillment",
@@ -372,11 +408,6 @@ def build_invoice_tools(
             handler=record_fulfillment_handler,
         ),
     ]
-
-
-# ---------------------------------------------------------------------------
-# Synchronous helpers (also used directly in tests)
-# ---------------------------------------------------------------------------
 
 
 async def request_action_vc(

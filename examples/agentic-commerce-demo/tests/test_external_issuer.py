@@ -240,6 +240,27 @@ def test_authorize_sends_the_browser_to_the_provider(client):
     }
 
 
+def test_the_first_passkey_route_is_a_sign_in_that_keeps_nothing(client, provider):
+    """``first_passkeys.py arm`` sends each person here: the provider's flow
+    registers the passkey, and the page that comes back only says thank you.
+    It exchanges no code, so no token from a password sign-in is left in
+    the window to be refused at Enroll later."""
+    r = client.get("/first-passkey", follow_redirects=False)
+    assert r.status_code == 302, r.text
+    target = urlparse(r.headers["location"])
+    assert f"{target.scheme}://{target.netloc}{target.path}" == f"{ISSUER}/protocol/openid-connect/auth"
+    q = {k: v[0] for k, v in parse_qs(target.query).items()}
+    assert q["client_id"] == CLIENT_ID
+    assert q["redirect_uri"] == "http://testserver/first-passkey"
+    assert q["code_challenge_method"] == "S256" and len(q["code_challenge"]) == 43
+    before = len(provider.token_requests)
+    r = client.get("/first-passkey", params={"code": "abc", "state": q["state"]})
+    assert r.status_code == 200 and "Thank you" in r.text and "close this window" in r.text
+    assert len(provider.token_requests) == before
+    r = client.get("/first-passkey", params={"error": "access_denied"})
+    assert r.status_code == 200 and "access_denied" in r.text and "Try again" in r.text
+
+
 def test_authorize_still_validates_the_request_before_redirecting(client):
     r = client.get("/authorize", params={**PAGE_QUERY, "code_challenge_method": "plain"})
     assert r.status_code == 400
