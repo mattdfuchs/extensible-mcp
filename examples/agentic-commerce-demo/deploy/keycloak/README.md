@@ -230,7 +230,12 @@ It sends you to Keycloak once more (the console is a client of its own):
 from Domino's, delivered to 12 Main St"*. The approval appears in the
 child's `:7500` window; approve with Touch ID. A large pizza needs the parent
 too, in the Private window. The RUNBOOK's step 4 has the flows worth
-showing.
+showing. Two pages watch it happen and need no sign-in:
+`http://localhost:7300/logs` streams every tool call and policy verdict from
+the moment you open it (it does not replay earlier lines), and
+`http://localhost:7500/audit` shows each approval's evidence chain. All of
+these addresses are plain `http`; a browser that upgrades a typed address to
+`https` gets nothing, since nothing here serves TLS.
 
 **9. Afterwards.** Three kinds of stop, and what each costs you:
 
