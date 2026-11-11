@@ -64,7 +64,8 @@ volume. Watch until healthy:
 
 ```sh
 docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml logs -f family
-# expect: "trusted merchant dominos" and the console's startup banner
+# expect: "trusted merchant dominos", then "[family] passkey page sign-in: child/... parent/..."
+#         (the two passwords for step 3; random per workspace), then the console's startup banner
 ```
 
 ## 3. Browser tabs (use `localhost`, never `127.0.0.1`)
@@ -73,7 +74,7 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml logs 
 |-----|---------|
 | http://localhost:7300 | **Chat** — type the order here instead of running `claude`. |
 | http://localhost:7300/logs | **Live log** — every tool call, policy verdict, and settlement step, streamed. Put this on the projector. |
-| http://localhost:7500 ×2 windows | **Sign in, then enroll passkeys**: window A as `child`, window B as `parent` — the role comes from who you sign in as, so there is nothing to choose afterwards. Once per container lifetime; enrollments are in-memory. These windows are also where Touch ID prompts appear. |
+| http://localhost:7500 ×2 windows | **Sign in, then enroll passkeys**: window A as `child`, window B as `parent`, with the passwords from the `passkey page sign-in` line in step 2 — the role comes from who you sign in as, so there is nothing to choose afterwards. Once per container lifetime; enrollments are in-memory. These windows are also where Touch ID prompts appear. |
 | http://localhost:7500/audit | The evidence-chain view — an alternative to `/logs` for a more narrative projector view. |
 
 ## 4. Run a flow
@@ -107,9 +108,26 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml exec 
 ## 6. Reset / teardown
 
 ```sh
-docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down        # stop (volumes survive)
-docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down -v     # full reset: new keys, new trust, re-enroll
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down        # stop: keys, memberships and trust survive in the volumes
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down -v     # full reset: new keys, new memberships, new trust
 ```
+
+Passkey enrollments survive neither: the approval service holds them in
+memory, so after either command (or a plain restart of the family container)
+both windows press Enroll again.
+
+Running the Keycloak overlay, pass **both** compose files to `down`, or
+Keycloak stays up as an orphan on `:8080`. Keycloak has no data volume of
+its own in the overlay: any `down`, with or without `-v`, loses the passkeys
+registered at Keycloak and re-imports the realm clean, so
+`keycloak/first_passkeys.py arm` and `seal` are run again. Only
+`up -d --build family` and `restart` keep them.
+
+Switching shapes: from the organization shape to the home shape needs no
+reset, since the memberships bound at first boot pass `account_bound` when
+the call carries no caller account. From the home shape to the organization
+shape needs `down -v`: memberships signed without the issuer bind nobody
+under a principal, and every settlement is denied with the binding sentence.
 
 ## Troubleshooting
 

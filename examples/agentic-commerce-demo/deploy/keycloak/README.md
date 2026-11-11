@@ -118,29 +118,20 @@ What the fragment sets, and why each line is there:
   `account_bound` check then requires the console session to be the member
   whose wallet signed the request. A workspace created *without* the issuer
   has unbound memberships, which bind nobody under a principal: run
-  `docker compose down -v` before switching modes.
+  `docker compose down -v` (with both compose files) before moving from the
+  home shape to this one. The other way round needs no reset, since
+  `account_bound` passes when the call carries no caller account. Keycloak
+  itself keeps no volume in the overlay, so any `down` loses the passkeys
+  registered at it and the first-passkey step below is run again.
 
-Then, once:
-
-1. Give `parent` and `child` their first passkey with the two commands in
-   [The users, and their first passkey](#the-users-and-their-first-passkey):
-   `arm`, a sign-in by each at `http://localhost:7500/first-passkey` that
-   registers the passkey and ends at a thank-you page, then `seal`. The realm
-   ships the users with no credential.
-2. Open `http://localhost:7500` in a new window. The page sends you to
-   Keycloak; sign in with the passkey; you come back signed in as that user, and **Enrol** mints the
-   admin-signed enrollment under the role the token carries. A user holding
-   both roles is asked which one to enrol under. The other role does the same
-   in a **Private window**: Keycloak signs a whole browser window in with one
-   cookie, so two roles in one window would both come back as the first.
-3. Open `http://localhost:7300` in the child's window. The console sends you
-   to Keycloak too (its own client) and comes back as `child` on the same
-   session, and every call the assistant makes carries your token: the
-   proxy knows who it is representing, the wallet that signs the request
-   must be bound to your account, and a request the assistant steers at
-   the other member's wallet is denied with the binding sentence. The
-   business shape in one sign-in: the organization's identity provider, its
-   proxy, its passkey authority, the merchant on the other side.
+What to do, from a clean machine to an approved order, is the next
+section. The shape it ends in is the business one in one sign-in: the
+organization's identity provider, its proxy, its passkey authority, the
+merchant on the other side. Every call the assistant makes carries the
+signed-in person's token: the proxy knows who it is representing, the wallet
+that signs the request must be bound to that account, and a request the
+assistant steers at the other member's wallet is denied with the binding
+sentence.
 
 The shared demo log (`:7300/logs`, or `workspace/demo.log` in the family
 container) says `[approval] sign-in via external issuer` instead of printing
@@ -153,6 +144,108 @@ container, rewrite included, and is skipped without the variable:
 KEYCLOAK_URL=http://127.0.0.1:8080 uv run --package extensible-mcp-vc \
   pytest examples/agentic-commerce-demo/tests/test_external_issuer.py -k pinned_keycloak
 ```
+
+## Step by step: from nothing to an approved order
+
+Run everything from the repository root. Every `docker compose` command
+below names **both** files: the base file alone knows nothing of Keycloak,
+and the fragment alone has no family or parlor in it.
+
+**0. Start from scratch.** If any demo stack is up, in either shape, take it
+all the way down first:
+
+```sh
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+               -f examples/agentic-commerce-demo/deploy/docker-compose.keycloak.yml down -v
+```
+
+`-v` discards the family workspace and the parlor's key. It is required when
+the stack was last run in the home shape, because memberships signed without
+the issuer bind nobody under a principal and every settlement would be
+denied, and it is harmless otherwise. Keycloak keeps no volume in the
+fragment, so its registered passkeys are gone after any `down`, with or
+without `-v`, and the realm is imported fresh at the next start.
+
+**1. The API key.** The `.env` file the [RUNBOOK](../RUNBOOK.md)'s step 1
+describes, with `ANTHROPIC_API_KEY` in it. Nothing else in it is needed for
+this shape.
+
+**2. Start the three containers.**
+
+```sh
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+               -f examples/agentic-commerce-demo/deploy/docker-compose.keycloak.yml up -d --build
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml \
+               -f examples/agentic-commerce-demo/deploy/docker-compose.keycloak.yml logs -f family
+```
+
+Wait for `trusted merchant dominos`, `[approval] sign-in via external
+issuer` and the console's startup banner. The proxy waits for Keycloak's
+discovery document at startup, up to two minutes on a cold start, so the
+banner can take a while. There is no password line in this shape: sign-in is
+at Keycloak. Keycloak's own admin console is at `http://localhost:8080`
+(`admin` / `admin`); nothing below needs it.
+
+**3. Arm.** The realm's two users start with no credential at all, so:
+
+```sh
+python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py arm
+```
+
+prints a one-off password for `child` and one for `parent`. Keep the
+terminal open.
+
+**4. The child's first passkey.** In a normal browser window, open
+`http://localhost:7500/first-passkey`. Keycloak asks for a username and
+password: `child` and the password from step 3. It then asks you to register
+a passkey; confirm with Touch ID (or Windows Hello). You land on "Thank you
+for signing in to Keycloak". Close the window.
+
+**5. The parent's first passkey.** The same in a **Private window** (one
+Keycloak sign-in per browser window: a second normal window would come back
+as the child), as `parent`. Close it.
+
+**6. Seal.**
+
+```sh
+python3 examples/agentic-commerce-demo/deploy/keycloak/first_passkeys.py seal
+```
+
+It refuses if either user still has no passkey, naming the one that is
+missing: go back to step 4 or 5. Otherwise it restores the passwordless
+flow, deletes the passwords and ends every session. From here on nobody
+signs in with a password again.
+
+**7. Enrol.** Open a **new** normal window at `http://localhost:7500`. The
+page sends you to Keycloak: username `child`, then Touch ID. Back on the
+page, press **Enroll** and confirm with Touch ID; the page's log says it is
+enrolled as `child`. Open a new Private window and do the same as `parent`.
+The windows must be new ones: a window left over from step 4 or 5 holds a
+sign-in by password, which carries no `hwk`, so Enroll there is refused and
+the page sends you to sign in again.
+
+**8. Order.** In the child's normal window, open `http://localhost:7300`.
+It sends you to Keycloak once more (the console is a client of its own):
+`child`, Touch ID. Then type the order, for example *"Get me a cheese slice
+from Domino's, delivered to 12 Main St"*. The approval appears in the
+child's `:7500` window; approve with Touch ID. A large pizza needs the parent
+too, in the Private window. The RUNBOOK's step 4 has the flows worth
+showing. Two pages watch it happen and need no sign-in:
+`http://localhost:7300/logs` streams every tool call and policy verdict from
+the moment you open it (it does not replay earlier lines), and
+`http://localhost:7500/audit` shows each approval's evidence chain. All of
+these addresses are plain `http`; a browser that upgrades a typed address to
+`https` gets nothing, since nothing here serves TLS.
+
+**9. Afterwards.** Three kinds of stop, and what each costs you:
+
+- `up -d --build family` or `restart family` (the family container only):
+  Keycloak's passkeys are kept; the approval service's enrollments are not.
+  Repeat step 7 only.
+- Any `down`: back to step 2. Keycloak imports the realm afresh, so steps 3
+  to 7 are needed again. Add `-v` for new family keys as well.
+- Back to the home shape: `down` with both files (without `-v`), then
+  `up -d` with the base file alone. No reset is needed in that direction.
 
 **The file name is load-bearing.** A directory import requires
 `<realm>-realm.json`; with any other name 26.8.1 refuses to start with

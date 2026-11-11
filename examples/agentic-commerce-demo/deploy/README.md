@@ -33,8 +33,19 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --
 ```
 
 First boot creates the family workspace (keys, memberships, DID document)
-inside the `family-workspace` volume; it survives restarts, so passkey
-enrollments and DIDs stay stable.
+inside the `family-workspace` volume; it survives restarts, so the keys,
+the memberships and the DIDs stay stable. Passkey enrollments do not: the
+approval service holds them in memory, so after any restart of the family
+container both windows press Enroll again. The RUNBOOK's
+[Reset / teardown](RUNBOOK.md#6-reset--teardown) says what each kind of stop
+keeps.
+
+The passkey page at `http://localhost:7500` asks you to sign in as `child` or
+`parent`. The passwords are generated with the workspace and printed once at
+startup, on the line `[family] passkey page sign-in:` of
+`docker compose logs family`; they are also in `workspace/approval-users.json`
+inside the container. (Not in this shape's Keycloak variant, where sign-in is
+at the provider: see [`keycloak/README.md`](keycloak/README.md).)
 
 Requires `ANTHROPIC_API_KEY` in `.env` (see [RUNBOOK.md](RUNBOOK.md)) — it
 now drives the chat console's own agent loop, not just the merchant's
