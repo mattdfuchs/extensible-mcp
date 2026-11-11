@@ -271,17 +271,34 @@ def _p256_jwk_string(public_key) -> str:
     )
 
 
-def _mint_enrollment_vc(cred_id_b64: str, role: str, public_key) -> dict[str, Any]:
+def _mint_enrollment_vc(
+    cred_id_b64: str,
+    role: str,
+    public_key,
+    accounts: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """The admin's attestation of a passkey: this credential holds ``role``
+    and, when given, belongs to each of these ``accounts`` (``idp`` and
+    ``account``, the issuer and subject of the sign-in that enrolled it).
+
+    The production invoice bundle's ``account_bound`` check reads that list
+    against the console session's principal: the person at the console and
+    the approver must be one member. Without it, a charge under a principal
+    is denied however many approvals are in; with no principal (the home
+    shape) the check is vacuous and the list is not minted.
+    """
     from joserfc import jws as joserfc_jws
 
     now = int(time.time())
+    subject: dict[str, Any] = {"role": role, "publicKey": _p256_jwk_string(public_key)}
+    if accounts:
+        subject["accounts"] = accounts
     claims = {
         "iss": _admin_signer["did"],
         "sub": cred_id_b64,
         "nbf": now - 60,
         "exp": now + _ENROLLMENT_TTL_SECONDS,
-        "vc": {"credentialSubject": {
-            "role": role, "publicKey": _p256_jwk_string(public_key)}},
+        "vc": {"credentialSubject": subject},
     }
     token = joserfc_jws.serialize_compact(
         {"alg": "Ed25519"}, json.dumps(claims).encode(),
@@ -405,8 +422,16 @@ async def register(request: Request) -> JSONResponse:
         raise HTTPException(400, f"registration failed: {e}") from e
     cred_id_b64 = b64url_encode(cred_id)
     _credentials[cred_id_b64] = {"key": public_key, "role": role}
+    # The enrolling sign-in is the binding. The organization's provider has
+    # just said which account this is, and (``amr``) that a passkey proved
+    # it, so the admin can attest that the new passkey belongs to that
+    # account -- which is what the proxy later matches the console session
+    # against. The home shape has no principal at the proxy and binds none.
+    accounts = (
+        [{"idp": claims["iss"], "account": claims["sub"]}] if _external is not None else None
+    )
     if _admin_signer is not None:
-        _enrollments[cred_id_b64] = _mint_enrollment_vc(cred_id_b64, role, public_key)
+        _enrollments[cred_id_b64] = _mint_enrollment_vc(cred_id_b64, role, public_key, accounts)
     return JSONResponse(
         {"credentialId": cred_id_b64, "role": role,
          "adminAttested": _admin_signer is not None}
