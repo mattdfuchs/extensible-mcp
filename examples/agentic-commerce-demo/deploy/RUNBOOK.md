@@ -107,9 +107,26 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml exec 
 ## 6. Reset / teardown
 
 ```sh
-docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down        # stop (volumes survive)
-docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down -v     # full reset: new keys, new trust, re-enroll
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down        # stop: keys, memberships and trust survive in the volumes
+docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down -v     # full reset: new keys, new memberships, new trust
 ```
+
+Passkey enrollments survive neither: the approval service holds them in
+memory, so after either command (or a plain restart of the family container)
+both windows press Enroll again.
+
+Running the Keycloak overlay, pass **both** compose files to `down`, or
+Keycloak stays up as an orphan on `:8080`. Keycloak has no data volume of
+its own in the overlay: any `down`, with or without `-v`, loses the passkeys
+registered at Keycloak and re-imports the realm clean, so
+`keycloak/first_passkeys.py arm` and `seal` are run again. Only
+`up -d --build family` and `restart` keep them.
+
+Switching shapes: from the organization shape to the home shape needs no
+reset, since the memberships bound at first boot pass `account_bound` when
+the call carries no caller account. From the home shape to the organization
+shape needs `down -v`: memberships signed without the issuer bind nobody
+under a principal, and every settlement is denied with the binding sentence.
 
 ## Troubleshooting
 

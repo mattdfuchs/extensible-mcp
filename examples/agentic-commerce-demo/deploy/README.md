@@ -33,8 +33,12 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --
 ```
 
 First boot creates the family workspace (keys, memberships, DID document)
-inside the `family-workspace` volume; it survives restarts, so passkey
-enrollments and DIDs stay stable.
+inside the `family-workspace` volume; it survives restarts, so the keys,
+the memberships and the DIDs stay stable. Passkey enrollments do not: the
+approval service holds them in memory, so after any restart of the family
+container both windows press Enroll again. The RUNBOOK's
+[Reset / teardown](RUNBOOK.md#6-reset--teardown) says what each kind of stop
+keeps.
 
 Requires `ANTHROPIC_API_KEY` in `.env` (see [RUNBOOK.md](RUNBOOK.md)) — it
 now drives the chat console's own agent loop, not just the merchant's

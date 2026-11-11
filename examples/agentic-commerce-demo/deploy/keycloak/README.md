@@ -118,7 +118,11 @@ What the fragment sets, and why each line is there:
   `account_bound` check then requires the console session to be the member
   whose wallet signed the request. A workspace created *without* the issuer
   has unbound memberships, which bind nobody under a principal: run
-  `docker compose down -v` before switching modes.
+  `docker compose down -v` (with both compose files) before moving from the
+  home shape to this one. The other way round needs no reset, since
+  `account_bound` passes when the call carries no caller account. Keycloak
+  itself keeps no volume in the overlay, so any `down` loses the passkeys
+  registered at it and the first-passkey step below is run again.
 
 Then, once:
 
