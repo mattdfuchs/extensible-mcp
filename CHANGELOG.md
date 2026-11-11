@@ -3,6 +3,40 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.3.6] - 2026-11-02
+
+Two changes, and the first is urgent for anyone installing fresh.
+
+**The dependency ranges are bounded** to the majors this line was built and
+tested on, `fastmcp>=2.0.0,<4` and `mcp>=1.0.0,<2`.
+
+**The stdio CLI keys discovery on one bucket, not on the session id.** The
+proxy's CLI serves stdio only, so one process serves exactly one client, and
+that fact, rather than the framework's session id, is now what the
+discovered-tools guarantee keys on (`create_server(single_session=True)`,
+which `main()` sets). Behaviour is unchanged on FastMCP 3, where the session
+id is stable for the life of the connection; on FastMCP 4 it is what makes the
+CLI work at all (below). An embedder serving several clients over HTTP keeps
+per-session scoping by leaving the flag off, as before.
+
+**Why.** FastMCP 4 shipped on 2026-08-31 on MCP SDK 2, which speaks the
+2026-07-28 protocol revision. That revision removes the protocol session, and
+under FastMCP 4's default sessionless mode `ctx.session_id` is a fresh value
+on every request. This proxy scopes discovered tools per session (0.3.2), so
+on FastMCP 4 every `call_tool` after a `search_tools` is refused as "not
+discovered". 0.3.5 declared `fastmcp>=2.0.0` and `mcp>=1.0.0`, so a fresh
+install today resolves to FastMCP 4.1.5 / SDK 2.3.0 and the proxy denies every
+call. It fails closed, which is the right direction, but it is unusable.
+
+An existing installation on FastMCP 3.x is unaffected and needs nothing. A
+fresh install, or one that re-resolved to FastMCP 4, should upgrade to 0.3.6.
+With the second change the CLI also runs correctly on FastMCP 4 for anyone who
+overrides the bound; the embedding API does not, since per-session scoping has
+no stable key there.
+
+Adopting the 2026-07-28 revision, where discovery scoping has to key on
+something other than the session, is a later release; it is not a patch.
+
 ## [0.3.5] - 2026-10-27
 
 Three things, and they are one thing: a third policy engine, the machinery it
