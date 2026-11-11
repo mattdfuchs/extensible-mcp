@@ -16,6 +16,8 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 import mcp.types as mcp_types
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
+from pydantic import ValidationError
 
 from .config import read_tokens_file
 from .credentials import (
@@ -88,26 +90,47 @@ class _BearerAuth(httpx2.Auth):
         raise RuntimeError("_BearerAuth is async-only; use an httpx2.AsyncClient")
 
 
+def _modern_only(e: MCPError) -> bool:
+    """A -32022 whose ``supported`` list names no handshake-era version:
+    the one refusal of the probe that is a real incompatibility."""
+    if e.code != mcp_types.UNSUPPORTED_PROTOCOL_VERSION:
+        return False
+    try:
+        supported = mcp_types.UnsupportedProtocolVersionErrorData.model_validate(e.data).supported
+    except ValidationError:
+        return False
+    return not any(v in HANDSHAKE_PROTOCOL_VERSIONS for v in supported)
+
+
 async def negotiate(session: ClientSession) -> None:
     """Open the MCP layer over a connected stream pair, on whichever
     protocol revision the downstream speaks.
 
     The 2026-07-28 revision has no handshake: capabilities come back from
     ``server/discover`` and every request carries the version. A downstream
-    on an older revision answers that with METHOD_NOT_FOUND, so the legacy
+    on an older revision does not know that method, and the legacy
     ``initialize`` handshake is the fallback. The SDK leaves the fallback to
     the caller as policy; this proxy's policy is to speak to both, because
     which revision a downstream runs is its business, not the operator's.
-    Any other refusal of ``server/discover`` propagates: a timeout or a
-    version the two sides cannot agree on is a failed connection, not a
-    reason to pretend the server is old.
+
+    The fallback is a denylist, as in the SDK's own ``mode="auto"``: every
+    refusal of the probe falls back except the one that is positive evidence
+    of a modern-only server with no version in common (-32022 naming no
+    handshake-era version). A legacy server may refuse an unknown method
+    with any code, and which code is its business too: GitHub's server
+    answers a request before ``initialize`` with code 0, and only
+    METHOD_NOT_FOUND would have left it unreachable. A discover answer that
+    advertises no modern version is a legacy advertisement, not a failure.
+    Transport errors are not refusals and propagate.
     """
     try:
         await session.discover()
     except MCPError as e:
-        code = getattr(getattr(e, "error", None), "code", None)
-        if code != mcp_types.METHOD_NOT_FOUND:
+        if _modern_only(e):
             raise
+        await session.initialize()
+    except RuntimeError:
+        # adopt(): the server answered discover but shares no modern version
         await session.initialize()
 
 

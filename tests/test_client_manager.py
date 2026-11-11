@@ -11,10 +11,15 @@ import httpx
 import httpx2
 import pytest
 
+import mcp.types as mcp_types
+from mcp.shared.exceptions import MCPError
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
+
 from extensible_mcp.client_manager import (
     ClientManager,
     TokenExpiredError,
     _Connection,
+    negotiate,
 )
 from extensible_mcp.config import read_tokens_file
 from extensible_mcp.types import ServerConfig
@@ -326,3 +331,77 @@ async def test_shutdown_terminates_the_child_process():
     assert len(open_transports()) == before + 1
     await mgr.close_all()
     assert len(open_transports()) == before
+
+
+# -- negotiate: the discover probe's fallback is a denylist ------------------- #
+
+
+class _Session:
+    """A session whose probe answers as scripted; records the fallback."""
+
+    def __init__(self, discover_exc=None):
+        self._exc = discover_exc
+        self.initialized = False
+
+    async def discover(self):
+        if self._exc is not None:
+            raise self._exc
+
+    async def initialize(self):
+        self.initialized = True
+
+
+class TestNegotiate:
+    @pytest.mark.asyncio
+    async def test_method_not_found_falls_back_to_initialize(self):
+        s = _Session(MCPError(code=mcp_types.METHOD_NOT_FOUND, message="Method not found"))
+        await negotiate(s)
+        assert s.initialized
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_with_any_other_code_falls_back_too(self):
+        # GitHub's server (go-sdk) answers a request before initialize with
+        # code 0, which is what left it unreachable when only -32601 fell back.
+        s = _Session(
+            MCPError(code=0, message='method "server/discover" is invalid during session initialization')
+        )
+        await negotiate(s)
+        assert s.initialized
+
+    @pytest.mark.asyncio
+    async def test_a_discover_answer_with_no_modern_version_in_common_falls_back(self):
+        s = _Session(RuntimeError("No mutually supported modern protocol version"))
+        await negotiate(s)
+        assert s.initialized
+
+    @pytest.mark.asyncio
+    async def test_unsupported_version_naming_a_handshake_version_falls_back(self):
+        s = _Session(
+            MCPError(
+                code=mcp_types.UNSUPPORTED_PROTOCOL_VERSION,
+                message="unsupported",
+                data={"supported": [HANDSHAKE_PROTOCOL_VERSIONS[-1]], "requested": "2026-07-28"},
+            )
+        )
+        await negotiate(s)
+        assert s.initialized
+
+    @pytest.mark.asyncio
+    async def test_a_modern_only_server_with_no_version_in_common_is_a_failed_connection(self):
+        s = _Session(
+            MCPError(
+                code=mcp_types.UNSUPPORTED_PROTOCOL_VERSION,
+                message="unsupported",
+                data={"supported": ["2099-01-01"], "requested": "2026-07-28"},
+            )
+        )
+        with pytest.raises(MCPError):
+            await negotiate(s)
+        assert not s.initialized
+
+    @pytest.mark.asyncio
+    async def test_a_transport_error_is_not_a_refusal(self):
+        s = _Session(ConnectionError("peer closed"))
+        with pytest.raises(ConnectionError):
+            await negotiate(s)
+        assert not s.initialized
