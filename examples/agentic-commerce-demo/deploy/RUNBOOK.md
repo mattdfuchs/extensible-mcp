@@ -150,6 +150,12 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml down 
   so enter the password again and press Approve once more; do not re-enroll.
   If the invoice expired meanwhile (the Log says `EXPIRED`), ask the
   assistant to order again.
+- **Enroll logs `enrolment refused: insufficient_scope: enrollment requires an
+  authentication method in {hwk}...`** (Keycloak mode) — the window's sign-in
+  was not by passkey: typically the one from `first_passkeys.py arm`, kept in
+  the window after `seal`. The page signs you in again at the provider with
+  `prompt=login`; sign in with username plus passkey and press Enroll once more.
+  Closing the window and opening a new one does the same.
 - **Passkey prompt errors / credential not found** — you enrolled before a
   container restart (in-memory), or opened `127.0.0.1` instead of
   `localhost`. Re-enroll both roles.

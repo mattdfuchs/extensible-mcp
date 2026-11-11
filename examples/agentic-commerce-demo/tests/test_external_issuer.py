@@ -240,6 +240,16 @@ def test_authorize_sends_the_browser_to_the_provider(client):
     }
 
 
+def test_only_prompt_login_crosses_to_the_provider(client):
+    """After a refused enrolment the page asks for a fresh authentication
+    (``prompt=login``); nothing else the address bar carries is relayed."""
+    r = client.get("/authorize", params={**PAGE_QUERY, "prompt": "login"}, follow_redirects=False)
+    assert r.status_code == 302
+    assert parse_qs(urlparse(r.headers["location"]).query)["prompt"] == ["login"]
+    r = client.get("/authorize", params={**PAGE_QUERY, "prompt": "none"}, follow_redirects=False)
+    assert "prompt" not in parse_qs(urlparse(r.headers["location"]).query)
+    r = client.get("/authorize", params=PAGE_QUERY, follow_redirects=False)
+    assert "prompt" not in parse_qs(urlparse(r.headers["location"]).query)
 def test_the_first_passkey_route_is_a_sign_in_that_keeps_nothing(client, provider):
     """``first_passkeys.py arm`` sends each person here: the provider's flow
     registers the passkey, and the page that comes back only says thank you.
