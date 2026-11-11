@@ -118,8 +118,11 @@ All four pipelines are extensible — add any filter implementing the protocol.
 - Production Verifiable-Credential enforcement end-to-end: request VC + conditional authorization VC, memberships verified against did:web admin keys, the signed request bound field-by-field to the actual call, credentials stripped before the downstream call
 - Per-server bundle selection at admission time, fail closed — a server the proxy cannot positively place is not connected
 - Search-side guidance: governed tools surface their credential parameters and when each is required
-- Downstream credentials acquired by OAuth grant (`private_key_jwt` or `client_credentials`), short-lived and held in memory; the on-disk tokens file remains supported until a runnable example of the grant path ships
-- 750 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 133 and 51
+- Downstream credentials acquired by OAuth grant (`private_key_jwt` or `client_credentials`), short-lived and held in memory; the on-disk tokens file remains supported on stdio until a runnable example of the grant path ships
+- Streamable HTTP as a shared deployment on FastMCP 4 / MCP SDK 2 (the 2026-07-28 revision): a verified `Principal` on every pipeline, `require_principal` enforced ahead of every pipeline, discovery scoped per person rather than per connection, and a start-up gate that refuses a shared proxy with no inbound auth or with a tokens file
+- Per-role scoping of the catalogue (`access_control.by_role`, additive, fail closed), the `caller` fetch-plan source, and the token/evidence seam: admin-bound accounts in the membership credential, one `account_bound` condition per tier in the production policies
+- A policy set (`policyset.json`) declaring routes, server types and selection, checked at load and bind, with an admission audit logged at boot
+- 1193 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 236 and 55
 - Example configs for Claude Desktop and OpenClaw, targeting GitHub's MCP server
 
 ## ABAC with signed claims
@@ -136,7 +139,7 @@ Still open: wiring the issuer registry into credential acquisition, and broader 
 
 ## Technical details
 
-- Python 3.11+, built with FastMCP and the MCP SDK
+- Python 3.11+, built with FastMCP 4 and MCP SDK 2 (the 2026-07-28 protocol revision)
 - Policy engines packaged as optional extras: `extensible-mcp[wasm]` (wasmtime + joserfc), `[cel]` (cel-python), `[cedar]` (cedarpy); `[rego]` serves the single-file `rego_policy` filter, and `[oauth]` the `private_key_jwt` downstream credential
 - Embeddings: all-MiniLM-L6-v2 (~22M parameters) via FastEmbed/ONNX, runs on CPU. No PyTorch dependency.
 - Config format compatible with Claude Desktop's `mcpServers` format
