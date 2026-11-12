@@ -667,6 +667,27 @@ uv run extensible-mcp --config /path/to/config.json --transport http --allow-ano
 
 `--transport http` refuses to start rather than warn when the configuration was sound only because one process served one person: with no `auth` block and no `--allow-anonymous`, with `--allow-anonymous` on a non-loopback host or alongside an `auth` block, and with a tokens file configured. `extensible-mcp --help` states the constraint. On HTTP the `load_mcp_server` tool is refused at the handler: servers on a shared proxy are configured by an operator, not loaded by a model, so `may_load` has no effect there. The anonymous flag is one person's proxy and nothing else: every principal is `None`, so nothing is scoped per person. See [Inbound identity](#inbound-identity-who-a-session-acts-for).
 
+A platform that loads a server's tools once rather than discovering them on demand is served by [static exposure](#static-exposure-platforms-that-load-tools-once).
+
+### Static exposure: platforms that load tools once
+
+Workflow and agent platforms load a server's tool set once and dispatch tools themselves. n8n's MCP Client Tool node sends `tools/list` on connect and hands the result to its agent as fixed tools; the LangChain, Google ADK and Strands MCP adapters list a server's tools when the agent is built and bind them the same way. Pointed at the proxy as shipped, such a platform sees three meta-tools and would have to drive discovery itself, which its tool model does not expect.
+
+```json
+{
+  "exposure": "static",
+  "mcpServers": { "...": "..." }
+}
+```
+
+With `"exposure": "static"`, `tools/list` answers with the governed catalogue instead: every downstream tool under its qualified name (`github__create_issue`), and every local tool under its own, each with the schema `search_tools` would have printed for it, so a tool governed by a policy bundle shows its credential parameters marked required or required-when. The platform loads that list and calls the tools by name. `search_tools`, `call_tool` and `load_mcp_server` are neither listed nor reachable: static means static, with no discovery workflow and no runtime loading. The default, `"dynamic"`, is the three meta-tools as described everywhere else in this README.
+
+**Enforcement does not move.** Nothing is registered on the server for a listed tool; the list is a view composed over the proxy's own registry, and every listed name dispatches through the same path as a `call_tool` call, so access control, role scoping, the policy bundle and single-use evidence run on it unchanged. A refusal comes back as a tool-level error carrying the rendered reason, which the model sees and can act on; an allowed call returns the downstream server's native result. This is the property that separates the proxy from an enforcement harness that runs inside the agent's own process: a harness is a check the agent consults, and anything in that process can call the tool without consulting it. The proxy is a wall for every tool it fronts, because the only way to reach the tool is through it. (A platform's native steps, such as a shell node, never cross MCP and are not behind the wall; that is a separate mechanism, not this one.)
+
+**The listing is a menu, not an allowance.** A platform may list at activation, before any user exists, and call much later; it may open a fresh connection per call. None of that matters to the rule, because the proxy learns who is calling from the token on each request and checks every call against that caller's view at that moment, whoever listed and whenever. A tool listed to one identity and called under another whose roles exclude it is refused with the reason; a tool absent from the list cannot be called, since the platform never knew it; a principal no role places under `by_role` lists nothing and is refused everything; a list with no token on a proxy that requires one is refused at the transport, so a misconfigured workflow fails to activate rather than binding a wrong catalogue.
+
+**One client per user.** The token on the platform's MCP client is the identity the proxy enforces for. Build the client per user run, carrying that user's token (the LangChain, ADK and Strands clients take headers at construction; n8n's node authenticates with a stored credential, so check whether it can carry a per-execution header before relying on it). A client built once at startup with a service credential makes every user one principal, binds membership-bound tools to the service, and leaves the human invisible to the proxy, which cannot detect the difference from the inside. The HTTP gate, `require_principal` and `by_role` apply exactly as in dynamic mode; see [Inbound identity](#inbound-identity-who-a-session-acts-for).
+
 ## Examples
 
 The [`examples/`](examples/) directory has ready-to-use configs for proxying GitHub's official MCP server through extensible-mcp, with two layers of security in the filter pipeline: a glob deny pattern (`*__delete_*`) that blocks all delete operations, and a Rego policy that blocks closing issues based on argument shape.

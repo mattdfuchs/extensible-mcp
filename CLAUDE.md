@@ -67,21 +67,23 @@ docker compose -f examples/agentic-commerce-demo/deploy/docker-compose.yml up --
 
 ## Architecture
 
-The proxy is a FastMCP server that connects to downstream MCP servers as a client, indexes their tools, and exposes three meta-tools:
+The proxy is a FastMCP server that connects to downstream MCP servers as a client, indexes their tools, and, under the default `"exposure": "dynamic"`, exposes three meta-tools:
 
 1. **`search_tools(query)`** — embeds the query and runs cosine similarity against the tool index, returns matching tool definitions
 2. **`call_tool(tool_name, arguments)`** — dispatches to the correct downstream server by qualified name (`{server}__{tool}`), or to a local tool by bare name
 3. **`load_mcp_server(server_name, url)`** — connects to a remote (Streamable HTTP) MCP server at runtime and indexes its tools
 
+Under `"exposure": "static"` (for a platform that loads a server's tools once and dispatches them itself: n8n's MCP Client Tool node, the LangChain, Google ADK and Strands MCP adapters), `tools/list` answers with the caller's view of the governed catalogue instead, one entry per tool under its qualified name with the augmented schema, and the meta-tools are neither listed nor reachable. The view is the whole index run through the search pipeline with the empty query, so one rule scopes listing and search; the callable set is derived from that view per call (`StaticCatalogueFilter`, in `DiscoveredToolsFilter`'s slot), so the listing is a menu and the token on each call decides. Runtime loading does not exist in this mode.
+
 ### The central invariant
 
-**Every filter runs inside `call_tool_handler`.** Nothing else in the process gates a call. A tool registered directly on the `FastMCP` object is therefore reachable by name and subject to nothing — not access control, not a policy bundle, not even the rule that a tool must have been surfaced by `search_tools`. This was a live hole until `local_tools` closed it; do not reintroduce it by decorating `@server.tool()` after `create_server` returns.
+**Every filter runs inside `_dispatch_call`**, which both entry points use: the `call_tool` meta-tool, and under static exposure a tool called by its listed name (the `StaticExposure` middleware routes every listed name there and never registers one). Nothing else in the process gates a call. A tool registered directly on the `FastMCP` object is therefore reachable by name and subject to nothing — not access control, not a policy bundle, not even the rule that a tool must have been surfaced by `search_tools`. This was a live hole until `local_tools` closed it; do not reintroduce it by decorating `@server.tool()` after `create_server` returns.
 
 `__` is reserved: it splits a qualified name back into server and tool. `ServerConfig` and `LocalTool` reject a name containing it at construction, and `load_mcp_server` rejects it too — otherwise a server named with one re-parses as a *different* server and escapes per-server routing while still being dispatched.
 
 ### Filter pipelines
 
-Four independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ResponseFilterPipeline`, `ServerLoadFilterPipeline`) gate search, call (request), response, and server-load operations respectively. The only structurally enforced rule is `DiscoveredToolsFilter`: the LLM cannot call any tool it has not previously surfaced via `search_tools` (scoped per MCP session; on stdio one process serves one client, so the scope is the process). The other shipped filters (`AccessControlFilter`, `RegoPolicyFilter`, `ServerLoadAccessControlFilter`, `SimilarityThresholdFilter`) are reference implementations — third parties are expected to write their own and inject them via the `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, `extra_load_filters` kwargs on `create_server`. Response filters can inspect or modify tool results on the way back to the LLM (no built-in response filters ship). Custom filters run after the built-ins.
+Four independent pipelines (`FilterPipeline`, `CallFilterPipeline`, `ResponseFilterPipeline`, `ServerLoadFilterPipeline`) gate search, call (request), response, and server-load operations respectively. The only structurally enforced rule is `DiscoveredToolsFilter`: the LLM cannot call any tool it has not previously surfaced via `search_tools` (scoped per principal, or per process when there is none; on stdio one process serves one client). Under static exposure `StaticCatalogueFilter` holds that slot and derives the same rule from the caller's view of the catalogue. The other shipped filters (`AccessControlFilter`, `RegoPolicyFilter`, `ServerLoadAccessControlFilter`, `SimilarityThresholdFilter`) are reference implementations — third parties are expected to write their own and inject them via the `extra_search_filters`, `extra_call_filters`, `extra_response_filters`, `extra_load_filters` kwargs on `create_server`. Response filters can inspect or modify tool results on the way back to the LLM (no built-in response filters ship). Custom filters run after the built-ins.
 
 ### Policy bundles
 
