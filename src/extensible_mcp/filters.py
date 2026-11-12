@@ -8,7 +8,7 @@ import fnmatch
 import inspect
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -299,6 +299,55 @@ class DiscoveredToolsFilter:
         return CallFilterResult(
             allowed=False,
             reason=f"Tool '{request.tool_name}' has not been discovered via search_tools. Search for tools first.",
+            tool_name=request.tool_name,
+            arguments=request.arguments,
+        )
+
+
+class StaticCatalogueFilter:
+    """Call-side filter that takes :class:`DiscoveredToolsFilter`'s slot under
+    static exposure, and is just as mandatory there.
+
+    Under static exposure the whole catalogue a person may see is listed to
+    them at once, so "surfaced" means "in your view", and the rule is
+    **derived** per call rather than recorded at ``tools/list``: a tool is
+    callable by a principal iff it is in that principal's view right now. A
+    recorded set would have an edge a platform cannot recover from, since it
+    lists once and never again: the set is bounded and evicts its oldest
+    scope. A derived rule has no state to evict, and it is also what makes
+    the listing a menu rather than an allowance -- a platform that listed
+    under one identity and calls under another is checked against the
+    caller's view, never the lister's.
+
+    ``catalogue`` answers "the qualified names in this principal's view"; it
+    is bound by the server once the index exists. Unbound, the filter
+    refuses everything: an unset filter must never permit.
+    """
+
+    def __init__(self) -> None:
+        self._catalogue: Callable[[Principal | None], set[str]] | None = None
+
+    def bind(self, catalogue: Callable[[Principal | None], set[str]]) -> None:
+        self._catalogue = catalogue
+
+    def register(self, tool_names: list[str], principal: Principal | None = None) -> None:
+        """Listing records nothing: the view is recomputed on every call."""
+
+    def discovered_for(self, principal: Principal | None = None) -> set[str]:
+        return self._catalogue(principal) if self._catalogue is not None else set()
+
+    async def check(self, request: CallRequest) -> CallFilterResult:
+        if self._catalogue is not None and request.tool_name in self._catalogue(request.principal):
+            return CallFilterResult(
+                allowed=True,
+                tool_name=request.tool_name,
+                arguments=request.arguments,
+            )
+        return CallFilterResult(
+            allowed=False,
+            reason=(
+                f"Tool '{request.tool_name}' is not in this proxy's catalogue for you."
+            ),
             tool_name=request.tool_name,
             arguments=request.arguments,
         )

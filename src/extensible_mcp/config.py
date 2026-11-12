@@ -102,6 +102,15 @@ class PrincipalConfig:
     role_map: Optional[dict[str, str]] = None
 
 
+#: The two ways the proxy answers ``tools/list``. ``dynamic`` is the three
+#: meta-tools, and the model discovers the catalogue through ``search_tools``.
+#: ``static`` is the governed catalogue itself, one entry per tool under its
+#: qualified name, for a platform that loads a server's tools once and
+#: dispatches them itself; every listed name still dispatches through the
+#: same call path and the same filters.
+EXPOSURES = ("dynamic", "static")
+
+
 @dataclass
 class Config:
     servers: list[ServerConfig] = field(default_factory=list)
@@ -110,6 +119,13 @@ class Config:
     credentials: dict[str, CredentialConfig] = field(default_factory=dict)
     auth: Optional[AuthConfig] = None
     principal: PrincipalConfig = field(default_factory=PrincipalConfig)
+    exposure: str = "dynamic"
+
+    def __post_init__(self) -> None:
+        if self.exposure not in EXPOSURES:
+            raise ValueError(
+                f"'exposure' must be one of {list(EXPOSURES)}, not {self.exposure!r}"
+            )
 
 
 def _default_config_paths() -> list[Path]:
@@ -608,6 +624,10 @@ def load_config(path: Path) -> Config:
     if not servers:
         raise ValueError("Config must define at least one server in 'mcpServers'")
 
+    exposure = raw.get("exposure", "dynamic")
+    if not isinstance(exposure, str) or exposure not in EXPOSURES:
+        raise ValueError(f"'exposure' must be one of {list(EXPOSURES)}, not {exposure!r}")
+
     return Config(
         servers=servers,
         filters=filters,
@@ -615,4 +635,5 @@ def load_config(path: Path) -> Config:
         credentials=credentials,
         auth=_load_auth(raw, path.parent),
         principal=_load_principal(raw),
+        exposure=exposure,
     )
