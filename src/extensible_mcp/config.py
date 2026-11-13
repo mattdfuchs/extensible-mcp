@@ -13,6 +13,7 @@ from typing import Any, Optional
 from .credentials import (
     GRANT_CLIENT_CREDENTIALS,
     GRANT_PRIVATE_KEY_JWT,
+    GRANT_TOKEN_EXCHANGE,
     SUPPORTED_GRANTS,
 )
 from .native import (
@@ -250,6 +251,8 @@ _COMMON_CREDENTIAL_KEYS = frozenset({"grant", "token_endpoint", "client_id"})
 _GRANT_KEYS = {
     GRANT_PRIVATE_KEY_JWT: frozenset({"private_key_file"}),
     GRANT_CLIENT_CREDENTIALS: frozenset({"client_secret_env"}),
+    # The proxy authenticates to the exchange with exactly one of the two.
+    GRANT_TOKEN_EXCHANGE: frozenset({"private_key_file", "client_secret_env"}),
 }
 
 
@@ -327,7 +330,7 @@ def _load_credentials(
                     "must have a 'private_key_file' field"
                 )
             private_key_file = _resolve_relative(key_file, config_dir)
-        else:
+        elif grant == GRANT_CLIENT_CREDENTIALS:
             client_secret_env = entry.get("client_secret_env")
             if not client_secret_env:
                 raise ValueError(
@@ -335,6 +338,20 @@ def _load_credentials(
                     "must have a 'client_secret_env' field naming the environment "
                     "variable that holds the secret"
                 )
+        else:
+            key_file = entry.get("private_key_file")
+            client_secret_env = entry.get("client_secret_env")
+            if bool(key_file) == bool(client_secret_env):
+                raise ValueError(
+                    f"Credential '{name}' uses the token_exchange grant, so it "
+                    "must have exactly one of 'private_key_file' (the proxy signs "
+                    "an assertion) or 'client_secret_env' (the proxy sends a "
+                    "secret) for the proxy's own client authentication at the "
+                    "exchange"
+                )
+            if key_file:
+                private_key_file = _resolve_relative(key_file, config_dir)
+                client_secret_env = None
 
         credentials[name] = CredentialConfig(
             name=name,
@@ -516,6 +533,17 @@ def _load_http_request(raw: Any, credentials: dict[str, CredentialConfig]) -> Ht
             raise ValueError(
                 f"Host entry for {origin} names credential '{credential}', which is not "
                 f"defined in 'credentials' (defined: {sorted(credentials) or 'none'})"
+            )
+        if credential is not None and credentials[credential].grant == GRANT_TOKEN_EXCHANGE:
+            # The rider presents the credential the proxy holds for the host,
+            # the proxy's own; a delegated one would need the caller's token
+            # on the rider's path, which this release does not carry there.
+            raise ValueError(
+                f"Host entry for {origin} names credential '{credential}', whose "
+                "grant is token_exchange. platform.http_request presents the "
+                "proxy's own credential for a host; a per-caller one is not "
+                "supported there. Use a client_credentials or private_key_jwt "
+                "credential for the host."
             )
         hosts[origin] = HostRule(
             origin=origin,
