@@ -15,7 +15,17 @@ from .credentials import (
     GRANT_PRIVATE_KEY_JWT,
     SUPPORTED_GRANTS,
 )
-from .types import CredentialConfig, ServerConfig
+from .native import (
+    EXEC_TOOL,
+    HTTP_REQUEST_TOOL,
+    SHIPPED_SCHEMAS,
+    HostRule,
+    HttpRequestConfig,
+    NativeTool,
+    PlatformConfig,
+    normalize_origin,
+)
+from .types import PLATFORM_SERVER, CredentialConfig, ServerConfig
 
 
 @dataclass
@@ -120,6 +130,10 @@ class Config:
     auth: Optional[AuthConfig] = None
     principal: PrincipalConfig = field(default_factory=PrincipalConfig)
     exposure: str = "dynamic"
+    # The ``platform`` pseudo-server: the native tools the endpoints may be
+    # asked about, and whether the proxy runs ``http_request`` itself. ``None``
+    # is a proxy with no native tools, which is every deployment before 0.4.1.
+    platform: Optional[PlatformConfig] = None
 
     def __post_init__(self) -> None:
         if self.exposure not in EXPOSURES:
@@ -343,9 +357,10 @@ def _load_policy_bundles(
     """Parse ``filters.policy_bundles``, refusing anything ambiguous.
 
     Keyed by server name so that a bundle governs a *server*, the same unit
-    ``bundle_router`` governs; a name that is not in ``mcpServers`` is a typo
-    that would otherwise leave a gate declared and never attached, which is
-    the quiet failure this loader exists to refuse. Unknown keys are refused
+    ``bundle_router`` governs; a name that is not in ``mcpServers`` (or the
+    ``platform`` pseudo-server, when the config declares native tools) is a
+    typo that would otherwise leave a gate declared and never attached, which
+    is the quiet failure this loader exists to refuse. Unknown keys are refused
     for the same reason: ``"singe_use"`` must not mean "no single use".
     """
     if not isinstance(raw, dict):
@@ -402,6 +417,155 @@ def _load_policy_bundles(
             single_use=list(single_use),
         )
     return bundles
+
+
+_PLATFORM_KEYS = frozenset({"tools", "http_request"})
+_NATIVE_TOOL_KEYS = frozenset({"description", "input_schema"})
+_HTTP_REQUEST_KEYS = frozenset({"hosts", "timeout", "max_response"})
+_HOST_KEYS = frozenset({"methods", "paths", "headers", "credential"})
+
+
+def _load_native_tools(raw: Any) -> dict[str, NativeTool]:
+    if not isinstance(raw, dict):
+        raise ValueError("'platform.tools' must be an object mapping a tool name to its declaration")
+    tools: dict[str, NativeTool] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("'platform.tools' has an empty tool name")
+        if "__" in name:
+            raise ValueError(
+                f"Platform tool name {name!r} must not contain '__'; it is listed as "
+                f"'{PLATFORM_SERVER}__{name}' and the separator is reserved"
+            )
+        if not isinstance(entry, dict):
+            raise ValueError(f"Platform tool '{name}' must be an object")
+        unknown = sorted(set(entry) - _NATIVE_TOOL_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Platform tool '{name}' has unexpected field(s) {unknown}; "
+                f"allowed: {sorted(_NATIVE_TOOL_KEYS)}"
+            )
+        shipped = SHIPPED_SCHEMAS.get(name)
+        description = entry.get("description", shipped[0] if shipped else None)
+        schema = entry.get("input_schema", shipped[1] if shipped else None)
+        if not isinstance(description, str) or not description:
+            raise ValueError(
+                f"Platform tool '{name}' needs a 'description': only "
+                f"{sorted(SHIPPED_SCHEMAS)} ship with one"
+            )
+        if not isinstance(schema, dict):
+            raise ValueError(
+                f"Platform tool '{name}' needs an 'input_schema' object: a policy can "
+                "judge a native tool only as far as its declared arguments say what "
+                f"it does, and only {sorted(SHIPPED_SCHEMAS)} ship with a schema"
+            )
+        tools[name] = NativeTool(name=name, description=description, input_schema=schema)
+    return tools
+
+
+def _load_http_request(raw: Any, credentials: dict[str, CredentialConfig]) -> HttpRequestConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("'platform.http_request' must be an object")
+    unknown = sorted(set(raw) - _HTTP_REQUEST_KEYS)
+    if unknown:
+        raise ValueError(
+            f"'platform.http_request' has unexpected field(s) {unknown}; "
+            f"allowed: {sorted(_HTTP_REQUEST_KEYS)}"
+        )
+    hosts_raw = raw.get("hosts")
+    if not isinstance(hosts_raw, dict) or not hosts_raw:
+        raise ValueError(
+            "'platform.http_request.hosts' must be a non-empty object mapping an "
+            "origin (scheme://host[:port]) to what the proxy may send it; with no "
+            "hosts the proxy would run nothing, so declare none instead"
+        )
+    hosts: dict[str, HostRule] = {}
+    for origin_raw, entry in hosts_raw.items():
+        try:
+            origin = normalize_origin(origin_raw)
+        except ValueError as e:
+            raise ValueError(f"'platform.http_request.hosts': {e}")
+        if origin in hosts:
+            raise ValueError(f"'platform.http_request.hosts' names {origin} twice")
+        if not isinstance(entry, dict):
+            raise ValueError(f"Host entry for {origin} must be an object")
+        unknown = sorted(set(entry) - _HOST_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Host entry for {origin} has unexpected field(s) {unknown}; "
+                f"allowed: {sorted(_HOST_KEYS)}"
+            )
+        methods = entry.get("methods", ["GET"])
+        if not isinstance(methods, list) or not methods or not all(
+            isinstance(m, str) and m for m in methods
+        ):
+            raise ValueError(f"Host entry for {origin}: 'methods' must be a non-empty list of methods")
+        paths = entry.get("paths", [])
+        if not isinstance(paths, list) or not all(isinstance(p, str) and p.startswith("/") for p in paths):
+            raise ValueError(f"Host entry for {origin}: 'paths' must be a list of path prefixes starting with '/'")
+        headers = entry.get("headers", [])
+        if not isinstance(headers, list) or not all(isinstance(h, str) and h for h in headers):
+            raise ValueError(f"Host entry for {origin}: 'headers' must be a list of header names")
+        if any(h.lower() == "authorization" for h in headers):
+            raise ValueError(
+                f"Host entry for {origin}: 'headers' may not list Authorization; the "
+                "proxy sets it from 'credential'"
+            )
+        credential = entry.get("credential")
+        if credential is not None and credential not in credentials:
+            raise ValueError(
+                f"Host entry for {origin} names credential '{credential}', which is not "
+                f"defined in 'credentials' (defined: {sorted(credentials) or 'none'})"
+            )
+        hosts[origin] = HostRule(
+            origin=origin,
+            methods=frozenset(m.upper() for m in methods),
+            paths=tuple(paths),
+            headers=frozenset(headers),
+            credential=credential,
+        )
+    timeout = raw.get("timeout", 30)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ValueError("'platform.http_request.timeout' must be a positive number of seconds")
+    max_response = raw.get("max_response", 1024 * 1024)
+    if isinstance(max_response, bool) or not isinstance(max_response, int) or max_response <= 0:
+        raise ValueError("'platform.http_request.max_response' must be a positive number of bytes")
+    return HttpRequestConfig(hosts=hosts, timeout=float(timeout), max_response=max_response)
+
+
+def _load_platform(raw: dict[str, Any], credentials: dict[str, CredentialConfig]) -> Optional[PlatformConfig]:
+    """Parse the ``platform`` block, refusing anything ambiguous.
+
+    A declared native tool is one the endpoints may be asked about, so its
+    arguments have to be declared: a policy judges a native tool only as far
+    as its schema says what the tool does. ``exec`` and ``http_request`` ship
+    with theirs. The ``http_request`` block additionally makes that one tool
+    executable by the proxy, and declares the tool if the block did not.
+    """
+    if "platform" not in raw:
+        return None
+    block = raw["platform"]
+    if not isinstance(block, dict):
+        raise ValueError("'platform' must be an object with 'tools' and/or 'http_request'")
+    unknown = sorted(set(block) - _PLATFORM_KEYS)
+    if unknown:
+        raise ValueError(
+            f"'platform' has unexpected field(s) {unknown}; allowed: {sorted(_PLATFORM_KEYS)}"
+        )
+    tools = _load_native_tools(block.get("tools", {}))
+    http_request: HttpRequestConfig | None = None
+    if "http_request" in block:
+        http_request = _load_http_request(block["http_request"], credentials)
+        if HTTP_REQUEST_TOOL not in tools:
+            description, schema = SHIPPED_SCHEMAS[HTTP_REQUEST_TOOL]
+            tools[HTTP_REQUEST_TOOL] = NativeTool(HTTP_REQUEST_TOOL, description, schema)
+    if not tools:
+        raise ValueError(
+            "'platform' declares no tools: list them under 'platform.tools' "
+            f"({EXEC_TOOL!r} and {HTTP_REQUEST_TOOL!r} take an empty object), or "
+            "remove the block"
+        )
+    return PlatformConfig(tools=tools, http_request=http_request)
 
 
 def _resolve_tokens_file(path: Path, dotenv: dict[str, str]) -> Optional[Path]:
@@ -607,10 +771,19 @@ def load_config(path: Path) -> Config:
             rego_path = path.parent / rego_path
         rego_policy = str(rego_path)
 
+    platform = _load_platform(raw, credentials)
+    # ``platform`` is the one bundle key that is not in ``mcpServers``: it is
+    # the server the proxy itself provides, and a bundle on it governs the
+    # declared native tools. Accepted only when the block declares some,
+    # since a bundle on no tools is the gate-declared-never-attached failure
+    # the loader refuses everywhere else.
+    bundle_targets = {s.name for s in servers}
+    if platform is not None:
+        bundle_targets.add(PLATFORM_SERVER)
     policy_bundles = _load_policy_bundles(
         filters_raw.get("policy_bundles", {}),
         base_dir=path.parent,
-        server_names={s.name for s in servers},
+        server_names=bundle_targets,
     )
 
     filters = FiltersConfig(
@@ -636,4 +809,5 @@ def load_config(path: Path) -> Config:
         auth=_load_auth(raw, path.parent),
         principal=_load_principal(raw),
         exposure=exposure,
+        platform=platform,
     )

@@ -16,10 +16,15 @@ from typing import Any
 
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
+from fastmcp.server.auth.middleware import RequireAuthMiddleware
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools import Tool, ToolResult
 import mcp.types as mcp_types
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import request_response
 
 from . import admin
 from .client_manager import ClientManager, TokenExpiredError
@@ -31,6 +36,7 @@ from .principal import (
     build_auth_provider,
     principal_from_token,
 )
+from .native import NativeRefusal, Platform
 from .filters import (
     AccessControlFilter,
     CallFilter,
@@ -49,6 +55,8 @@ from .filters import (
 )
 from .routing import BundleRouter
 from .types import (
+    PLATFORM_SERVER,
+    CallFilterResult,
     CallRequest,
     CallResponse,
     LocalTool,
@@ -457,44 +465,73 @@ class _Refused(Exception):
         self.text = text if text is not None else f"Error: {reason}"
 
 
-async def _dispatch_call(
-    ctx: Context, tool_name: str, arguments: dict[str, Any]
-) -> tuple[list[Any], bool, Any]:
-    """The one call path. Both entry points -- the ``call_tool`` meta-tool
-    and a tool called by its listed name under static exposure -- run this
-    and nothing else: the principal, the call pipeline (access control, the
-    discovered-tools or catalogue rule, policy filters, the bundle router),
-    local or downstream dispatch, then the response pipeline. Returns the
-    native result (content blocks, ``is_error``, structured content) for the
-    caller to render; raises :class:`_Refused` when nothing was dispatched.
-    """
-    call_pipeline: CallFilterPipeline = ctx.lifespan_context["call_filter_pipeline"]
-    response_pipeline: ResponseFilterPipeline = ctx.lifespan_context[
-        "response_filter_pipeline"
-    ]
-    client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
-    local_tools: dict[str, LocalTool] = ctx.lifespan_context["local_tools"]
-
+def _split(tool_name: str) -> tuple[str, str]:
+    """``(server, tool)`` of a qualified name; ``("", name)`` for a local tool."""
     parts = tool_name.split("__", 1)
-    server_name = parts[0] if len(parts) == 2 else ""
-    try:
-        principal = _current_principal(ctx)
-    except PrincipalError as e:
-        raise _Refused(str(e))
+    return (parts[0], parts[1]) if len(parts) == 2 else ("", tool_name)
 
+
+async def _run_call_pipeline(
+    state: dict[str, Any],
+    principal: Principal | None,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    verdict_only: bool = False,
+) -> CallFilterResult:
+    """The call pipeline on one request: access control, the discovered-tools
+    or catalogue rule, policy filters, the bundle router. Shared by every
+    entry point, so a verdict (``POST /decide``) is decided by exactly the
+    filters a call is. A native ``exec`` is normalized first -- a command
+    string into ``argv`` -- and refused here, before any filter, when it is
+    more than one program and its arguments."""
+    call_pipeline: CallFilterPipeline = state["call_filter_pipeline"]
+    platform: Platform | None = state.get("platform")
+    server_name, tool = _split(tool_name)
+    if platform is not None and server_name == PLATFORM_SERVER:
+        try:
+            arguments = platform.prepare(tool, arguments)
+        except NativeRefusal as e:
+            raise _Refused(str(e))
     request = CallRequest(
         tool_name=tool_name,
         arguments=arguments,
         server_name=server_name,
-        session_id=ctx.session_id,
+        session_id=session_id,
         principal=principal,
+        verdict_only=verdict_only,
     )
-    filter_result = await call_pipeline.apply(request)
+    return await call_pipeline.apply(request)
+
+
+async def _perform(
+    state: dict[str, Any],
+    principal: Principal | None,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    session_id: str | None = None,
+) -> tuple[list[Any], bool, Any]:
+    """The one call path, given who is calling: the call pipeline, then
+    local, native or downstream dispatch, then the response pipeline.
+    Returns the native result (content blocks, ``is_error``, structured
+    content) for the entry point to render; raises :class:`_Refused` when
+    nothing was dispatched."""
+    response_pipeline: ResponseFilterPipeline = state["response_filter_pipeline"]
+    client_mgr: ClientManager = state["client_manager"]
+    local_tools: dict[str, LocalTool] = state["local_tools"]
+    platform: Platform | None = state.get("platform")
+
+    filter_result = await _run_call_pipeline(
+        state, principal, tool_name, arguments, session_id=session_id
+    )
     if not filter_result.allowed:
         raise _Refused(filter_result.reason)
 
     tool_name = filter_result.tool_name
     arguments = filter_result.arguments
+    server_name, tool = _split(tool_name)
 
     if tool_name in local_tools:
         try:
@@ -508,6 +545,13 @@ async def _dispatch_call(
         content: list[Any] = [mcp_types.TextContent(type="text", text=text)]
         is_error = False
         structured_content = raw_result if isinstance(raw_result, dict) else None
+    elif platform is not None and server_name == PLATFORM_SERVER:
+        # The proxy's own server. Runs ``http_request`` when configured and
+        # refuses everything else with the reason: the platform runs those.
+        try:
+            content, is_error, structured_content = await platform.call(tool, arguments)
+        except NativeRefusal as e:
+            raise _Refused(str(e))
     elif tool_name in client_mgr.get_qualified_names():
         try:
             result: mcp_types.CallToolResult = await client_mgr.call_tool(
@@ -546,6 +590,23 @@ async def _dispatch_call(
     if not response_result.allowed:
         raise _Refused(response_result.reason)
     return response_result.content, response_result.is_error, structured_content
+
+
+async def _dispatch_call(
+    ctx: Context, tool_name: str, arguments: dict[str, Any]
+) -> tuple[list[Any], bool, Any]:
+    """The one call path, from an MCP request. The ``call_tool`` meta-tool
+    and a tool called by its listed name under static exposure both run
+    this and nothing else; ``POST /call`` runs :func:`_perform` with the
+    principal its own request established. The principal is read per
+    request, then everything is :func:`_perform`."""
+    try:
+        principal = _current_principal(ctx)
+    except PrincipalError as e:
+        raise _Refused(str(e))
+    return await _perform(
+        ctx.lifespan_context, principal, tool_name, arguments, session_id=ctx.session_id
+    )
 
 
 class StaticExposure(Middleware):
@@ -647,6 +708,23 @@ async def _setup(
     if bundle_router is not None:
         servers = _admit_servers(bundle_router, config.servers)
 
+    # The platform's own tools, as the ``platform`` pseudo-server. Admitted
+    # through the router like any server, with native provenance: a selector
+    # that cannot place it refuses it, and the tools are then not indexed.
+    platform: Platform | None = None
+    if config.platform is not None:
+        platform = Platform(config.platform, config.credentials)
+        if bundle_router is not None:
+            decision = bundle_router.admit(
+                server_name=PLATFORM_SERVER, how_loaded="native", transport=None
+            )
+            record = bundle_router.admissions()[-1]
+            if decision.allowed:
+                logger.info("Admission: %s", record.summary())
+            else:
+                logger.warning("Admission: %s", record.summary())
+                platform = None
+
     logger.info("Connecting to %d downstream server(s)...", len(servers))
     tools = await client_mgr.connect_all(servers)
     logger.info("Indexed %d tools total", len(tools))
@@ -664,10 +742,17 @@ async def _setup(
     ]
     if local_records:
         logger.info("Indexed %d local tool(s)", len(local_records))
+    native_records = platform.records() if platform is not None else []
+    if native_records:
+        logger.info(
+            "Indexed %d platform tool(s): %s",
+            len(native_records),
+            ", ".join(r.qualified_name for r in native_records),
+        )
 
     vector_store = VectorStore()
     logger.info("Building vector index...")
-    vector_store.index(tools + local_records)
+    vector_store.index(tools + local_records + native_records)
     logger.info("Vector index ready")
 
     if isinstance(discovered_filter, StaticCatalogueFilter):
@@ -688,6 +773,7 @@ async def _setup(
         "discovered_filter": discovered_filter,
         "bundle_router": bundle_router,
         "local_tools": local_registry,
+        "platform": platform,
         "principal_mapping": principal_mapping,
         "require_principal": bool(require_principal),
     }
@@ -745,6 +831,149 @@ def _admit_servers(router: BundleRouter, servers):
         len(servers), len(admitted), len(servers) - len(admitted),
     )
     return admitted
+
+
+def _route_principal(request: Request, state: dict[str, Any]) -> Principal | None:
+    """The principal behind a plain HTTP request: the token FastMCP's
+    authentication middleware verified and put on the request's scope. The
+    same rule as :func:`_current_principal`, read from the request instead
+    of the MCP context."""
+    user = request.scope.get("user")
+    token = user.access_token if isinstance(user, AuthenticatedUser) else None
+    principal = principal_from_token(token, state.get("principal_mapping"))
+    if principal is None and state.get("require_principal"):
+        raise PrincipalError(
+            "this proxy requires an authenticated principal and the request carries none"
+        )
+    return principal
+
+
+def _bad_request(message: str) -> Response:
+    return JSONResponse({"error": message}, status_code=400)
+
+
+async def _read_call_body(request: Request) -> tuple[str, dict[str, Any]] | Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return _bad_request("the body must be a JSON object: {\"tool\": ..., \"arguments\": {...}}")
+    if not isinstance(body, dict):
+        return _bad_request("the body must be a JSON object with 'tool' and 'arguments'")
+    tool = body.get("tool")
+    arguments = body.get("arguments", {})
+    if not isinstance(tool, str) or not tool:
+        return _bad_request("'tool' must be the qualified name of a tool, e.g. 'platform__exec'")
+    if not isinstance(arguments, dict):
+        return _bad_request("'arguments' must be a JSON object")
+    unknown = sorted(set(body) - {"tool", "arguments"})
+    if unknown:
+        return _bad_request(f"unexpected field(s) {unknown}; the body takes 'tool' and 'arguments'")
+    return tool, arguments
+
+
+def _content_json(content: list[Any]) -> list[Any]:
+    return [
+        block.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if hasattr(block, "model_dump")
+        else block
+        for block in content
+    ]
+
+
+def _mount_platform_routes(
+    server: FastMCP, holder: dict[str, Any], auth: Any | None
+) -> None:
+    """``POST /decide`` and ``POST /call``: plain HTTP front doors onto the
+    one call path, for a platform asking about or handing over a step the
+    model never reached through MCP.
+
+    ``/decide`` runs the call pipeline with ``verdict_only`` and stops: it
+    answers whether the call would be allowed for the request's principal
+    and has no effect, so the platform runs the step itself afterwards.
+    ``/call`` runs the whole path and returns the result an MCP client would
+    get. Both are the same handler shape with one flag; neither is MCP and
+    neither is a tool, so the model is never the party asking.
+
+    FastMCP's bearer requirement wraps only the MCP path; a custom route is
+    mounted outside it, and the provider's authentication middleware (which
+    is app-wide) puts a verified token on the scope without refusing a
+    request that has none. Each route is therefore wrapped in the same
+    ``RequireAuthMiddleware`` the MCP path uses, so an unauthenticated
+    request gets the 401 and challenge it would get there. With no ``auth``
+    (``--allow-anonymous``, one person on loopback) the routes are open and
+    every principal is ``None``, consistent with the MCP path.
+    """
+
+    def ready() -> dict[str, Any] | None:
+        return holder.get("state")
+
+    async def decide(request: Request) -> Response:
+        state = ready()
+        if state is None:
+            return JSONResponse({"error": "the proxy is not ready"}, status_code=503)
+        parsed = await _read_call_body(request)
+        if isinstance(parsed, Response):
+            return parsed
+        tool, arguments = parsed
+        try:
+            principal = _route_principal(request, state)
+        except PrincipalError as e:
+            return JSONResponse({"error": str(e)}, status_code=401)
+        try:
+            result = await _run_call_pipeline(state, principal, tool, arguments, verdict_only=True)
+        except _Refused as e:
+            return JSONResponse({"allowed": False, "tool": tool, "arguments": None, "reason": e.reason})
+        return JSONResponse({
+            "allowed": result.allowed,
+            "tool": tool,
+            # What the step should run with: the arguments as the filters left
+            # them, credential fields stripped. Null on a denial, so nothing
+            # reads a refused call's arguments as something to run.
+            "arguments": result.arguments if result.allowed else None,
+            "reason": result.reason,
+        })
+
+    async def call(request: Request) -> Response:
+        state = ready()
+        if state is None:
+            return JSONResponse({"error": "the proxy is not ready"}, status_code=503)
+        parsed = await _read_call_body(request)
+        if isinstance(parsed, Response):
+            return parsed
+        tool, arguments = parsed
+        try:
+            principal = _route_principal(request, state)
+        except PrincipalError as e:
+            return JSONResponse({"error": str(e)}, status_code=401)
+        try:
+            content, is_error, structured = await _perform(state, principal, tool, arguments)
+        except _Refused as e:
+            # To the caller a refusal is the step's result, the way it is a
+            # tool-level error to an MCP client: 200, and the reason where
+            # the output would have been.
+            return JSONResponse({
+                "content": [{"type": "text", "text": e.reason}],
+                "is_error": True,
+                "structured_content": None,
+            })
+        return JSONResponse({
+            "content": _content_json(content),
+            "is_error": is_error,
+            "structured_content": structured if isinstance(structured, (dict, list)) else None,
+        })
+
+    for path, handler in (("/decide", decide), ("/call", call)):
+        endpoint: Any = handler
+        if auth is not None:
+            # An ASGI app rather than a function, which Starlette's Route
+            # mounts as-is: the requirement runs before the handler does.
+            endpoint = RequireAuthMiddleware(
+                request_response(handler),
+                auth.required_scopes,
+                None,
+                getattr(auth, "challenge_scopes", None),
+            )
+        server.custom_route(path, methods=["POST"])(endpoint)
 
 
 _STATIC_INSTRUCTIONS = (
@@ -844,6 +1073,10 @@ def create_server(
             role_map=config.principal.role_map,
         )
 
+    # What the plain HTTP routes read: the lifespan fills it, since a custom
+    # route has no MCP context to reach the pipelines through.
+    holder: dict[str, Any] = {}
+
     @lifespan
     async def configured_lifespan(server: FastMCP):
         ctx = await _setup(
@@ -858,9 +1091,11 @@ def create_server(
             require_principal=require_principal,
         )
         remove_handler = _install_reload_handler(ctx, reload_config)
+        holder["state"] = ctx
         try:
             yield ctx
         finally:
+            holder.pop("state", None)
             remove_handler()
             logger.info("Shutting down, closing connections...")
             await ctx["client_manager"].close_all()
@@ -894,6 +1129,13 @@ def create_server(
         lifespan=configured_lifespan,
         auth=auth,
     )
+    if static:
+        # Only under static exposure: a platform that asks for verdicts or
+        # hands over steps is a load-once platform, and only there is the
+        # catalogue rule the derived one with no "search first" to satisfy.
+        # Custom routes exist only on the HTTP app, so on stdio there is
+        # nothing to mount.
+        _mount_platform_routes(server, holder, auth)
 
     @server.tool(
         name="search_tools",
@@ -992,6 +1234,12 @@ def create_server(
                 f"Error: Server name '{server_name}' must not contain '__'. That "
                 "separator is reserved for qualified tool names; a server named "
                 "with it would be routed as a different server."
+            )
+        if server_name == PLATFORM_SERVER:
+            return (
+                f"Error: Server name '{PLATFORM_SERVER}' is reserved for the proxy's "
+                "own platform tools; a server loaded under it would be governed as "
+                "the proxy's and dispatched as a stranger's."
             )
 
         try:

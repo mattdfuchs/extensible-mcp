@@ -14,6 +14,15 @@ from typing import Any
 #: so named would be listed, and called, as if it were the meta-tool.
 META_TOOL_NAMES: frozenset[str] = frozenset({"search_tools", "call_tool", "load_mcp_server"})
 
+#: The pseudo-server the proxy itself provides. A platform's native steps --
+#: a shell command, an HTTP request, a function tool -- are tools of this
+#: server (``platform__exec``, ``platform__http_request``), so everything the
+#: proxy decides with, all of it keyed on the server name, applies to them
+#: with no second code path. No downstream server may take the name: one
+#: that did would be governed as the proxy's own tools and dispatched as a
+#: stranger's.
+PLATFORM_SERVER = "platform"
+
 
 def _reject_separator(name: str, what: str) -> None:
     """``__`` splits a qualified tool name back into server and tool, so a
@@ -88,6 +97,12 @@ class ServerConfig:
                 "'credential', so neither would be used by anything"
             )
         _reject_separator(self.name, "Server")
+        if self.name == PLATFORM_SERVER:
+            raise ValueError(
+                f"Server name {PLATFORM_SERVER!r} is reserved: it is the "
+                "pseudo-server for the platform's own tools (platform__exec, "
+                "platform__http_request), declared under 'platform', not 'mcpServers'."
+            )
 
 
 @dataclass
@@ -196,6 +211,16 @@ class CallRequest:
     process serves one person, or an HTTP deployment that opted out with
     ``require_principal=False``). A filter that keys on identity treats
     ``None`` as "no principal", never as "anyone".
+
+    ``verdict_only`` says the caller is asking whether this call would be
+    allowed and is not making it through this request: the ``POST /decide``
+    endpoint, where a platform asks about a step it will run itself. Every
+    filter sees the flag, and the contract is that **a filter whose effect
+    goes beyond its answer has none when it is set**. The replay guard
+    honours it by reserving and then releasing the evidence whichever way
+    the policy answered, so a spent approval is still refused and an unspent
+    one stays spendable by the real call that follows. A custom filter that
+    logs, counts or spends must read it the same way.
     """
 
     tool_name: str
@@ -203,6 +228,7 @@ class CallRequest:
     server_name: str
     session_id: str | None = None
     principal: Principal | None = None
+    verdict_only: bool = False
 
 
 @dataclass
