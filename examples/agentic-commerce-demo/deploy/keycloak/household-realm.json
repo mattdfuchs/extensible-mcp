@@ -53,6 +53,13 @@
         "parent",
         "child"
       ]
+    },
+    {
+      "client": "family-proxy",
+      "roles": [
+        "parent",
+        "child"
+      ]
     }
   ],
   "users": [
@@ -308,6 +315,65 @@
           "config": {
             "access.token.claim": "true",
             "id.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "family-proxy",
+      "name": "Family proxy (token exchange)",
+      "description": "The proxy's own OAuth client. It exchanges a console token for a downstream token about the same person (RFC 8693, standard token exchange) and authenticates by private-key JWT; the public key is registered at setup, so this file carries no credential.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "attributes": {
+        "standard.token.exchange.enabled": "true",
+        "use.jwks.url": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "client.use.lightweight.access.token.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "downstream-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "household-tools",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "household-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "false",
             "lightweight.claim": "false"
           }
         }

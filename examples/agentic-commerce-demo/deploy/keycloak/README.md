@@ -427,6 +427,108 @@ needed. And the realm carries profile fields for both users, because
 `VERIFY_PROFILE` is a default required action and a user without a first
 name, last name and email cannot complete a login until it is satisfied.
 
+### The proxy's client: standard token exchange
+
+The proxy's `token_exchange` credential presents the console's token as the
+`subject_token` and is handed a token **about the same person** for a
+downstream, so that downstream sees who is calling rather than the proxy's
+service identity (RFC 8693; the proxy's README, *Authentication*). Keycloak's
+standard token exchange permits that only to a confidential client that is
+**in the subject token's `aud`** — which is why the proxy's client is named
+`family-proxy`, the audience the console's tokens already carry, and why a
+passkey-page token (`aud` `approval-service`) cannot be exchanged by it.
+
+The third client in the file, as committed:
+
+- **Confidential, authenticating by signed JWT** (`publicClient: false`,
+  `clientAuthenticatorType: client-jwt`). A public client may not send
+  exchange requests. `client-jwt` is what keeps the file secret-free: it
+  carries no secret and no key, and the proxy's public key is registered at
+  setup (below).
+- **`standard.token.exchange.enabled: "true"`** — the per-client switch. The
+  server feature (`token-exchange-standard:v2`) is on by default on 26.8.1;
+  the switch is not.
+- **A service account** (`serviceAccountsEnabled: true`) and no browser flow.
+  The proxy lists a server's tools at admission as itself, where no caller
+  exists, and that is the `client_credentials` grant on this same client;
+  nothing needs a person to sign in *as the proxy*.
+- **Its own audience mapper**, `included.custom.audience: household-tools`: a
+  placeholder for the downstream resource an exchanged token is for. The
+  `audience` request parameter cannot add one (measured below), so this is
+  the only way a downstream reaches `aud`. A deployment names its own.
+- **The role mapper and the `scopeMappings` entry**, as on the other two
+  clients, so the exchanged token carries `roles` to the downstream.
+
+**Register the proxy's key** — the one setup step this client needs, and the
+one place a value enters the server that the file does not carry. Measured
+on 26.8.1: an EC public key given as `jwt.credential.public.key` (base64
+SubjectPublicKeyInfo) is refused at every token request with
+`invalid_client: Unable to load public key`; the same key as a **JWKS
+string** works. With the proxy's signing key at `keys/proxy-signing.pem`
+and the admin console's dev credentials:
+
+```sh
+python3 - keys/proxy-signing.pem <<'EOF'
+import json, sys, urllib.parse, urllib.request
+from joserfc.jwk import ECKey
+
+KC = "http://localhost:8080"
+key = ECKey.import_key(open(sys.argv[1]).read()).as_dict(private=False)
+key.update(kid="proxy-1", alg="ES256", use="sig")
+
+def call(url, data=None, token=None, method=None, json_body=None):
+    body = urllib.parse.urlencode(data).encode() if data else (json.dumps(json_body).encode() if json_body else None)
+    req = urllib.request.Request(url, data=body, method=method or ("POST" if body else "GET"))
+    if token: req.add_header("Authorization", f"Bearer {token}")
+    if json_body: req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+admin = call(f"{KC}/realms/master/protocol/openid-connect/token",
+             {"grant_type": "password", "client_id": "admin-cli", "username": "admin", "password": "admin"})["access_token"]
+(client,) = call(f"{KC}/admin/realms/household/clients?clientId=family-proxy", token=admin)
+client["attributes"].update({"use.jwks.string": "true", "jwks.string": json.dumps({"keys": [key]}),
+                             "token.endpoint.auth.signing.alg": "ES256"})
+call(f"{KC}/admin/realms/household/clients/{client['id']}", token=admin, method="PUT", json_body=client)
+print("registered")
+EOF
+```
+
+Keycloak keeps no volume in the fragment, so this is repeated after any
+`down`, like the first passkeys.
+
+**What the exchange returns.** Measured on 26.8.1 against this file, the key
+registered as above, with a console token for `child` obtained the way
+measurement 3 below obtains one:
+
+| request | result |
+|---|---|
+| `grant_type=token-exchange`, `subject_token=<console token>`, `subject_token_type=access_token`, `requested_token_type=access_token`, client assertion as `family-proxy` | **200**, `issued_token_type` access token, `expires_in` 900 |
+| the exchanged token's claims | `sub` **the same user id** as the subject's, `azp` `family-proxy`, `aud` `household-tools`, `roles: ["child"]`, `sid`; **no `act`**, no `amr` (not mapped on this client) |
+| `audience=household-tools` | 400 `invalid_client: Audience not found` — the parameter takes a *client id*, and only filters |
+| `audience=approval-page` | 400 `invalid_request: Requested audience not available` |
+| `scope=roles` | 200, `aud` unchanged |
+| `scope=profile` | 400 `invalid_scope` — not a scope of this client |
+| a passkey-page token as the subject (`aud` `approval-service`) | **403** `access_denied: Client is not within the token audience` |
+| `requested_token_type=refresh_token` | 400 `requested_token_type unsupported` — the client's refresh-token switch is off, as committed |
+| an `actor_token` supplied as well | 200, **ignored**: no `act` claim; delegation is a separate preview feature, off |
+| `grant_type=client_credentials` as `family-proxy` (the listing identity) | 200; `sub` the service-account user, `azp` `family-proxy`, `aud` `household-tools` |
+
+So on this server the downstream sees the person as `sub` and the proxy as
+`azp`, and the proxy's own README states its promise in those terms. The
+proxy's side of it is a `credentials` entry — `grant: token_exchange`,
+`client_id: family-proxy`, the realm's token endpoint, `private_key_file`
+— and the server entry may carry a `scope` naming one of this client's
+scopes; an `audience` on the server entry must be a client id already in
+the token's audiences, so it is usually omitted and the mapper decides.
+
+**A re-export carries a secret.** The server mints a `secret` for every
+confidential client, `client-jwt` or not (visible on
+`GET /admin/realms/household/clients`), so an export of this client has a
+`"secret"` field even though nothing uses it. Strip it;
+`tests/test_keycloak_realm.py` fails on it.
+
 ## Client authentication: public with PKCE
 
 `approval-page` is a **public** client — `publicClient: true`, S256 PKCE
@@ -435,11 +537,11 @@ grants off. A public client has no secret to commit, which is the whole point;
 PKCE is what replaces one for a browser surface that cannot keep a secret
 anyway.
 
-The other secret-free option is private-key JWT (`client-jwt`), where the
-realm JSON carries only the client's **public** JWK. That fits a service
-client rather than a browser page, and it is the shape to adopt here if and
-when a private-key-JWT provider lands on the proxy side. Both are secret-free;
-neither needs a `client-secret` in this file.
+The other secret-free option is private-key JWT (`client-jwt`), which is
+what the proxy's own client, `family-proxy`, uses: the file carries no
+secret, and the proxy's public key is registered at setup rather than
+committed (see [The proxy's client](#the-proxys-client-standard-token-exchange)).
+Both are secret-free; neither needs a `client-secret` in this file.
 
 ## On `${ENV_VAR}` placeholders — verified, and still not used
 
@@ -505,3 +607,11 @@ behaviour, re-run the three measurements against the new image:
    `aud=approval-service`, `roles=["parent"]`, `amr=["hwk"]`. Keep the
    derived realm out of the repo; it has a password in it, which is the
    reason it is derived rather than committed.
+4. **The exchange answers.** Register a key on `family-proxy` as the JWKS
+   string above, take a *console* token the same way, and send the exchange
+   request from the table in [The proxy's client](#the-proxys-client-standard-token-exchange).
+   Expect 200 with the subject's `sub`, `azp=family-proxy`,
+   `aud=household-tools` and no `act`; expect 403 for a passkey-page token.
+   A refusal of the key (`Unable to load public key`) means the key-loading
+   rules moved; a 400 `unauthorized_client` means the per-client switch's
+   attribute name did.

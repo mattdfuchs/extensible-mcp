@@ -38,6 +38,11 @@ answer is a client that has no secret, not a secret kept somewhere else.
 
 A regenerated export of a *confidential* client will contain a real
 `"secret"`. That is the one change in this file that must never be committed.
+The proxy's own client, `family-proxy`, **is** confidential — it has to be
+for Keycloak to let it exchange tokens — and it is private-key JWT
+(`client-jwt`) for exactly this reason: the file carries neither a secret
+nor a key, and the public key is registered at setup. The server still mints
+a `secret` for it that nothing uses, and an export carries it; strip it.
 
 ## 3. User credentials — moot, and still checked
 
@@ -86,6 +91,12 @@ So a regeneration does not drop them as "demo noise":
   the same role and AMR mappers, and its own `scopeMappings` entry. One
   client per browser surface and one audience per resource server, so a
   token for the passkey page is never a token for the proxy.
+- A **third client**, `family-proxy`, the proxy's own: confidential by
+  `client-jwt`, `standard.token.exchange.enabled` on, a service account, no
+  browser flow, an audience mapper for the downstream (`household-tools`, a
+  placeholder a deployment renames), the role mapper and its `scopeMappings`
+  entry. Its id is the console's audience on purpose: the exchange is
+  permitted only to a client in the subject token's `aud`.
 - The two users' **`id`s**, pinned. Keycloak keeps an `id` the import file
   carries (measured on the pinned version), and `setup.py` binds
   `(issuer, id)` into each member's membership credential at first boot,
