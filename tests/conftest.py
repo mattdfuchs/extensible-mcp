@@ -183,13 +183,20 @@ def mock_mcp_server(_mock_server):
 
 
 class StubAuthorizationServer:
-    """An OAuth 2.0 token endpoint, in-process, for the two shipping grants.
+    """An OAuth 2.0 token endpoint, in-process, for the three shipping grants.
 
     Real enough to be worth testing against: it parses the form body, checks
     client authentication (a registered secret, or a ``private_key_jwt``
     assertion verified against a registered public key with its ``iss``,
     ``sub``, ``aud``, ``exp`` and single-use ``jti`` all enforced), and
     answers with a token response of the shape RFC 6749 section 5.1 specifies.
+    For RFC 8693 token exchange it is the smallest server the provider can
+    be tested against: the same client authentication, a required
+    ``subject_token`` of type access token, and an exchanged token that names
+    the subject it was exchanged from (``exchanged(<subject>)``) so a test
+    can tell whose token reached the downstream. What a real authorization
+    server does with the exchange was measured against Keycloak and is
+    written in the demo's realm recipe; this stub pins only the request.
 
     It records every request it receives, which is what lets a test assert
     the stronger property: not "no Authorization header was sent" but "the
@@ -208,6 +215,10 @@ class StubAuthorizationServer:
         self.issue: list[str] = []
         self.default_token = "correct-token"
         self.expires_in: int | None = 300
+        # Exchange: refuse with this OAuth error code instead of answering.
+        self.exchange_error: str | None = None
+        # Exchange: the issued_token_type to report, None to omit it.
+        self.issued_token_type: str | None = "urn:ietf:params:oauth:token-type:access_token"
 
     def reset(self) -> None:
         self.token_requests.clear()
@@ -218,6 +229,8 @@ class StubAuthorizationServer:
         self.issue.clear()
         self.default_token = "correct-token"
         self.expires_in = 300
+        self.exchange_error = None
+        self.issued_token_type = "urn:ietf:params:oauth:token-type:access_token"
 
     def register_client_secret(self, client_id: str, secret: str) -> None:
         self.client_secrets[client_id] = secret
@@ -272,7 +285,9 @@ def _stub_as_app(stub: StubAuthorizationServer):
         record = {k: str(v) for k, v in form.items()}
         stub.token_requests.append(record)
 
-        if record.get("grant_type") != "client_credentials":
+        grant_type = record.get("grant_type")
+        exchange = grant_type == "urn:ietf:params:oauth:grant-type:token-exchange"
+        if grant_type != "client_credentials" and not exchange:
             return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
         if "client_assertion" in record:
             error = stub.check_assertion(record)
@@ -284,6 +299,22 @@ def _stub_as_app(stub: StubAuthorizationServer):
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
         else:
             return JSONResponse({"error": "invalid_client"}, status_code=401)
+
+        if exchange:
+            if stub.exchange_error:
+                return JSONResponse({"error": stub.exchange_error}, status_code=400)
+            subject = record.get("subject_token")
+            if not subject or record.get("subject_token_type") != (
+                "urn:ietf:params:oauth:token-type:access_token"
+            ):
+                return JSONResponse({"error": "invalid_request"}, status_code=400)
+            access_token = stub.issue.pop(0) if stub.issue else f"exchanged({subject})"
+            body = {"access_token": access_token, "token_type": "Bearer"}
+            if stub.issued_token_type is not None:
+                body["issued_token_type"] = stub.issued_token_type
+            if stub.expires_in is not None:
+                body["expires_in"] = stub.expires_in
+            return JSONResponse(body)
 
         access_token = stub.issue.pop(0) if stub.issue else stub.default_token
         body = {"access_token": access_token, "token_type": "Bearer"}

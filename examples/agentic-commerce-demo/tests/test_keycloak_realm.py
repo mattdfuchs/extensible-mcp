@@ -428,3 +428,100 @@ def test_first_passkey_commands_exist_and_are_documented() -> None:
     assert "localhost:7500/first-passkey" in recipe and "localhost:7500/first-passkey" in text
     assert "in a new window" in recipe
     assert "Everyone reloads" not in recipe and "Everyone reloads" not in text
+
+
+# --------------------------------------------------------------------------- #
+# the proxy's own client: token exchange, secret-free
+# --------------------------------------------------------------------------- #
+
+# The audience the proxy's client stamps on the tokens it acquires -- the
+# downstream resource an exchanged token is for. A placeholder resource name
+# in the committed realm: a deployment names its own downstream here.
+DOWNSTREAM_AUDIENCE = "household-tools"
+STANDARD_TOKEN_EXCHANGE = "standard.token.exchange.enabled"
+
+
+@pytest.fixture(scope="module")
+def proxy_client(realm: dict) -> dict:
+    """The proxy's client, found by the audience the console's tokens carry:
+    an exchange is permitted only when the requesting client is in the
+    subject token's ``aud``, so the client id *is* the proxy's audience."""
+    matches = [c for c in realm["clients"] if c["clientId"] == PROXY_AUDIENCE]
+    assert len(matches) == 1, f"expected exactly one {PROXY_AUDIENCE!r} client"
+    return matches[0]
+
+
+def test_proxy_client_is_confidential_by_signed_jwt_and_carries_no_secret(proxy_client: dict) -> None:
+    """A public client may not exchange (measured: the switch is refused for
+    one), so the proxy's client is confidential. ``client-jwt`` is how it
+    stays secret-free: the realm carries no secret and no key, and the
+    proxy's public key is registered at setup. A regenerated export of this
+    client *will* carry a ``secret`` Keycloak minted anyway; strip it."""
+    assert proxy_client["publicClient"] is False
+    assert proxy_client["clientAuthenticatorType"] == "client-jwt"
+    assert "secret" not in proxy_client
+    assert proxy_client["attributes"].get("use.jwks.url") == "false"
+    assert not any(k.startswith("jwt.credential") or k.startswith("jwks") for k in proxy_client["attributes"])
+
+
+def test_proxy_client_has_standard_token_exchange_on(proxy_client: dict) -> None:
+    """The per-client switch. Off by default; without it the exchange is
+    refused as ``unauthorized_client`` and nothing else in the file matters."""
+    assert proxy_client["attributes"][STANDARD_TOKEN_EXCHANGE] == "true"
+
+
+def test_proxy_client_has_a_service_account_and_no_browser_flow(proxy_client: dict) -> None:
+    """The service account is the proxy's own identity, used to list a
+    server's tools at admission where no caller exists; a browser flow would
+    let a person sign in *as the proxy*, which nothing needs."""
+    assert proxy_client["serviceAccountsEnabled"] is True
+    assert proxy_client["standardFlowEnabled"] is False
+    assert proxy_client["implicitFlowEnabled"] is False
+    assert proxy_client["directAccessGrantsEnabled"] is False
+    assert "redirectUris" not in proxy_client
+
+
+def test_proxy_client_stamps_the_downstream_audience(proxy_client: dict) -> None:
+    """The ``audience`` request parameter only filters (measured: it cannot
+    add one), so the downstream reaches ``aud`` through this mapper and
+    nothing else; without it an exchanged token is for nobody."""
+    (mapper,) = mappers(proxy_client, AUDIENCE_MAPPER)
+    assert mapper["config"]["included.custom.audience"] == DOWNSTREAM_AUDIENCE
+    assert mapper["config"]["access.token.claim"] == "true"
+    assert not mapper["config"].get("included.client.audience")
+
+
+def test_proxy_client_carries_the_roles_into_the_exchanged_token(realm: dict, proxy_client: dict) -> None:
+    """The downstream sees the person's roles the way the proxy did: the same
+    mapper and the same scope mapping, which ``fullScopeAllowed: false``
+    makes necessary (measured: without the mapping the claim is absent)."""
+    (mapper,) = mappers(proxy_client, ROLE_MAPPER)
+    assert mapper["config"]["claim.name"] == ROLES_CLAIM
+    assert proxy_client["fullScopeAllowed"] is False
+    granted = {
+        role
+        for entry in realm.get("scopeMappings", [])
+        if entry.get("client") == PROXY_AUDIENCE
+        for role in entry.get("roles", [])
+    }
+    assert granted == {r["name"] for r in realm["roles"]["realm"]}
+
+
+def test_the_consoles_tokens_are_addressed_to_the_proxy_client(realm: dict) -> None:
+    """The exchange rule: the requester must be in the subject token's
+    ``aud``. The console's audience mapper emits the proxy's client id, so a
+    console token is exchangeable and a passkey-page token (``aud``
+    ``approval-service``) is refused with ``access_denied``."""
+    console = next(c for c in realm["clients"] if c["clientId"] == CONSOLE_CLIENT_ID)
+    (mapper,) = mappers(console, AUDIENCE_MAPPER)
+    assert mapper["config"]["included.custom.audience"] == PROXY_AUDIENCE
+    assert AUDIENCE != PROXY_AUDIENCE
+
+
+def test_recipe_and_curation_document_the_proxy_client() -> None:
+    recipe = RECIPE.read_text()
+    assert STANDARD_TOKEN_EXCHANGE in recipe
+    assert "jwks.string" in recipe and DOWNSTREAM_AUDIENCE in recipe
+    assert "client-jwt" in recipe
+    curation = CURATION.read_text()
+    assert PROXY_AUDIENCE in curation and "client-jwt" in curation
