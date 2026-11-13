@@ -122,7 +122,7 @@ All four pipelines are extensible — add any filter implementing the protocol.
 - Streamable HTTP as a shared deployment on FastMCP 4 / MCP SDK 2 (the 2026-07-28 revision): a verified `Principal` on every pipeline, `require_principal` enforced ahead of every pipeline, discovery scoped per person rather than per connection, and a start-up gate that refuses a shared proxy with no inbound auth or with a tokens file
 - Per-role scoping of the catalogue (`access_control.by_role`, additive, fail closed), the `caller` fetch-plan source, and the token/evidence seam: admin-bound accounts in the membership credential, one `account_bound` condition per tier in the production policies
 - A policy set (`policyset.json`) declaring routes, server types and selection, checked at load and bind, with an admission audit logged at boot
-- 1193 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 236 and 55
+- 1305 tests passing in the proxy's own suite (unit + integration with mock MCP server + end-to-end VC chains against real compiled policy artifacts, on all three engines); the two `examples/` workspace packages add 236 and 55
 - Example configs for Claude Desktop and OpenClaw, targeting GitHub's MCP server
 
 ## ABAC with signed claims

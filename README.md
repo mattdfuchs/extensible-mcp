@@ -64,7 +64,7 @@ The base proxy is working: dynamic server loading, RAG-based tool retrieval, an 
 
 Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, authored directly in CEL, or emitted as Cedar) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and Rego, CEL and Cedar backends ship as proof. The containerized demo also runs as an organization on its own identity provider: a committed Keycloak realm issues the tokens, the proxy requires a verified principal on every call over HTTP, the console holds a session per signed-in person, and the admin-signed memberships bind each member's account there, so the production policies tie the session to the wallet that signed. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 750 tests; the two example packages add 133 and 51.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 1305 tests; the two example packages add 236 and 55.
 
 ## Threat Model
 
@@ -667,7 +667,7 @@ uv run extensible-mcp --config /path/to/config.json --transport http --allow-ano
 
 `--transport http` refuses to start rather than warn when the configuration was sound only because one process served one person: with no `auth` block and no `--allow-anonymous`, with `--allow-anonymous` on a non-loopback host or alongside an `auth` block, and with a tokens file configured. `extensible-mcp --help` states the constraint. On HTTP the `load_mcp_server` tool is refused at the handler: servers on a shared proxy are configured by an operator, not loaded by a model, so `may_load` has no effect there. The anonymous flag is one person's proxy and nothing else: every principal is `None`, so nothing is scoped per person. See [Inbound identity](#inbound-identity-who-a-session-acts-for).
 
-A platform that loads a server's tools once rather than discovering them on demand is served by [static exposure](#static-exposure-platforms-that-load-tools-once).
+A platform that loads a server's tools once rather than discovering them on demand is served by [static exposure](#static-exposure-platforms-that-load-tools-once); the steps such a platform runs outside MCP are governed through [`/decide` and `/call`](#platform-steps-decide-call-and-the-platform-server).
 
 ### Static exposure: platforms that load tools once
 
@@ -682,11 +682,85 @@ Workflow and agent platforms load a server's tool set once and dispatch tools th
 
 With `"exposure": "static"`, `tools/list` answers with the governed catalogue instead: every downstream tool under its qualified name (`github__create_issue`), and every local tool under its own, each with the schema `search_tools` would have printed for it, so a tool governed by a policy bundle shows its credential parameters marked required or required-when. The platform loads that list and calls the tools by name. `search_tools`, `call_tool` and `load_mcp_server` are neither listed nor reachable: static means static, with no discovery workflow and no runtime loading. The default, `"dynamic"`, is the three meta-tools as described everywhere else in this README.
 
-**Enforcement does not move.** Nothing is registered on the server for a listed tool; the list is a view composed over the proxy's own registry, and every listed name dispatches through the same path as a `call_tool` call, so access control, role scoping, the policy bundle and single-use evidence run on it unchanged. A refusal comes back as a tool-level error carrying the rendered reason, which the model sees and can act on; an allowed call returns the downstream server's native result. This is the property that separates the proxy from an enforcement harness that runs inside the agent's own process: a harness is a check the agent consults, and anything in that process can call the tool without consulting it. The proxy is a wall for every tool it fronts, because the only way to reach the tool is through it. (A platform's native steps, such as a shell node, never cross MCP and are not behind the wall; that is a separate mechanism, not this one.)
+**Enforcement does not move.** Nothing is registered on the server for a listed tool; the list is a view composed over the proxy's own registry, and every listed name dispatches through the same path as a `call_tool` call, so access control, role scoping, the policy bundle and single-use evidence run on it unchanged. A refusal comes back as a tool-level error carrying the rendered reason, which the model sees and can act on; an allowed call returns the downstream server's native result. This is the property that separates the proxy from an enforcement harness that runs inside the agent's own process: a harness is a check the agent consults, and anything in that process can call the tool without consulting it. The proxy is a wall for every tool it fronts, because the only way to reach the tool is through it. A platform's native steps, such as a shell node, never cross MCP and are not behind this wall; [the next section](#platform-steps-decide-call-and-the-platform-server) is how they are governed.
 
 **The listing is a menu, not an allowance.** A platform may list at activation, before any user exists, and call much later; it may open a fresh connection per call. None of that matters to the rule, because the proxy learns who is calling from the token on each request and checks every call against that caller's view at that moment, whoever listed and whenever. A tool listed to one identity and called under another whose roles exclude it is refused with the reason; a tool absent from the list cannot be called, since the platform never knew it; a principal no role places under `by_role` lists nothing and is refused everything; a list with no token on a proxy that requires one is refused at the transport, so a misconfigured workflow fails to activate rather than binding a wrong catalogue.
 
 **One client per user.** The token on the platform's MCP client is the identity the proxy enforces for. Build the client per user run, carrying that user's token (the LangChain, ADK and Strands clients take headers at construction; n8n's node authenticates with a stored credential, so check whether it can carry a per-execution header before relying on it). A client built once at startup with a service credential makes every user one principal, binds membership-bound tools to the service, and leaves the human invisible to the proxy, which cannot detect the difference from the inside. The HTTP gate, `require_principal` and `by_role` apply exactly as in dynamic mode; see [Inbound identity](#inbound-identity-who-a-session-acts-for).
+
+### Platform steps: `/decide`, `/call` and the `platform` server
+
+Static exposure governs every tool the proxy serves. A workflow also has steps that never cross MCP: n8n's Execute Command and HTTP Request nodes, a LangGraph agent's plain Python function tools, OpenClaw's built-in shell. A workflow author can put the sensitive action in one of those and the proxy's bundles, roles and single-use approvals never see it. This section is how those steps come under the same policy, with the same identity, decided in the same place, without moving the enforcement point into the platform's process.
+
+**Native tools are a pseudo-server named `platform`.** A platform's own actions are tools of a reserved server: `platform__exec`, `platform__http_request`, and operator-declared functions `platform__<name>` with a schema. Everything the proxy decides with is keyed on the server name, so a policy bundle (`filters.policy_bundles.platform`), a role scope (`by_role` with `"platform"` in `allow_servers`), an access-control pattern, a policy-set route and the schema augmenter all apply to a native tool with no second code path. No downstream server may take the name. The block that declares them:
+
+```json
+{
+  "exposure": "static",
+  "platform": {
+    "tools": {
+      "exec": {},
+      "lookup_customer": {"description": "Look a customer up by id.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}
+    },
+    "http_request": {
+      "hosts": {
+        "https://api.bank.example": {"methods": ["POST"], "paths": ["/transfers"], "headers": ["Idempotency-Key"], "credential": "bank"}
+      },
+      "timeout": 30,
+      "max_response": 1048576
+    }
+  },
+  "credentials": {
+    "bank": {"grant": "client_credentials", "token_endpoint": "https://as.example/token", "client_id": "proxy", "client_secret_env": "BANK_SECRET"}
+  },
+  "filters": {
+    "policy_bundles": {"platform": {"path": "policies/transfer_approval", "single_use": ["requestVC"]}},
+    "access_control": {"by_role": {"ops": {"allow_servers": ["platform"]}}}
+  }
+}
+```
+
+`exec` and `http_request` ship with their schemas and take an empty object; any other native tool needs a `description` and an `input_schema`, because a policy judges a native tool only as far as its declared arguments say what it does. The `http_request` block additionally makes that one tool executable by the proxy (below) and declares it if `tools` did not. Declared tools are listed under static exposure for the roles that see `platform`, with the bundle's credential parameters, exactly like a downstream tool.
+
+**Two plain HTTP routes beside the MCP endpoint**, `POST /decide` and `POST /call`, mounted only under static exposure on the HTTP transport. Same body, same bearer requirement as the MCP path, same handler with one difference. Neither is MCP and neither is a tool: the caller is the workflow platform or a framework hook, carrying the end user's token, never the model. Any tool in the caller's catalogue may be named, native or MCP-sourced.
+
+```http
+POST /decide
+Authorization: Bearer <the user's token>
+Content-Type: application/json
+
+{"tool": "platform__exec", "arguments": {"argv": ["rm", "-rf", "/data/tmp"], "approvalVC": "<signed approval>"}}
+```
+
+```json
+{"allowed": true, "tool": "platform__exec", "arguments": {"argv": ["rm", "-rf", "/data/tmp"]}, "reason": ""}
+```
+
+`/decide` runs the whole call pipeline for the request's principal, access control, the catalogue rule, the policy bundle, your custom filters, and stops where the proxy would dispatch. **It is effect-free.** Nothing runs, no downstream is contacted, no evidence is spent; the platform runs the step itself afterwards, or makes the real call through `/call` or `tools/call`, where the evidence is spent as always. The response is HTTP 200 for allow and for deny, since a verdict is an answer: `allowed`, the `tool` asked about, `arguments` as the filters left them with credential fields stripped (what the step should run with; `null` on a denial), and `reason`, the rendered sentence the model is told. A verdict is about now and is not a reservation: the real call can still be refused if the approval was spent or the token expired in between. Every filter sees `verdict_only` on the request, with the contract that a filter whose effect goes beyond its answer has none when it is set; the shipped replay guard honours it by reserving and then releasing, so a spent approval is still refused and an unspent one stays spendable.
+
+```http
+POST /call
+Authorization: Bearer <the user's token>
+Content-Type: application/json
+
+{"tool": "platform__http_request", "arguments": {"method": "POST", "url": "https://api.bank.example/transfers", "body": {"amount": 500}, "requestVC": "<signed approval>"}}
+```
+
+```json
+{"content": [{"type": "text", "text": "{\"status\": 200, ...}"}], "is_error": false, "structured_content": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"transfer": "t-1"}, "truncated": false}}
+```
+
+`/call` runs the same path to the end: dispatch, with the evidence spent, then the response pipeline, and returns the three values an MCP client receives. A refusal is `is_error: true` with the rendered reason as the content and HTTP 200, because to the caller a refusal is the step's result. This is the path for a step outside the agent whose inputs came from the model, the deterministic HTTP Request node in n8n: the author replaces that node with one request to the proxy, and the proxy's refusal is the step's failure, with no verdict to honour. A malformed body is 400; a request with no token is 401 with the same challenge the MCP path gives; under dynamic exposure and on stdio the routes do not exist.
+
+**The proxy runs `platform__http_request`, and nothing else.** With the `http_request` block configured the proxy makes the request itself after the pipeline allows: only to an origin declared under `hosts`, with a method and path the entry allows, carrying only the request headers the entry lists, and presenting the bearer it acquired with the entry's `credential` from the `credentials` block. The target API's secret therefore lives with the proxy and is never seen by the platform or the model. Redirects are not followed, since following one would send the credential to a host the operator never named; the response is capped at `max_response` and marked truncated past it; a non-2xx status is a result the model reads, not a refusal, and only a connection failure or timeout is an error. The bundle constrains within the allow-list: this amount, this recipient, this path. This is the proxy's existing outbound path, operator-configured URLs with operator-held credentials, with a policy in front of it.
+
+**`platform__exec` is a program with arguments, never a shell, and the proxy never runs it.** The schema is `argv`, `cwd`, `stdin`. Every surveyed framework hands the model a shell string, so a `command` string is also accepted and normalized at the boundary: tokenized with POSIX rules into `argv`, and refused before any filter runs if it carries an operator, redirection, substitution, glob or variable reference, with the rule named so the model can give `argv` instead. A bundle on it therefore always reasons about one program and its arguments, never about text; OpenClaw's own allowlist mode, which refuses chaining and redirection, is the precedent. A `/call` for it is refused with a reason saying the proxy does not run it: the platform asks `/decide` and runs the command itself.
+
+**There is no code shape.** n8n's Code Tool, LangChain's Python REPL and `ShellTool`, ADK's code executors and Strands' `python_repl` hand the proxy a program, and no policy can say what a program does; a verdict on one could only say who may run arbitrary code, which is not governance. A deployment that enforces a policy turns those off: no Code Tool attached to the n8n agent, no REPL or shell tool in the LangChain agent's list, no code executor on the ADK agent, no `python_repl` in Strands, `tools.deny: ["exec"]` or allowlist mode in OpenClaw. What matters to governance is not local versus external but how legible the effect is from the arguments: `exec` and `http_request` are fully legible and ship with schemas; a declared function is as legible as its schema.
+
+**Identity is the end user's, forwarded by the platform.** Both routes act for the principal of the bearer on the request. In n8n that is an expression on the node's Authorization header reading the trigger's incoming header; in a framework hook, the token the agent runs under. The author's identity never appears, because the author is not a party to the request. The mistake to avoid is a stored service credential on the node: the proxy would then see the service account, not the user, and every verdict would be about the wrong principal. Make it harmless with `by_role`: give service-account roles no view of the catalogue, so a request with the wrong identity denies everything on the first run instead of allowing silently. The precondition is the deployment's: the workflow has to be started by something that carries the user's identity, such as a Webhook trigger called by an authenticated front end.
+
+**The trust property, in one sentence.** A step the platform runs itself is governed only if the platform asks, and only as far as it honours the answer; a step routed through `/call` or the catalogue is refused in the dispatcher. So the deployment guidance leads with leaving the model no route that is not: the proxy is the agent's only tool source. In n8n the AI Agent node has one tool sub-node, the MCP Client Tool pointed at the proxy, so the model's only way to the network is `platform__http_request`, which the proxy runs, and there is no tool for a shell at all. In LangChain, Google ADK and Strands the agent gets the MCP adapter's tool list and nothing native. Where the author attaches a native tool anyway, the frameworks have one hook that catches every tool call, LangChain's `wrap_tool_call` middleware, ADK's `before_tool_callback`, Strands' before-tool hook, OpenClaw's extension point: a few lines that post the pending tool name and arguments to `/decide` with the user's token, run the tool on allow and return the reason on deny. n8n has no such hook on the AI Agent node, so the native action is wrapped in a sub-workflow attached as a Workflow Tool: a request to `/decide`, an IF on `allowed`, then the real node running on the returned `arguments`, with the false branch handing `reason` back as the step's result. The raw native node is never attached to the agent.
 
 ## Examples
 
