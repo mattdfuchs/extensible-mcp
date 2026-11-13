@@ -495,6 +495,7 @@ async def test_two_requests_in_flight_each_reach_their_own_filters():
             server_name=f"payments-{label}",
             session_id=f"session-{label}",
             principal=_principal(label),
+            verdict_only=(label == "a"),
             future_field=_Token(f"future-{label}"),
         )
 
