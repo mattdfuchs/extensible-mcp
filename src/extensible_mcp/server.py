@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP, Context
+from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
+from fastmcp.server.middleware import Middleware
+from fastmcp.tools import Tool, ToolResult
 import mcp.types as mcp_types
 
 from . import admin
@@ -41,10 +44,19 @@ from .filters import (
     ServerLoadFilter,
     ServerLoadFilterPipeline,
     SimilarityThresholdFilter,
+    StaticCatalogueFilter,
     ToolFilter,
 )
 from .routing import BundleRouter
-from .types import CallRequest, CallResponse, LocalTool, Principal, ServerLoadRequest, ToolRecord
+from .types import (
+    CallRequest,
+    CallResponse,
+    LocalTool,
+    Principal,
+    SearchResult,
+    ServerLoadRequest,
+    ToolRecord,
+)
 from .vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -322,7 +334,7 @@ def _build_pipelines(
     CallFilterPipeline,
     ResponseFilterPipeline,
     ServerLoadFilterPipeline,
-    DiscoveredToolsFilter,
+    DiscoveredToolsFilter | StaticCatalogueFilter,
 ]:
     ac = AccessControlFilter(
         deny=config.filters.access_control.deny,
@@ -338,7 +350,14 @@ def _build_pipelines(
     for f in extra_search_filters:
         search_pipeline.add(f)
 
-    discovered_filter = DiscoveredToolsFilter()
+    # The one structurally enforced rule, in the shape the exposure needs:
+    # recorded at search under dynamic exposure, derived from the view under
+    # static. Either way it is in the pipeline unconditionally.
+    discovered_filter: DiscoveredToolsFilter | StaticCatalogueFilter
+    if config.exposure == "static":
+        discovered_filter = StaticCatalogueFilter()
+    else:
+        discovered_filter = DiscoveredToolsFilter()
     call_pipeline = CallFilterPipeline([ac, discovered_filter])
 
     if config.filters.rego_policy:
@@ -413,6 +432,174 @@ def _build_local_registry(local_tools: Sequence[LocalTool]) -> dict[str, LocalTo
     return registry
 
 
+def _catalogue_view(
+    vector_store: VectorStore, search_pipeline: FilterPipeline, principal: Principal | None
+) -> list[SearchResult]:
+    """The catalogue as ``principal`` may see it: every indexed record, run
+    through the search pipeline exactly as a search result would be, with
+    the empty query and a score of ``1.0``. One rule decides what a person
+    sees, whether they searched or were listed: access control and role
+    scoping (fail-closed under ``by_role``), the bundle augmenter, and every
+    custom search filter, which can tell a listing from a search by the
+    empty query."""
+    results = [SearchResult(tool=record, score=1.0) for record in vector_store.records()]
+    return search_pipeline.apply(results, "", principal=principal)
+
+
+class _Refused(Exception):
+    """A call the proxy did not dispatch, with the reason rendered for the
+    model. ``text`` is the ``call_tool`` meta-tool's rendering of it, kept
+    byte-for-byte what it was before static exposure existed."""
+
+    def __init__(self, reason: str, text: str | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.text = text if text is not None else f"Error: {reason}"
+
+
+async def _dispatch_call(
+    ctx: Context, tool_name: str, arguments: dict[str, Any]
+) -> tuple[list[Any], bool, Any]:
+    """The one call path. Both entry points -- the ``call_tool`` meta-tool
+    and a tool called by its listed name under static exposure -- run this
+    and nothing else: the principal, the call pipeline (access control, the
+    discovered-tools or catalogue rule, policy filters, the bundle router),
+    local or downstream dispatch, then the response pipeline. Returns the
+    native result (content blocks, ``is_error``, structured content) for the
+    caller to render; raises :class:`_Refused` when nothing was dispatched.
+    """
+    call_pipeline: CallFilterPipeline = ctx.lifespan_context["call_filter_pipeline"]
+    response_pipeline: ResponseFilterPipeline = ctx.lifespan_context[
+        "response_filter_pipeline"
+    ]
+    client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
+    local_tools: dict[str, LocalTool] = ctx.lifespan_context["local_tools"]
+
+    parts = tool_name.split("__", 1)
+    server_name = parts[0] if len(parts) == 2 else ""
+    try:
+        principal = _current_principal(ctx)
+    except PrincipalError as e:
+        raise _Refused(str(e))
+
+    request = CallRequest(
+        tool_name=tool_name,
+        arguments=arguments,
+        server_name=server_name,
+        session_id=ctx.session_id,
+        principal=principal,
+    )
+    filter_result = await call_pipeline.apply(request)
+    if not filter_result.allowed:
+        raise _Refused(filter_result.reason)
+
+    tool_name = filter_result.tool_name
+    arguments = filter_result.arguments
+
+    if tool_name in local_tools:
+        try:
+            raw_result = await local_tools[tool_name].handler(arguments)
+        except Exception as e:
+            raise _Refused(
+                f"calling tool '{tool_name}': {_describe(e)}",
+                f"Error calling tool '{tool_name}': {_describe(e)}",
+            )
+        text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
+        content: list[Any] = [mcp_types.TextContent(type="text", text=text)]
+        is_error = False
+        structured_content = raw_result if isinstance(raw_result, dict) else None
+    elif tool_name in client_mgr.get_qualified_names():
+        try:
+            result: mcp_types.CallToolResult = await client_mgr.call_tool(
+                tool_name, arguments
+            )
+        except TokenExpiredError as e:
+            raise _Refused(
+                f"Authentication failed for server '{e.server_name}' "
+                f"(token unchanged for {e.token_age_minutes} minutes). "
+                f"The token may have expired. Ask the user to fix the credential "
+                f"configured for '{e.server_name}', then retry the call."
+            )
+        except Exception as e:
+            raise _Refused(
+                f"calling tool '{tool_name}': {_describe(e)}",
+                f"Error calling tool '{tool_name}': {_describe(e)}",
+            )
+        content = list(result.content)
+        is_error = result.is_error
+        structured_content = result.structured_content
+    else:
+        raise _Refused(
+            f"Unknown tool '{tool_name}'. Use search_tools to find available tools."
+        )
+
+    response_request = CallResponse(
+        tool_name=tool_name,
+        arguments=arguments,
+        server_name=server_name,
+        content=content,
+        is_error=is_error,
+        structured_content=structured_content,
+        principal=principal,
+    )
+    response_result = await response_pipeline.apply(response_request)
+    if not response_result.allowed:
+        raise _Refused(response_result.reason)
+    return response_result.content, response_result.is_error, structured_content
+
+
+class StaticExposure(Middleware):
+    """Static exposure: ``tools/list`` answers with the caller's view of the
+    governed catalogue, and every listed name dispatches through
+    :func:`_dispatch_call`.
+
+    Nothing is registered on the ``FastMCP`` object -- the registry under
+    this middleware still holds only the proxy's own tools, which is what
+    keeps a listed tool subject to every filter. The three meta-tools are
+    not listed and not reachable by name in this mode: static means static,
+    with no discovery workflow and no runtime loading.
+
+    The listing is a menu, not an allowance. The proxy learns who is calling
+    from the token on each request and checks the call against that
+    caller's view, whoever listed and whenever; a platform that listed
+    under one identity and calls under another gets the caller's answer.
+    """
+
+    async def on_list_tools(self, context, call_next):
+        ctx = context.fastmcp_context
+        try:
+            principal = _current_principal(ctx)
+        except PrincipalError as e:
+            raise ToolError(str(e))
+        view = _catalogue_view(
+            ctx.lifespan_context["vector_store"], ctx.lifespan_context["filter_pipeline"], principal
+        )
+        return [
+            Tool(
+                name=r.tool.qualified_name,
+                description=r.tool.description,
+                parameters=r.tool.input_schema,
+            )
+            for r in view
+        ]
+
+    async def on_call_tool(self, context, call_next):
+        ctx = context.fastmcp_context
+        name = context.message.name
+        arguments = dict(context.message.arguments or {})
+        try:
+            content, is_error, structured_content = await _dispatch_call(ctx, name, arguments)
+        except _Refused as e:
+            # A tool-level error, which the model sees and can act on; a
+            # JSON-RPC error would surface in the platform as an exception.
+            raise ToolError(e.reason)
+        return ToolResult(
+            content=content,
+            structured_content=structured_content if isinstance(structured_content, dict) else None,
+            is_error=is_error,
+        )
+
+
 async def _setup(
     config: Config,
     *,
@@ -483,6 +670,14 @@ async def _setup(
     vector_store.index(tools + local_records)
     logger.info("Vector index ready")
 
+    if isinstance(discovered_filter, StaticCatalogueFilter):
+        discovered_filter.bind(
+            lambda principal: {
+                r.tool.qualified_name
+                for r in _catalogue_view(vector_store, search_pipeline, principal)
+            }
+        )
+
     return {
         "vector_store": vector_store,
         "filter_pipeline": search_pipeline,
@@ -550,6 +745,20 @@ def _admit_servers(router: BundleRouter, servers):
         len(servers), len(admitted), len(servers) - len(admitted),
     )
     return admitted
+
+
+_STATIC_INSTRUCTIONS = (
+    "This server is a proxy to other MCP tool servers, listing the tools "
+    "you may use under their qualified names (e.g. 'github__create_issue'). "
+    "Call a listed tool with arguments matching its schema. A tool whose "
+    "schema names a credential parameter requires that credential on every "
+    "call; a refused call returns the reason.\n\n"
+    "Authentication errors:\n"
+    "- If a call fails with an authentication/token error, ask the user to "
+    "fix the credential configured for that server, then retry the same call.\n"
+    "- Never ask the user to provide tokens, secrets or keys in the "
+    "conversation. Credentials are managed in the proxy's configuration only."
+)
 
 
 def create_server(
@@ -656,9 +865,11 @@ def create_server(
             logger.info("Shutting down, closing connections...")
             await ctx["client_manager"].close_all()
 
+    static = config.exposure == "static"
     server = FastMCP(
         name="extensible-mcp",
-        instructions=(
+        middleware=[StaticExposure()] if static else [],
+        instructions=_STATIC_INSTRUCTIONS if static else (
             "This server is a proxy to other MCP tool servers. "
             "You do not have direct tool definitions — discover them on demand.\n\n"
             "Workflow:\n"
@@ -722,78 +933,10 @@ def create_server(
     async def call_tool_handler(
         tool_name: str, arguments: dict[str, Any], ctx: Context
     ) -> str:
-        call_pipeline: CallFilterPipeline = ctx.lifespan_context["call_filter_pipeline"]
-        response_pipeline: ResponseFilterPipeline = ctx.lifespan_context[
-            "response_filter_pipeline"
-        ]
-        client_mgr: ClientManager = ctx.lifespan_context["client_manager"]
-        local_tools: dict[str, LocalTool] = ctx.lifespan_context["local_tools"]
-
-        parts = tool_name.split("__", 1)
-        server_name = parts[0] if len(parts) == 2 else ""
         try:
-            principal = _current_principal(ctx)
-        except PrincipalError as e:
-            return f"Error: {e}"
-
-        request = CallRequest(
-            tool_name=tool_name,
-            arguments=arguments,
-            server_name=server_name,
-            session_id=ctx.session_id,
-            principal=principal,
-        )
-        filter_result = await call_pipeline.apply(request)
-        if not filter_result.allowed:
-            return f"Error: {filter_result.reason}"
-
-        tool_name = filter_result.tool_name
-        arguments = filter_result.arguments
-
-        if tool_name in local_tools:
-            try:
-                raw_result = await local_tools[tool_name].handler(arguments)
-            except Exception as e:
-                return f"Error calling tool '{tool_name}': {_describe(e)}"
-            text = raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
-            content: list[Any] = [mcp_types.TextContent(type="text", text=text)]
-            is_error = False
-            structured_content = raw_result if isinstance(raw_result, dict) else None
-        elif tool_name in client_mgr.get_qualified_names():
-            try:
-                result: mcp_types.CallToolResult = await client_mgr.call_tool(
-                    tool_name, arguments
-                )
-            except TokenExpiredError as e:
-                return (
-                    f"Error: Authentication failed for server '{e.server_name}' "
-                    f"(token unchanged for {e.token_age_minutes} minutes). "
-                    f"The token may have expired. Ask the user to fix the credential "
-                    f"configured for '{e.server_name}', then retry the call."
-                )
-            except Exception as e:
-                return f"Error calling tool '{tool_name}': {_describe(e)}"
-            content = list(result.content)
-            is_error = result.is_error
-            structured_content = result.structured_content
-        else:
-            return f"Error: Unknown tool '{tool_name}'. Use search_tools to find available tools."
-
-        response_request = CallResponse(
-            tool_name=tool_name,
-            arguments=arguments,
-            server_name=server_name,
-            content=content,
-            is_error=is_error,
-            structured_content=structured_content,
-            principal=principal,
-        )
-        response_result = await response_pipeline.apply(response_request)
-        if not response_result.allowed:
-            return f"Error: {response_result.reason}"
-
-        content = response_result.content
-        is_error = response_result.is_error
+            content, is_error, _structured = await _dispatch_call(ctx, tool_name, arguments)
+        except _Refused as e:
+            return e.text
 
         if is_error:
             texts = [

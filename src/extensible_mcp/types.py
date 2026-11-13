@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any
 
 
+#: The proxy's own tools. A local tool may not take one of these names: under
+#: static exposure the catalogue is listed in their place, and a local tool
+#: so named would be listed, and called, as if it were the meta-tool.
+META_TOOL_NAMES: frozenset[str] = frozenset({"search_tools", "call_tool", "load_mcp_server"})
+
+
 def _reject_separator(name: str, what: str) -> None:
     """``__`` splits a qualified tool name back into server and tool, so a
     name containing it re-parses as a *different* server — which would let
@@ -132,6 +138,11 @@ class LocalTool:
 
     def __post_init__(self) -> None:
         _reject_separator(self.name, "Local tool")
+        if self.name in META_TOOL_NAMES:
+            raise ValueError(
+                f"Local tool name {self.name!r} is reserved: it is one of the "
+                f"proxy's own tools ({', '.join(sorted(META_TOOL_NAMES))})."
+            )
 
 
 @dataclass

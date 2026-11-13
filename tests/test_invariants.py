@@ -94,6 +94,20 @@ async def test_registered_tools_are_exactly_the_three_meta_tools():
     assert await _registered_tool_names(server) == META_TOOLS
 
 
+async def test_static_exposure_registers_nothing_either():
+    """Static exposure lists the catalogue in place of the meta-tools, but
+    as a view composed by a middleware over the registry, never as entries
+    in it: the registry underneath is the same closed set. A listed tool is
+    therefore reachable only through the dispatch path every filter runs
+    in. (The listing itself, and that every listed name runs that path, is
+    `tests/test_static_exposure.py`.)"""
+    config = _config()
+    config.exposure = "static"
+    server = create_server(config)
+    raw = {t.name for t in await server.list_tools(run_middleware=False)}
+    assert raw == META_TOOLS
+
+
 async def test_local_tools_register_no_tool_on_the_server():
     """`local_tools` must stay invisible to the MCP tool list.
 

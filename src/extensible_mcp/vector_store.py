@@ -73,6 +73,12 @@ class VectorStore:
         else:
             self._embeddings = np.vstack([self._embeddings, new_embeddings])
 
+    def records(self) -> list[ToolRecord]:
+        """Every indexed record, in index order. A copy of the list; the
+        records themselves are shared. This is the whole catalogue, which
+        static exposure lists after the search pipeline has scoped it."""
+        return list(self._tools)
+
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         if self._embeddings is None or len(self._tools) == 0:
             return []
