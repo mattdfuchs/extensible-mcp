@@ -238,12 +238,19 @@ def test_a_literal_wallet_subject_is_an_authors_constant(rewritten_bundle):
 
 
 def _manifest_fixtures():
+    """Every bundle whose manifest types a ``now`` field: the clock-sourced
+    integer every evidence policy reads. The two supplied loader-grammar
+    fixtures for the Cedar entity block (``cedar_approval``,
+    ``cedar_channel``) read no clock and type no integer at all, so they have
+    no field for this seam to be tested at."""
+    import json
     from pathlib import Path
 
     root = Path(__file__).parent / "fixtures"
     return sorted(
         d.name for d in root.iterdir()
         if (d / "manifest.json").exists() and d.name != "classifier"
+        and "now" in json.loads((d / "manifest.json").read_text()).get("properties", {})
     )
 
 

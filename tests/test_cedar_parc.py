@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The PARC mapping (#13): principal is the caller, action is the tool,
-resource is the server type, everything evidential is ``context``; and
-``in`` is refused at load, since the policy set is evaluated with no entity
-hierarchy and a rule that tests membership is silently inert."""
+resource is the server type, everything evidential is ``context``; and for a
+bundle with no ``schema.json`` -- every bundle here -- ``in`` is refused at
+load, since such a bundle declares no hierarchy and a rule that tests
+membership against none is silently inert. A bundle that ships a schema may
+test ``in``; ``test_cedar_store.py`` covers that side."""
 
 from __future__ import annotations
 
