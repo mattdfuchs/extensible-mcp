@@ -52,6 +52,7 @@ bundle partitions out of the native arguments, still stripped downstream.
 from __future__ import annotations
 
 import json
+import re
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -384,6 +385,44 @@ def _format_int(value: Any, base: Any) -> str | None:
     return format(value, {2: "b", 8: "o", 10: "d", 16: "x"}[base])
 
 
+#: A Cedar entity type name, namespaced or not -- the one shape an
+#: ``entity_ref``/``entity_refs`` type operand may take, and only as a plan
+#: literal: a type that came from data would let the data pick the relation.
+ENTITY_TYPE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+def _entity_ref(entity_type: Any, entity_id: Any) -> dict[str, str]:
+    """``entity_ref(type, id)``: one entity reference ``{"type", "id"}`` from
+    a plan-literal type and a string id -- the value a Cedar bundle's
+    manifest types as ``#/definitions/<Type>`` and the store reads as an
+    entity. The type is checked here too, so a plan that bypassed load-time
+    validation still cannot mint a reference of a type it did not spell."""
+    if not isinstance(entity_type, str) or not ENTITY_TYPE_NAME.match(entity_type):
+        raise HostBuiltinError(f"entity_ref: type must be a Cedar entity type name, got {entity_type!r}")
+    if not isinstance(entity_id, str):
+        raise HostBuiltinError(
+            f"entity_ref: id must be a string, got {type(entity_id).__name__}"
+        )
+    return {"type": entity_type, "id": entity_id}
+
+
+def _entity_refs(entity_type: Any, entity_ids: Any) -> list[dict[str, str]]:
+    """``entity_refs(type, ids)``: a list of entity references of one type
+    from a list of string ids, in the ids' order -- how a ``caller``-sourced
+    roles claim (``["parent"]``) becomes the membership field
+    ``[{"type": "IdpRole", "id": "parent"}]`` a Cedar bundle's ``entities``
+    block names, so the IdP's word about the principal becomes parent edges
+    under a type that says whose word it was. A non-list or a non-string id
+    is a fault, not an empty set: the operand is the token's claim or a
+    config value, never model-supplied, so a wrong shape is a wrong
+    deployment."""
+    if not isinstance(entity_ids, list):
+        raise HostBuiltinError(
+            f"entity_refs: ids must be a list, got {type(entity_ids).__name__}"
+        )
+    return [_entity_ref(entity_type, i) for i in entity_ids]
+
+
 def default_primitives(
     *, webauthn_rp_id: str | None = None
 ) -> dict[str, Callable[..., Any]]:
@@ -425,6 +464,15 @@ def default_primitives(
     ``verify_webauthn`` is registered only when a relying-party id is
     configured, so a bundle declaring it without one fails at load rather than
     denying quietly at the first call.
+
+    **Two more are the proxy's own, for the Cedar entity store.**
+    ``entity_ref(type, id)`` and ``entity_refs(type, ids)`` turn a string, or
+    a list of them, into Cedar entity references of a type the plan spells as
+    a literal -- never one read from data. They are how a ``caller``-sourced
+    roles claim or a ``config``-sourced list of names becomes a membership
+    field (a list of references the ``entities`` block turns into parent
+    edges), with the provenance of each edge legible in the plan: the entry
+    says where the ids came from, the type name says whose word it was.
     """
     primitives: dict[str, Callable[..., Any]] = {
         "sha256": _sha256,
@@ -438,6 +486,8 @@ def default_primitives(
         "key_from_did_key": _key_from_did_key,
         "concat": _concat,
         "format_int": _format_int,
+        "entity_ref": _entity_ref,
+        "entity_refs": _entity_refs,
     }
     if webauthn_rp_id is not None:
         primitives["verify_webauthn"] = make_verify_webauthn(webauthn_rp_id)
@@ -1036,6 +1086,18 @@ def _validate_primitive_shape(where: str, fn: str, args: list[Any]) -> None:
             raise DerivePlanError(
                 f"{where}: 'concat' takes an array as its second argument, "
                 "not a variadic list of strings"
+            )
+    elif fn in ("entity_ref", "entity_refs"):
+        operand = "id" if fn == "entity_ref" else "ids"
+        if len(args) != 2:
+            raise DerivePlanError(
+                f"{where}: {fn!r} takes (type, {operand}), got {len(args)} argument(s)"
+            )
+        entity_type = args[0]
+        if not isinstance(entity_type, str) or not ENTITY_TYPE_NAME.match(entity_type):
+            raise DerivePlanError(
+                f"{where}: {fn!r} type must be a literal Cedar entity type name; a "
+                "type read from data would let the data pick the relation"
             )
     elif fn == "format_int":
         if len(args) != 2:
