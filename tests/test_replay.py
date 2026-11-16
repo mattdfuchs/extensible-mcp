@@ -12,6 +12,7 @@ same VC pair that legitimately buys one $15 pizza must not buy three.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -275,6 +276,34 @@ class TestGuard:
         f._store.prune(now[0])
         assert len(f._store) == 1, "must still be remembered as spent"
         assert (await f.check(call)).allowed is False
+
+    async def test_a_verdict_spends_nothing(self):
+        """``verdict_only``: the caller asks whether the call would be allowed
+        and is not making it. The guard reserves, so a spent approval is
+        refused as the real call would be, and releases whichever way the
+        policy answered, so an unspent one stays spendable."""
+        inner = _Recorder()
+        f = SingleUseEvidenceFilter(inner)
+        b = _bundle("urn:req1")
+        verdict = dataclasses.replace(_call(b), verdict_only=True)
+
+        assert (await f.check(verdict)).allowed is True
+        assert (await f.check(verdict)).allowed is True
+        assert inner.seen == 2
+        assert len(f._store) == 0
+
+        # The real call spends; afterwards the verdict is the replay refusal.
+        assert (await f.check(_call(b))).allowed is True
+        after = await f.check(verdict)
+        assert after.allowed is False and "already been used" in after.reason
+        assert inner.seen == 3
+
+    async def test_a_verdict_the_policy_refuses_releases_too(self):
+        inner = _Recorder(allow=False)
+        f = SingleUseEvidenceFilter(inner)
+        verdict = dataclasses.replace(_call(_bundle("urn:req1")), verdict_only=True)
+        assert (await f.check(verdict)).allowed is False
+        assert len(f._store) == 0
 
     async def test_a_reservation_is_released_when_the_policy_refuses(self):
         """Reserving first must not burn an approval the policy then rejects."""

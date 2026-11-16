@@ -497,6 +497,109 @@ class TestCredentialsBlock:
         assert payments.credential == "corp-as"
 
 
+class TestPlatformBlock:
+    """The ``platform`` pseudo-server: declared native tools, and the one the
+    proxy runs."""
+
+    def _base(self, **extra):
+        return {
+            "mcpServers": {"m": {"command": "x"}},
+            "credentials": {
+                "bank": {
+                    "grant": "client_credentials",
+                    "token_endpoint": "https://as.example/token",
+                    "client_id": "proxy",
+                    "client_secret_env": "BANK_SECRET",
+                }
+            },
+            **extra,
+        }
+
+    def _load(self, tmp_path, data):
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(data))
+        return load_config(path)
+
+    def test_absent_means_no_platform_server(self, tmp_path):
+        assert self._load(tmp_path, self._base()).platform is None
+
+    def test_the_shipped_tools_take_an_empty_declaration(self, tmp_path):
+        config = self._load(tmp_path, self._base(platform={"tools": {"exec": {}, "http_request": {}}}))
+        tools = config.platform.tools
+        assert set(tools) == {"exec", "http_request"}
+        assert "argv" in tools["exec"].input_schema["properties"]
+        assert tools["http_request"].input_schema["required"] == ["method", "url"]
+        assert tools["exec"].qualified_name == "platform__exec"
+        assert config.platform.http_request is None
+
+    def test_a_declared_function_needs_a_description_and_a_schema(self, tmp_path):
+        full = {"description": "Look a customer up.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}}}
+        config = self._load(tmp_path, self._base(platform={"tools": {"lookup_customer": full}}))
+        assert config.platform.tools["lookup_customer"].description == "Look a customer up."
+        for partial, needle in (
+            ({}, "needs a 'description'"),
+            ({"description": "x"}, "needs an 'input_schema'"),
+            ({"description": "x", "input_schema": "object"}, "needs an 'input_schema'"),
+            ({"description": "x", "input_schema": {}, "schema": {}}, "unexpected field"),
+        ):
+            with pytest.raises(ValueError, match=needle):
+                self._load(tmp_path, self._base(platform={"tools": {"lookup_customer": partial}}))
+
+    def test_the_separator_and_the_reserved_name_are_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain '__'"):
+            self._load(tmp_path, self._base(platform={"tools": {"a__b": {"description": "d", "input_schema": {}}}}))
+        with pytest.raises(ValueError, match="reserved"):
+            self._load(tmp_path, {**self._base(), "mcpServers": {"platform": {"command": "x"}}})
+
+    def test_an_empty_block_and_unknown_keys_are_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="declares no tools"):
+            self._load(tmp_path, self._base(platform={}))
+        with pytest.raises(ValueError, match="declares no tools"):
+            self._load(tmp_path, self._base(platform={"tools": {}}))
+        with pytest.raises(ValueError, match="unexpected field"):
+            self._load(tmp_path, self._base(platform={"tool": {"exec": {}}}))
+
+    def test_http_request_declares_the_tool_and_its_hosts(self, tmp_path):
+        config = self._load(tmp_path, self._base(platform={"http_request": {
+            "hosts": {"HTTPS://Api.Bank.Example:443": {"methods": ["post"], "paths": ["/transfers"], "headers": ["Idempotency-Key"], "credential": "bank"}},
+            "timeout": 10,
+            "max_response": 4096,
+        }}))
+        http = config.platform.http_request
+        assert set(config.platform.tools) == {"http_request"}
+        rule = http.hosts["https://api.bank.example"]
+        assert rule.methods == {"POST"} and rule.paths == ("/transfers",)
+        assert rule.headers == {"Idempotency-Key"} and rule.credential == "bank"
+        assert http.timeout == 10.0 and http.max_response == 4096
+
+    @pytest.mark.parametrize(
+        "block, needle",
+        [
+            ({"hosts": {}}, "non-empty object"),
+            ({}, "non-empty object"),
+            ({"hosts": {"https://a.example": {"methods": []}}}, "non-empty list of methods"),
+            ({"hosts": {"https://a.example": {"paths": ["transfers"]}}}, "starting with '/'"),
+            ({"hosts": {"https://a.example": {"headers": ["Authorization"]}}}, "may not list Authorization"),
+            ({"hosts": {"https://a.example": {"credential": "nope"}}}, "not defined in 'credentials'"),
+            ({"hosts": {"https://a.example": {"method": ["GET"]}}}, "unexpected field"),
+            ({"hosts": {"https://a.example": {}, "https://A.example/": {}}}, "twice"),
+            ({"hosts": {"https://a.example": {}}, "timeout": 0}, "positive number of seconds"),
+            ({"hosts": {"https://a.example": {}}, "max_response": -1}, "positive number of bytes"),
+            ({"hosts": {"https://a.example": {}}, "follow_redirects": True}, "unexpected field"),
+        ],
+    )
+    def test_a_malformed_http_request_block_is_refused(self, tmp_path, block, needle):
+        with pytest.raises(ValueError, match=needle):
+            self._load(tmp_path, self._base(platform={"http_request": block}))
+
+    def test_a_bundle_on_platform_needs_the_block(self, tmp_path):
+        bundle = {"filters": {"policy_bundles": {"platform": {"path": str(tmp_path)}}}}
+        with pytest.raises(ValueError, match="not in 'mcpServers'"):
+            self._load(tmp_path, self._base(**bundle))
+        config = self._load(tmp_path, self._base(platform={"tools": {"exec": {}}}, **bundle))
+        assert "platform" in config.filters.policy_bundles
+
+
 class TestFindConfigPath:
     def test_cli_arg(self):
         with tempfile.NamedTemporaryFile(suffix=".json") as f:

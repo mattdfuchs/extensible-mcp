@@ -150,7 +150,8 @@ class SingleUseEvidenceFilter:
       them back to the wallet.
 
     Records nothing on a denial, so a refused call leaves the credential
-    spendable. It does record before the call is dispatched, so a downstream
+    spendable; nothing on a verdict either (``request.verdict_only``), since
+    a question about a call is not the call. It does record before the call is dispatched, so a downstream
     that fails after the policy allowed it has still spent the evidence: the
     conservative direction, since the proxy cannot know whether the downstream
     acted.
@@ -274,7 +275,13 @@ class SingleUseEvidenceFilter:
             # used against anything. Hand it back.
             await self._release(held)
             raise
-        if not result.allowed:
+        if not result.allowed or request.verdict_only:
+            # A verdict spends nothing: the caller asked whether the call
+            # would be allowed and is not making it here, so the evidence
+            # stays spendable by the real call that follows. Reserving first
+            # and releasing after is what makes the answer honest -- an
+            # approval already spent, or held by a call in flight, was
+            # refused above with the replay reason, as the real call would be.
             await self._release(held)
         return result
 

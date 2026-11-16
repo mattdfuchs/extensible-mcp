@@ -67,10 +67,12 @@ def membership(*, sub: str, role: str, key, iss: str = TRUST_DID) -> dict:
     }
 
 
-def request_vc(*, args: dict[str, Any], key, iss: str = KID_DID, jti: str = "r1") -> dict:
+def request_vc(
+    *, args: dict[str, Any], key, iss: str = KID_DID, jti: str = "r1", action: str = "send"
+) -> dict:
     return {
         "jws": sign({"sub": iss}, key),
-        "claims": {"jti": jti, "iss": iss, "action": "send", "arguments": args, **_VALID_WINDOW},
+        "claims": {"jti": jti, "iss": iss, "action": action, "arguments": args, **_VALID_WINDOW},
     }
 
 
