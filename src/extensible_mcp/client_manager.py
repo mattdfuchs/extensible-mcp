@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from .config import read_tokens_file
 from .credentials import (
     PROXY_ITSELF,
+    SubjectToken,
     CredentialError,
     CredentialProvider,
     OAuthGrantAuth,
@@ -199,8 +200,14 @@ class _Connection:
         """
         return self._credential_provider is not None or bool(self._last_token_value)
 
+    @property
+    def per_caller(self) -> bool:
+        """Whether this connection's credential is the caller's delegated
+        token (``token_exchange``) rather than the proxy's own."""
+        return bool(getattr(self._credential_provider, "per_caller", False))
+
     async def prefetch_credential(self) -> None:
-        """Acquire the downstream token once, at admission.
+        """Acquire the proxy's own downstream token once, at admission.
 
         At admission we can know whether a token is obtainable at all, so
         acquiring one is a liveness check plus a warm cache: a missing key
@@ -209,8 +216,9 @@ class _Connection:
         later. ``connect_configured`` raises, and its caller decides whether
         one bad server is fatal.
 
-        Per-principal credentials cannot do this -- admission does not know
-        which principals will appear -- but the proxy's own credential can.
+        A per-caller credential acquires nothing about any caller here --
+        admission does not know who will call -- but it does acquire the
+        proxy's own token, because that is what lists the server's tools.
         """
         if self._credential_provider is None or not self._tokens_allowed:
             return
@@ -237,9 +245,18 @@ class _Connection:
         )
         return value
 
-    def _make_http_client(self) -> httpx2.AsyncClient | None:
+    def _make_http_client(
+        self, subject: SubjectToken | None = None, *, listing: bool = False
+    ) -> httpx2.AsyncClient | None:
         """Build an httpx client that authenticates this connection, if a
         credential is available *and* this connection is allowed to use one.
+
+        ``subject`` is the caller's token, for a per-caller credential: the
+        exchanged token presented is about that caller, and a call with no
+        caller behind it is refused here rather than made as the proxy.
+        ``listing`` is the one request with no caller, ``tools/list`` at
+        admission, which such a credential answers with the proxy's own
+        identity: the catalogue is the server's, not any one person's.
 
         A credential is keyed by server name, but the URL it reaches is
         chosen by whoever opened the connection -- and for a runtime
@@ -284,10 +301,24 @@ class _Connection:
             # credential-less connection must surface as the 401 it was.
             return httpx2.AsyncClient(auth=_BearerAuth(None))
         if self._credential_provider is not None:
+            principal: Any = PROXY_ITSELF
+            if self.per_caller and not listing:
+                if subject is None:
+                    # Fail closed, before any request: a delegated server
+                    # either speaks for the caller or does not answer.
+                    raise CredentialError(
+                        f"Server '{self.config.name}' uses a token_exchange "
+                        "credential, which presents the caller's delegated "
+                        "token, and this call carries no caller token. The "
+                        "proxy does not substitute its own identity."
+                    )
+                principal = subject
             # The token is resolved per request by the auth flow, not fixed
             # into a header here, so a token acquired or re-acquired after
             # this client was built needs no new client.
-            return httpx2.AsyncClient(auth=OAuthGrantAuth(self._credential_provider))
+            return httpx2.AsyncClient(
+                auth=OAuthGrantAuth(self._credential_provider, principal)
+            )
         token = self._resolve_token()
         if not token:
             # No credential, but still our own client: an auth refusal of an
@@ -395,7 +426,7 @@ class _Connection:
         """Connect, list tools, and disconnect. Used for URL servers to avoid
         background tasks interfering with the stdio transport."""
         async with AsyncExitStack() as stack:
-            http_client = self._make_http_client()
+            http_client = self._make_http_client(listing=True)
             if http_client:
                 await stack.enter_async_context(http_client)
             read, write = await stack.enter_async_context(
@@ -407,12 +438,18 @@ class _Connection:
             return result.tools
 
     async def call_tool_ephemeral(
-        self, tool_name: str, arguments: dict[str, Any]
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        subject: SubjectToken | None = None,
     ) -> mcp_types.CallToolResult:
-        """Connect, call a tool, and disconnect. Used for URL servers."""
+        """Connect, call a tool, and disconnect. Used for URL servers.
+        ``subject`` is the caller's token, presented through a per-caller
+        credential and ignored by the proxy's own."""
         try:
             async with AsyncExitStack() as stack:
-                http_client = self._make_http_client()
+                http_client = self._make_http_client(subject)
                 if http_client:
                     await stack.enter_async_context(http_client)
                 read, write = await stack.enter_async_context(
@@ -530,6 +567,11 @@ class ClientManager:
         """Names of the servers currently connected."""
         return set(self._connections)
 
+    def per_caller_servers(self) -> set[str]:
+        """The connected servers whose credential is the caller's delegated
+        token: the ones a call must bring its caller's token to."""
+        return {name for name, conn in self._connections.items() if conn.per_caller}
+
     def _provider_for(self, config: ServerConfig) -> CredentialProvider | None:
         """The credential provider for a server, built once and reused.
 
@@ -609,8 +651,16 @@ class ClientManager:
         return records
 
     async def call_tool(
-        self, qualified_name: str, arguments: dict[str, Any]
+        self,
+        qualified_name: str,
+        arguments: dict[str, Any],
+        *,
+        subject: SubjectToken | None = None,
     ) -> mcp_types.CallToolResult:
+        """Call a tool on the server that owns it. ``subject`` is the caller's
+        verified inbound token, handed to a URL server's credential when that
+        credential is per-caller (``token_exchange``); a stdio server has no
+        credential and a service-identity credential does not read it."""
         server_name = self._tool_to_server.get(qualified_name)
         if not server_name:
             raise ValueError(f"Unknown tool: {qualified_name}")
@@ -622,7 +672,7 @@ class ClientManager:
         original_name = self._tool_original_name[qualified_name]
 
         if conn.is_url:
-            return await conn.call_tool_ephemeral(original_name, arguments)
+            return await conn.call_tool_ephemeral(original_name, arguments, subject=subject)
 
         if not conn.session:
             raise RuntimeError(f"Server '{server_name}' is not connected")

@@ -64,7 +64,7 @@ The base proxy is working: dynamic server loading, RAG-based tool retrieval, an 
 
 Beyond that base, an in-process **policy-bundle engine** enforces signed-evidence policies on the call path: a policy (compiled to OPA/Rego-WASM, authored directly in CEL, or emitted as Cedar) evaluates a closed input assembled from the call's arguments, deployment config, and resolved evidence — a Verifiable Credential, a WebAuthn passkey assertion, a merchant's raw signature over the exact bytes it signed — each verified field-by-field against the actual call, never taken on the LLM's word. The engine is deliberately plural: `manifest.json`/`fetchplan.json`/the human-facing guidance layer are the same regardless of which engine evaluates the policy, and Rego, CEL and Cedar backends ship as proof. The containerized demo also runs as an organization on its own identity provider: a committed Keycloak realm issues the tokens, the proxy requires a verified principal on every call over HTTP, the console holds a session per signed-in person, and the admin-signed memberships bind each member's account there, so the production policies tie the session to the wallet that signed. See [`project-overview.md`](project-overview.md) for the architecture, module by module.
 
-The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 1305 tests; the two example packages add 236 and 55.
+The line from here to [Policy as Code, Policy as Type (Fuchs, 2025)](https://arxiv.org/abs/2506.01446) — which treats a policy as a dependent type whose properties can be mathematically proven rather than just tested — is now concrete rather than aspirational: the bundle format supports a policy derived that way, without the proxy needing to know or care. The core package's suite is 1342 tests; the two example packages add 243 and 55.
 
 ## Threat Model
 
@@ -218,7 +218,7 @@ Many MCP servers require credentials. How the proxy supplies one depends on how 
 
 **Stdio servers** (launched as child processes via `command`) — pass credentials through the `env` block in `mcpServers`, the same way you would for any MCP server. The GitHub example in [`examples/`](examples/) uses this pattern with `$GITHUB_PERSONAL_ACCESS_TOKEN` resolved from a `.env` file or the proxy's environment.
 
-**URL servers** (Streamable HTTP via `url`) — the proxy authenticates itself to an OAuth authorization server and is handed a short-lived access token, which lives only in memory. Declare the client identity once under `credentials`, then reference it by name from each server:
+**URL servers** (Streamable HTTP via `url`) — the proxy authenticates itself to an OAuth authorization server and is handed a short-lived access token, which lives only in memory: its own, or one about the person calling. Declare the client identity once under `credentials`, then reference it by name from each server:
 
 ```json
 {
@@ -234,6 +234,12 @@ Many MCP servers require credentials. How the proxy supplies one depends on how 
       "token_endpoint": "https://legacy.example.com/oauth/token",
       "client_id": "extensible-mcp-proxy",
       "client_secret_env": "LEGACY_CLIENT_SECRET"
+    },
+    "corp-as-delegated": {
+      "grant": "token_exchange",
+      "token_endpoint": "https://as.example.com/oauth/token",
+      "client_id": "extensible-mcp-proxy",
+      "private_key_file": "keys/proxy-signing.pem"
     }
   },
   "mcpServers": {
@@ -242,21 +248,34 @@ Many MCP servers require credentials. How the proxy supplies one depends on how 
       "credential": "corp-as",
       "scope": "payments.invoke",
       "audience": "https://payments.example.com"
+    },
+    "records": {
+      "url": "https://records.example.com/mcp",
+      "credential": "corp-as-delegated",
+      "scope": "records.read"
     }
   }
 }
 ```
 
-Two grants ship. Both are the OAuth 2.0 `client_credentials` grant at the token endpoint; they differ in how the proxy proves it is the client:
+Three grants ship. Two are the OAuth 2.0 `client_credentials` grant at the token endpoint, the proxy's **service identity**; they differ in how the proxy proves it is the client:
 
 - `private_key_jwt` (RFC 7523) signs a short-lived assertion with a private key the authorization server never sees, so nothing replayable is transmitted or logged. It needs the `oauth` extra: `pip install "extensible-mcp[oauth]"`.
 - `client_credentials` sends a client secret, read from the environment variable named by `client_secret_env`. There is deliberately no `client_secret` field: the config file is one people commit and share, so a config carrying one is refused at load.
 
-`scope` and `audience` belong to the server rather than the credential, because one OAuth client legitimately serves many resources. Relative paths such as `private_key_file` resolve against the config file's directory. The token is attached per request and refreshed in place when the downstream answers 401, so expiry is handled without a restart and without anyone editing a file.
+The third, `token_exchange` (RFC 8693), is the **delegated identity**: the proxy presents the caller's verified inbound token as the `subject_token`, authenticated as itself by exactly one of `private_key_file` or `client_secret_env`, and is handed a token the authorization server issued *about that person*, with the proxy as the client it was issued to. The downstream sees the caller as `sub` and the proxy as `azp`, and `act` wherever the authorization server asserts delegation; no `actor_token` is sent, since the client authentication is the actor and a delegation claim is the server's to assert. Keycloak's standard token exchange, which the demo's committed realm is measured against (see [its recipe](examples/agentic-commerce-demo/deploy/keycloak/README.md)), issues `sub` and `azp` and no `act`. The exchange is per call and per person, cached per person for the exchanged token's lifetime capped by the inbound token's own expiry, so a delegated token never outlives the session it came from; a refused exchange fails the call, and the proxy never substitutes its own identity for the caller's. The one request made as the proxy itself is listing the server's tools at admission, where no caller exists. Because the exchange needs a caller on every call, the grant is refused wherever a call could arrive without one: on stdio, over HTTP with `--allow-anonymous`, and from `create_server` unless `require_principal` is `True`. The caller's token itself reaches the client manager after the call pipeline has allowed the call and nothing else: no filter sees it, and the `Principal` never carries it.
+
+`scope` and `audience` belong to the server rather than the credential, because one OAuth client legitimately serves many resources. (On an exchange, what each means is the authorization server's: on Keycloak `scope` names a client scope of the proxy's client and is what puts a downstream in `aud`, while `audience` takes a client id and only filters.) Relative paths such as `private_key_file` resolve against the config file's directory. The token is attached per request and refreshed in place when the downstream answers 401, so expiry is handled without a restart and without anyone editing a file.
 
 What this earns is *no replayable secret at rest*, not *no secret at rest*: `private_key_jwt` still keeps a private key on disk. A workload identity — a platform-attested, short-lived token exchanged at the authorization server — is the step past that, and is deliberately not built in, because every form of it is deployment-specific. The seam is there for it: a `CredentialProvider` is an object that returns a token, so "read the projected service-account token and exchange it" is another provider, written without touching the proxy.
 
-**Over HTTP, a grant credential is the proxy's service identity.** One process serves many people, and a grant-acquired token is one identity for all of them, by design: the proxy acts as itself downstream, and authorizing each person is the filters' job at the proxy, where the principal is. Where the downstream is governed by a bundle, the person reaches it as evidence in the call, signed by their key and bound to the exact arguments, which tells the downstream who acted more strongly than a token could. A delegated identity in the OAuth sense, the downstream seeing the caller as subject and the proxy as actor by token exchange, is a later release; a tokens file is refused over HTTP because it holds a person's bearer, not a service identity.
+**Three shapes, and which identity the downstream sees.** A credential is one of:
+
+- *The person's own token for a server they logged into* — the tokens file, below. The person obtained it in that server's own authorization domain, and the proxy's authorization server could not mint it. Stdio only, since one process is one person.
+- *The proxy's service identity* — `private_key_jwt` or `client_credentials`. Over HTTP one process serves many people, and this is one identity for all of them, by design: the proxy acts as itself downstream, and authorizing each person is the filters' job at the proxy, where the principal is. Where the downstream is governed by a bundle, the person reaches it as evidence in the call, signed by their key and bound to the exact arguments, which tells the downstream who acted more strongly than a token could.
+- *The delegated identity* — `token_exchange`. The downstream sees the person, for a downstream in the deployment's own trust domain: one that accepts tokens from the proxy's authorization server.
+
+Exchange is authority to authority, so it is not a replacement for the tokens file. What none of the three covers is a downstream *outside* the deployment's domain where each person has their own account, reached over HTTP: that would mean the proxy holding a token per person per server, which is out of scope in this release and stated so here rather than left for the exchange to seem to cover.
 
 **No identity provider is required.** Nothing in the proxy needs Keycloak, Okta, Entra or any other authorization server unless you add a `credentials` entry pointing at one. A deployment of stdio servers, or of URL servers that need no credential, runs with none. (The Order Pizza demo's passkey page is its own issuer in the home shape; in the organization shape it signs people in at the demo's committed Keycloak realm, which is configuration, not a requirement.)
 
@@ -665,7 +684,7 @@ uv run extensible-mcp --config /path/to/config.json --transport http --host 0.0.
 uv run extensible-mcp --config /path/to/config.json --transport http --allow-anonymous
 ```
 
-`--transport http` refuses to start rather than warn when the configuration was sound only because one process served one person: with no `auth` block and no `--allow-anonymous`, with `--allow-anonymous` on a non-loopback host or alongside an `auth` block, and with a tokens file configured. `extensible-mcp --help` states the constraint. On HTTP the `load_mcp_server` tool is refused at the handler: servers on a shared proxy are configured by an operator, not loaded by a model, so `may_load` has no effect there. The anonymous flag is one person's proxy and nothing else: every principal is `None`, so nothing is scoped per person. See [Inbound identity](#inbound-identity-who-a-session-acts-for).
+`--transport http` refuses to start rather than warn when the configuration was sound only because one process served one person: with no `auth` block and no `--allow-anonymous`, with `--allow-anonymous` on a non-loopback host or alongside an `auth` block, with a tokens file configured, and with `--allow-anonymous` beside a `token_exchange` credential (which stdio refuses too: the exchange needs the caller's token on every call). `extensible-mcp --help` states the constraint. On HTTP the `load_mcp_server` tool is refused at the handler: servers on a shared proxy are configured by an operator, not loaded by a model, so `may_load` has no effect there. The anonymous flag is one person's proxy and nothing else: every principal is `None`, so nothing is scoped per person. See [Inbound identity](#inbound-identity-who-a-session-acts-for).
 
 A platform that loads a server's tools once rather than discovering them on demand is served by [static exposure](#static-exposure-platforms-that-load-tools-once); the steps such a platform runs outside MCP are governed through [`/decide` and `/call`](#platform-steps-decide-call-and-the-platform-server).
 

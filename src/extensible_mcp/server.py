@@ -29,6 +29,7 @@ from starlette.routing import request_response
 from . import admin
 from .client_manager import ClientManager, TokenExpiredError
 from .config import Config, find_config_path, load_config
+from .credentials import GRANT_TOKEN_EXCHANGE, SubjectToken
 from .declared_bundles import build_declared_bundle_filters
 from .principal import (
     PrincipalError,
@@ -188,8 +189,10 @@ _HTTP_CONSTRAINT = (
     "start unless the config carries an 'auth' block (issuer, audience, and the "
     "issuer's keys) or --allow-anonymous says this is one person's proxy on "
     "loopback. It also refuses a configured tokens file, which presents one "
-    "credential for every caller, and it does not offer load_mcp_server: on a "
-    "shared proxy servers are configured, not loaded."
+    "credential for every caller, and a token_exchange credential with "
+    "--allow-anonymous, since an anonymous call has no token to exchange; and "
+    "it does not offer load_mcp_server: on a shared proxy servers are "
+    "configured, not loaded."
 )
 
 
@@ -254,6 +257,25 @@ class TransportError(ValueError):
     """A deployment the CLI refuses to start: not a warning, an exit."""
 
 
+def exchange_credentials(config: Config) -> list[str]:
+    """The names of the config's ``token_exchange`` credentials. Each needs
+    the caller's verified token on every call, so a deployment where a call
+    can arrive without one refuses to start with any declared."""
+    return sorted(
+        name for name, cred in config.credentials.items() if cred.grant == GRANT_TOKEN_EXCHANGE
+    )
+
+
+def _exchange_needs_a_caller(names: list[str], where: str) -> str:
+    return (
+        f"credential(s) {', '.join(repr(n) for n in names)} use the token_exchange "
+        f"grant, which exchanges the caller's verified token for a downstream one, "
+        f"and {where}. Serve this config over --transport http with an 'auth' "
+        "block, or use a service-identity grant (client_credentials, "
+        "private_key_jwt) for the server."
+    )
+
+
 def check_http_deployment(
     config: Config, *, allow_anonymous: bool = False, host: str = "127.0.0.1"
 ) -> bool:
@@ -276,6 +298,10 @@ def check_http_deployment(
       bug would act with the credential's full authority. Refused flat, since
       an HTTP listener cannot show it serves one person. Per-principal
       downstream credentials are a later release.
+    - **A ``token_exchange`` credential with ``--allow-anonymous``.** The
+      exchange needs the caller's token on every call and an anonymous
+      request carries none, so every call to that server would fail; refused
+      at start rather than at the first call.
     - **The ``auth`` block itself is checked at load**: ``issuer`` and
       ``audience`` are both required there, so a verifier that accepts any
       issuer's token for any audience is not expressible in the config.
@@ -305,6 +331,12 @@ def check_http_deployment(
                 f"--allow-anonymous listens on {host!r}, which is not loopback. An "
                 "anonymous proxy is one person's, and a reachable port is not one "
                 f"person's; bind one of {sorted(LOOPBACK_HOSTS)} or configure 'auth'."
+            )
+        exchanging = exchange_credentials(config)
+        if exchanging:
+            raise TransportError(
+                "--allow-anonymous refuses "
+                + _exchange_needs_a_caller(exchanging, "an anonymous request carries none")
             )
         return False
     if config.auth is None:
@@ -512,12 +544,18 @@ async def _perform(
     arguments: dict[str, Any],
     *,
     session_id: str | None = None,
+    subject: SubjectToken | None = None,
 ) -> tuple[list[Any], bool, Any]:
     """The one call path, given who is calling: the call pipeline, then
     local, native or downstream dispatch, then the response pipeline.
     Returns the native result (content blocks, ``is_error``, structured
     content) for the entry point to render; raises :class:`_Refused` when
-    nothing was dispatched."""
+    nothing was dispatched.
+
+    ``subject`` is the caller's verified token, for a downstream whose
+    credential is the caller's delegated one. It reaches the client manager
+    after the pipeline allowed the call and nothing else: not the request
+    the filters see, not the response, not a message."""
     response_pipeline: ResponseFilterPipeline = state["response_filter_pipeline"]
     client_mgr: ClientManager = state["client_manager"]
     local_tools: dict[str, LocalTool] = state["local_tools"]
@@ -555,7 +593,7 @@ async def _perform(
     elif tool_name in client_mgr.get_qualified_names():
         try:
             result: mcp_types.CallToolResult = await client_mgr.call_tool(
-                tool_name, arguments
+                tool_name, arguments, subject=subject
             )
         except TokenExpiredError as e:
             raise _Refused(
@@ -600,12 +638,19 @@ async def _dispatch_call(
     this and nothing else; ``POST /call`` runs :func:`_perform` with the
     principal its own request established. The principal is read per
     request, then everything is :func:`_perform`."""
+    from fastmcp.server.dependencies import get_access_token
+
     try:
         principal = _current_principal(ctx)
     except PrincipalError as e:
         raise _Refused(str(e))
     return await _perform(
-        ctx.lifespan_context, principal, tool_name, arguments, session_id=ctx.session_id
+        ctx.lifespan_context,
+        principal,
+        tool_name,
+        arguments,
+        session_id=ctx.session_id,
+        subject=_subject_from_access_token(get_access_token()),
     )
 
 
@@ -848,6 +893,26 @@ def _route_principal(request: Request, state: dict[str, Any]) -> Principal | Non
     return principal
 
 
+def _subject_from_access_token(token: Any) -> SubjectToken | None:
+    """The caller's verified token as the subject of a downstream exchange,
+    or ``None`` when the request carries none. Read at dispatch, after the
+    pipeline allowed the call, and handed to the client manager only: no
+    filter sees it, and the :class:`Principal` never carries it."""
+    if token is None:
+        return None
+    value = getattr(token, "token", None)
+    claims = getattr(token, "claims", None) or {}
+    iss, sub = claims.get("iss"), claims.get("sub")
+    if not isinstance(value, str) or not value or not isinstance(iss, str) or not isinstance(sub, str):
+        return None
+    expires_at = getattr(token, "expires_at", None)
+    if expires_at is None:
+        expires_at = claims.get("exp")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+        expires_at = None
+    return SubjectToken(value=value, iss=iss, sub=sub, expires_at=float(expires_at) if expires_at is not None else None)
+
+
 def _bad_request(message: str) -> Response:
     return JSONResponse({"error": message}, status_code=400)
 
@@ -945,8 +1010,14 @@ def _mount_platform_routes(
             principal = _route_principal(request, state)
         except PrincipalError as e:
             return JSONResponse({"error": str(e)}, status_code=401)
+        user = request.scope.get("user")
+        subject = _subject_from_access_token(
+            user.access_token if isinstance(user, AuthenticatedUser) else None
+        )
         try:
-            content, is_error, structured = await _perform(state, principal, tool, arguments)
+            content, is_error, structured = await _perform(
+                state, principal, tool, arguments, subject=subject
+            )
         except _Refused as e:
             # To the caller a refusal is the step's result, the way it is a
             # tool-level error to an MCP client: 200, and the reason where
@@ -1044,7 +1115,10 @@ def create_server(
     keys on (it refuses to serve HTTP with no ``auth`` and the flag unset).
     State the proxy keeps across a person's requests -- the discovered-tools
     set -- is keyed on the principal, or on the process when there is none;
-    the protocol's 2026-07-28 revision has no session to key on.
+    the protocol's 2026-07-28 revision has no session to key on. A
+    ``token_exchange`` credential requires ``True``: it exchanges the
+    caller's verified token, so a mode in which a call may carry none is
+    refused here.
 
     ``config.filters.policy_bundles`` — bundles declared in the config file
     rather than wired in code — are loaded here, before the lifespan exists,
@@ -1066,6 +1140,18 @@ def create_server(
             "require_principal=True needs an inbound verifier: pass auth=, or "
             "configure an 'auth' block. With neither, no request could ever "
             "carry a principal and every call would be refused."
+        )
+    exchanging = exchange_credentials(config)
+    if exchanging and not require_principal:
+        # The exchange has nothing to exchange without a verified inbound
+        # token on the call. require_principal=True is the only mode that
+        # promises one; anything else would fail every call to the server
+        # at the first call instead of here.
+        raise ValueError(
+            "create_server refuses "
+            + _exchange_needs_a_caller(
+                exchanging, "require_principal is not True, so a call may carry none"
+            )
         )
     if principal_mapping is None:
         principal_mapping = PrincipalMapping(
@@ -1360,6 +1446,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.allow_anonymous:
         print("error: --allow-anonymous is only meaningful with --transport http", file=sys.stderr)
         return 2
+    else:
+        exchanging = exchange_credentials(config)
+        if exchanging:
+            # stdio: one process, one person, no inbound token to exchange.
+            print(
+                "error: stdio refuses "
+                + _exchange_needs_a_caller(exchanging, "over stdio there is no inbound token"),
+                file=sys.stderr,
+            )
+            return 2
     # reload_config is what arms SIGHUP. The CLI supplies it -- and with it the
     # policy that "the config" means this file -- while the lifespan supplies
     # the machinery, since only it holds the live manager and index.

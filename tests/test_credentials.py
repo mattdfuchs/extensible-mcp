@@ -345,23 +345,29 @@ class TestTheTokenEndpointContract:
 
 
 class TestThePrincipalParameter:
-    """The seam takes a principal now so that per-principal credentials
-    extend it rather than replace it. Exactly one value exists today."""
+    """The seam takes a principal. A service-identity grant serves exactly
+    one, the proxy itself; the caller's token is the token_exchange grant's
+    business (``tests/test_token_exchange.py``), and a service-identity
+    provider refuses it rather than presenting the proxy as the caller."""
 
     async def test_the_proxy_itself_is_the_only_accepted_principal(
         self, stub_auth_server, tmp_path
     ):
+        from extensible_mcp.credentials import SubjectToken
+
         provider = key_provider(stub_auth_server, tmp_path)
 
         assert await provider.token(PROXY_ITSELF) == "correct-token"
 
-        for other in ("a-user", None, object(), ProxyItself()):
-            with pytest.raises(CredentialError, match="only acquire a credential"):
+        subject = SubjectToken(value="inbound", iss="https://idp", sub="alice")
+        for other in ("a-user", None, object(), ProxyItself(), subject):
+            with pytest.raises(CredentialError, match="own service identity"):
                 await provider.token(other)  # type: ignore[arg-type]
 
     def test_the_module_exposes_exactly_one_principal(self):
-        """Pin it: a second principal value would mean the proxy had grown a
-        notion of caller identity, which is a different change."""
+        """Pin it: a second *service* principal value would mean the proxy had
+        grown a second self. The caller is a ``SubjectToken``, a different
+        type, never a sentinel."""
         import extensible_mcp.credentials as credentials
 
         principals = {
