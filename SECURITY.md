@@ -78,9 +78,9 @@ it. A defect in a hoisted application is in scope as a finding.
 Two structural consequences, in scope for reports:
 
 - A Cedar bundle in the **forbid-only** shape — the one the external
-  toolchain emits — carries an unconditional base permit and emits **no
-  entity hierarchy**, so an **empty policy set allows everything**. There
-  is no deny-by-default to fall back on. What stands between a failed load
+  toolchain first emitted — carries an unconditional base permit, so an
+  **empty policy set allows everything**. There is no deny-by-default to
+  fall back on. What stands between a failed load
   and a silent permit is therefore the load-time check that every expected
   rule `@id` is present. A way to load such a bundle with rules missing, or
   to make that check pass without them, is a bypass and a finding.
@@ -95,6 +95,21 @@ Two structural consequences, in scope for reports:
   its condition. A way to make a forbid decide in the decision pass, a
   permit match in the probe pass, or a bundle evaluate in a shape other
   than the one it declares, is a finding.
+- The **entity store** a Cedar policy's `in`, `principal.f` and `resource.f`
+  read is formed per call from the fetch plan's `entities` block and from
+  nothing else: the fields the block places leave `context` for their
+  entity, a membership field becomes that entity's parent edges, and a
+  bundle that ships no block gets an empty store. A bundle that ships
+  `schema.json` is validated against it at load, and every `in` is held to
+  the relations the schema declares, because Cedar types an `in` over an
+  undeclared relation as `false` and reports nothing; a bundle with no
+  schema has `in` refused outright. The schema is never passed to
+  `is_authorized`, so the declaration is the only check on the store. A
+  way to put an edge or an attribute in the store that no plan entry
+  produced, to make a value the block does not list as a reference read as
+  an entity, to load an `in` the schema cannot make true, or to have a
+  store that cannot be formed as declared decide rather than fault, is a
+  finding.
 
 **The proxy does not prevent a client from reaching other servers.** It governs
 what passes through it. A client that can connect elsewhere — another MCP server
