@@ -1,0 +1,14 @@
+{"type": "object",
+ "title": "ApprovalInput",
+ "required": ["principal", "status", "requiredApprovers", "currentApprovals"],
+ "properties":
+ {"status": {"type": "string"},
+  "requiredApprovers": {"type": "array", "items": {"type": "string"}},
+  "principal": {"type": "string"},
+  "currentApprovals": {"type": "array", "items": {"type": "string"}}},
+ "description":
+ "A document finalize request, validated by CanFinalize (CedarBench approval_chain_workflow, requirement 3). Cedar bundle: the fields named in `derived_fields` are computed by the fetch plan's `derive` entries rather than supplied by a caller, and are absent when their primitive matched nothing — so they are in `properties` and never in `required`.",
+ "derived_fields": [],
+ "definitions": {},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

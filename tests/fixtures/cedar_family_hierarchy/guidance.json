@@ -1,0 +1,73 @@
+{
+  "id_scheme": "named-split",
+  "goal": "CanSpendInFamily",
+  "tiers": [
+    {
+      "tier": 0,
+      "checks": [
+        {
+          "id": "solo.caller.idp_role_parent",
+          "sentence": "the caller's identity provider does not assert the parent role",
+          "condition": "principal in IdpRole::\"parent\"",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.server.in_org",
+          "sentence": "this server is not in the organization the policy governs",
+          "condition": "resource in Org::\"acme\"",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.caller.family_member",
+          "sentence": "the caller's membership credential is not signed by the household's trust root",
+          "condition": "principal in Family::\"household\"",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.membership.names_caller",
+          "sentence": "the membership credential names someone other than the caller",
+          "condition": "input.requesterMembership.claims.sub == input.caller.sub",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.membership.within_window",
+          "sentence": "a credential is outside its validity window",
+          "condition": "input.requesterMembership.claims.nbf <= input.now && input.now <= input.requesterMembership.claims.exp",
+          "remedy_class": "re-promptable"
+        },
+        {
+          "id": "solo.arguments.amount_cents_at_most",
+          "sentence": "required: input.arguments.amountCents <= 5000",
+          "condition": "input.arguments.amountCents <= 5000",
+          "remedy_class": "re-promptable"
+        }
+      ]
+    }
+  ],
+  "call_guards": [
+    {
+      "field": "tool",
+      "always": true,
+      "required_in_tiers": [
+        0
+      ],
+      "deciding_checks": []
+    },
+    {
+      "field": "arguments",
+      "always": true,
+      "required_in_tiers": [
+        0
+      ],
+      "deciding_checks": []
+    },
+    {
+      "field": "requesterMembership",
+      "always": true,
+      "required_in_tiers": [
+        0
+      ],
+      "deciding_checks": []
+    }
+  ]
+}

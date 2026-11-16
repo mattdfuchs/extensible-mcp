@@ -1,0 +1,126 @@
+{
+  "": {
+    "entityTypes": {
+      "Caller": {
+        "memberOfTypes": [
+          "IdpRole",
+          "Family"
+        ],
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      },
+      "IdpRole": {
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      },
+      "Family": {
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      },
+      "Server": {
+        "memberOfTypes": [
+          "Org"
+        ],
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      },
+      "Org": {
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      }
+    },
+    "actions": {
+      "call": {
+        "appliesTo": {
+          "principalTypes": [
+            "Caller"
+          ],
+          "resourceTypes": [
+            "Server"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "tool": {
+                "type": "String"
+              },
+              "arguments": {
+                "type": "Record",
+                "attributes": {
+                  "amountCents": {
+                    "type": "Long"
+                  },
+                  "merchant": {
+                    "type": "String"
+                  }
+                }
+              },
+              "requesterMembership": {
+                "type": "Record",
+                "attributes": {
+                  "jws": {
+                    "type": "String"
+                  },
+                  "claims": {
+                    "type": "Record",
+                    "attributes": {
+                      "iss": {
+                        "type": "String"
+                      },
+                      "sub": {
+                        "type": "String"
+                      },
+                      "role": {
+                        "type": "String"
+                      },
+                      "nbf": {
+                        "type": "Long"
+                      },
+                      "exp": {
+                        "type": "Long"
+                      }
+                    }
+                  }
+                }
+              },
+              "trustRootJwk": {
+                "type": "String"
+              },
+              "now": {
+                "type": "Long"
+              },
+              "caller": {
+                "type": "Record",
+                "attributes": {
+                  "sub": {
+                    "type": "String"
+                  },
+                  "roles": {
+                    "type": "Set",
+                    "element": {
+                      "type": "String"
+                    }
+                  }
+                }
+              },
+              "probe": {
+                "type": "Boolean",
+                "required": false
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

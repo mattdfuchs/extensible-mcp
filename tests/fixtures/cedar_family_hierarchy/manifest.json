@@ -1,0 +1,200 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FamilyHierarchyInput",
+  "description": "Input to the hierarchy teaching policy: a parent in the household may spend up to a cap on a server the deployment places in its organization. Three hierarchy edges from three sources -- the IdP's roles claim (caller), the deployment's config, and a verified membership credential (derive) -- each a membership field the Cedar plan's `entities` block turns into parent edges. Hand-authored for this repository; see PROVENANCE.md. The fields named in `derived_fields` are computed by the fetch plan and are absent when nothing verified, so they are in `properties` and never in `required`.",
+  "type": "object",
+  "required": [
+    "tool",
+    "arguments",
+    "requesterMembership",
+    "trustRootJwk",
+    "now",
+    "caller",
+    "serverOrgs"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string"
+    },
+    "arguments": {
+      "$ref": "#/definitions/SpendRequest"
+    },
+    "requesterMembership": {
+      "$ref": "#/definitions/Membership"
+    },
+    "trustRootJwk": {
+      "type": "string"
+    },
+    "now": {
+      "$ref": "#/definitions/Timestamp"
+    },
+    "caller": {
+      "$ref": "#/definitions/Caller"
+    },
+    "serverOrgs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Org"
+      }
+    },
+    "callerIdpRoles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/IdpRole"
+      }
+    },
+    "callerFamilies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Family"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "derived_fields": [
+    "callerIdpRoles",
+    "callerFamilies"
+  ],
+  "definitions": {
+    "Timestamp": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "DID": {
+      "type": "string",
+      "pattern": "^did:(key|web):.+$"
+    },
+    "JWS": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+    },
+    "SpendRequest": {
+      "type": "object",
+      "required": [
+        "amountCents",
+        "merchant"
+      ],
+      "properties": {
+        "amountCents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "merchant": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MembershipClaims": {
+      "type": "object",
+      "required": [
+        "iss",
+        "sub",
+        "role",
+        "nbf",
+        "exp"
+      ],
+      "properties": {
+        "iss": {
+          "$ref": "#/definitions/DID"
+        },
+        "sub": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "nbf": {
+          "$ref": "#/definitions/Timestamp"
+        },
+        "exp": {
+          "$ref": "#/definitions/Timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Membership": {
+      "type": "object",
+      "required": [
+        "jws",
+        "claims"
+      ],
+      "properties": {
+        "jws": {
+          "$ref": "#/definitions/JWS"
+        },
+        "claims": {
+          "$ref": "#/definitions/MembershipClaims"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Caller": {
+      "type": "object",
+      "required": [
+        "sub",
+        "roles"
+      ],
+      "properties": {
+        "sub": {
+          "type": "string"
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IdpRole": {
+      "type": "object",
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "const": "IdpRole"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Family": {
+      "type": "object",
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "const": "Family"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Org": {
+      "type": "object",
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "const": "Org"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

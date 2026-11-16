@@ -87,6 +87,15 @@ NOT_ADOPTED_BY_DECISION = {
         "a language-coverage example over a `data` relation table, not a proxy "
         "filter and not an authority lookup; see rego/rebac"
     ),
+    # Two ports of a public Cedar benchmark, adopted on the Cedar engine only
+    # (cedar_approval, cedar_channel) as loader-grammar fixtures for the
+    # `entities` block. Their Rego and CEL twins decide over context and
+    # exercise nothing the proxy does not already test; their identities are
+    # call-sourced, so none of the three is a proxy filter. Decided 2026-11-16.
+    "rego/approval": "the Cedar emission is adopted as a loader-grammar fixture; the Rego twin adds nothing",
+    "cel/approval": "the Cedar emission is adopted as a loader-grammar fixture; the CEL twin adds nothing",
+    "rego/channel": "the Cedar emission is adopted as a loader-grammar fixture; the Rego twin adds nothing",
+    "cel/channel": "the Cedar emission is adopted as a loader-grammar fixture; the CEL twin adds nothing",
 }
 
 # Adopted bundles whose guidance.json is deliberately this repo's own rather

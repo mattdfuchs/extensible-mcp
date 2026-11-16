@@ -1,0 +1,20 @@
+{"":
+ {"entityTypes":
+  {"Document":
+   {"shape":
+    {"type": "Record",
+     "attributes":
+     {"status": {"type": "String"},
+      "requiredApprovers": {"type": "Set", "element": {"type": "String"}},
+      "currentApprovals": {"type": "Set", "element": {"type": "String"}}}}},
+   "Caller": {"shape": {"type": "Record", "attributes": {}}}},
+  "actions":
+  {"call":
+   {"appliesTo":
+    {"resourceTypes": ["Document"],
+     "principalTypes": ["Caller"],
+     "context":
+     {"type": "Record",
+      "attributes":
+      {"probe": {"type": "Boolean", "required": false},
+       "principal": {"type": "String"}}}}}}}}

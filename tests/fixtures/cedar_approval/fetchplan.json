@@ -1,0 +1,43 @@
+{"input": "ApprovalInput",
+ "entries":
+ [{"source": {"kind": "call"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "principal",
+    "deciding_checks": [],
+    "always": true},
+   "field": "principal"},
+  {"source": {"kind": "call"},
+   "schema": {"type": "string"},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "status",
+    "deciding_checks": [],
+    "always": true},
+   "field": "status"},
+  {"source": {"kind": "call"},
+   "schema": {"type": "array", "items": {"type": "string"}},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "requiredApprovers",
+    "deciding_checks": [],
+    "always": true},
+   "field": "requiredApprovers"},
+  {"source": {"kind": "call"},
+   "schema": {"type": "array", "items": {"type": "string"}},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "currentApprovals",
+    "deciding_checks": [],
+    "always": true},
+   "field": "currentApprovals"}],
+ "entities":
+ {"resource":
+  {"type": "Document",
+   "id": {"from": "package"},
+   "attributes": ["status", "requiredApprovers", "currentApprovals"]},
+  "principal":
+  {"type": "Caller",
+   "id": {"from": "caller", "field": "sub"},
+   "attributes": []}}}

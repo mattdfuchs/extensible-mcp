@@ -1,0 +1,42 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   [{"sentence":
+     "required: some a in input.requiredApprovers passes its checks",
+     "remedy_class": "terminal",
+     "id": "t0.required_approvers.has_a_match",
+     "condition": "not q_a_required_approvers_1"},
+    {"sentence": "required: input.status == \"in_review\"",
+     "remedy_class": "re-promptable",
+     "id": "t0.status.matches",
+     "condition": "input.status != \"in_review\""},
+    {"sentence":
+     "required: every a in input.requiredApprovers passes its checks",
+     "remedy_class": "terminal",
+     "id": "t0.required_approvers.all_match",
+     "condition": "not q_a_required_approvers_2"}]}],
+ "id_scheme": "named-split",
+ "guidance_digest":
+ {"value": "c68cd58bb37bbdb9",
+  "covers":
+  "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
+  "alg": "fnv1a64"},
+ "goal": "CanFinalize",
+ "call_guards":
+ [{"required_in_tiers": [0],
+   "field": "requiredApprovers",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0],
+   "field": "principal",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0],
+   "field": "status",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0],
+   "field": "currentApprovals",
+   "deciding_checks": [],
+   "always": true}],
+ "call_credentials": []}

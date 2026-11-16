@@ -1,0 +1,29 @@
+{"tiers":
+ [{"tier": 0,
+   "checks":
+   [{"sentence":
+     "the requester is neither the channel's owner nor one of its moderators",
+     "remedy_class": "re-promptable",
+     "id": "t0.principal.moderates",
+     "condition": "not moderates(input.principal)"}]}],
+ "id_scheme": "named-split",
+ "guidance_digest":
+ {"value": "61d1888303dd18c7",
+  "covers":
+  "Every field of this file except this one: the tier structure, and per check the id, sentence, condition, holes and remedy class, plus call_guards and call_credentials. Taken over a line projection of the parsed content (integration doc §13.33), not over these bytes — so it changes exactly when rendered guidance can change, it is recomputable without agreeing on key order, and reformatting does not move it. `alg` is named because FNV-1a is a change discriminator, not an integrity mechanism.",
+  "alg": "fnv1a64"},
+ "goal": "CanDeleteMessage",
+ "call_guards":
+ [{"required_in_tiers": [0],
+   "field": "owner",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0],
+   "field": "principal",
+   "deciding_checks": [],
+   "always": true},
+  {"required_in_tiers": [0],
+   "field": "moderators",
+   "deciding_checks": [],
+   "always": true}],
+ "call_credentials": []}

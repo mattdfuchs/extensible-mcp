@@ -1,0 +1,17 @@
+{"why":
+ "Permit-decides (§13.43): the `@tier` permits carry the decision and the `@id` forbids carry the reasons, over two evaluations keyed on `context has probe`. An empty policy set therefore *denies* — no permit matches — so this file is no longer what stands between a failed load and a silent permit, as it was for the forbid-only shape. It is still the id contract. `ids` are the same ids the Rego bundle's `failed_checks` set and the CEL bundle's checks use — one `CheckId.forLeaf`, so the join key cannot drift. `assembly_tiers` names the one extra `forbid` per tier, annotated `@assembly` and carrying no `@id` because it is not a reason leaf; it reports that a tier's inputs were incomplete, which the renderer explains from `call_guards`, and it is no longer load-bearing for the decision because incomplete input fails the permits' own guards. A loader must find one policy per id here AND one per assembly tier.",
+ "tiers":
+ [{"tier": "t0",
+   "ids":
+   ["t0.required_approvers.has_a_match",
+    "t0.status.matches",
+    "t0.required_approvers.all_match"]}],
+ "shape": "permit-decides",
+ "ids":
+ ["t0.required_approvers.has_a_match",
+  "t0.status.matches",
+  "t0.required_approvers.all_match"],
+ "id_scheme": "named-split",
+ "goal": "policybundle.examples.approval",
+ "count": 3,
+ "assembly_tiers": ["t0"]}

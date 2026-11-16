@@ -1,0 +1,192 @@
+{
+  "input": "FamilyHierarchyInput",
+  "entries": [
+    {
+      "field": "tool",
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "type": "string"
+      },
+      "guard": {
+        "field": "tool",
+        "always": true,
+        "required_in_tiers": [
+          0
+        ],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "arguments",
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/SpendRequest"
+      },
+      "guard": {
+        "field": "arguments",
+        "always": true,
+        "required_in_tiers": [
+          0
+        ],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "requesterMembership",
+      "source": {
+        "kind": "call"
+      },
+      "schema": {
+        "$ref": "#/definitions/Membership"
+      },
+      "guard": {
+        "field": "requesterMembership",
+        "always": true,
+        "required_in_tiers": [
+          0
+        ],
+        "deciding_checks": []
+      }
+    },
+    {
+      "field": "trustRootJwk",
+      "source": {
+        "kind": "config"
+      },
+      "schema": {
+        "type": "string"
+      }
+    },
+    {
+      "field": "now",
+      "source": {
+        "kind": "clock"
+      },
+      "schema": {
+        "$ref": "#/definitions/Timestamp"
+      }
+    },
+    {
+      "field": "caller",
+      "source": {
+        "kind": "caller",
+        "params": {
+          "fields": [
+            "sub",
+            "roles"
+          ]
+        }
+      },
+      "schema": {
+        "$ref": "#/definitions/Caller"
+      }
+    },
+    {
+      "field": "serverOrgs",
+      "source": {
+        "kind": "config"
+      },
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/Org"
+        }
+      }
+    },
+    {
+      "field": "callerIdpRoles",
+      "source": {
+        "kind": "derive",
+        "fn": "entity_refs",
+        "args": [
+          "IdpRole",
+          {
+            "$input": "caller.roles"
+          }
+        ]
+      },
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/IdpRole"
+        }
+      }
+    },
+    {
+      "field": "callerFamilies",
+      "source": {
+        "kind": "derive",
+        "fn": "verify_eddsa",
+        "args": [
+          {
+            "$input": "requesterMembership.jws"
+          },
+          {
+            "$item": "key"
+          }
+        ],
+        "over": [
+          {
+            "key": {
+              "$input": "trustRootJwk"
+            },
+            "family": {
+              "type": "Family",
+              "id": "household"
+            }
+          }
+        ],
+        "project": "family"
+      },
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/Family"
+        }
+      }
+    }
+  ],
+  "primitives": {
+    "entity_refs": {
+      "class": "pure"
+    },
+    "verify_eddsa": {
+      "class": "key-consuming"
+    }
+  },
+  "entities": {
+    "principal": {
+      "type": "Caller",
+      "id": {
+        "from": "caller",
+        "field": "sub"
+      },
+      "attributes": []
+    },
+    "resource": {
+      "type": "Server",
+      "id": {
+        "from": "package"
+      },
+      "attributes": []
+    },
+    "memberships": [
+      {
+        "field": "callerIdpRoles",
+        "of": "principal"
+      },
+      {
+        "field": "callerFamilies",
+        "of": "principal"
+      },
+      {
+        "field": "serverOrgs",
+        "of": "resource"
+      }
+    ]
+  }
+}
