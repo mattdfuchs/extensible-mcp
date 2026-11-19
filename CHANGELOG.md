@@ -3,6 +3,185 @@
 Notable changes to extensible-mcp, release by release. The project stays in
 semver's `0.x` range deliberately — the public API isn't frozen yet.
 
+## [0.4.1] - 2026-11-19
+
+The proxy in front of platforms that load a server's tools once and run steps
+of their own, and the two pieces 0.4.0 stated as later work, done: the
+downstream can see the caller, by token exchange, and a Cedar policy can test
+hierarchy, over an entity store the fetch plan declares. Nothing moves the
+enforcement point. A tool listed statically dispatches through the one call
+path every other call takes; a step the platform runs itself is decided at the
+proxy and nowhere else; the exchanged token reaches the client manager after
+the pipeline has allowed the call and no filter sees it; and every edge in the
+entity store is a plan entry with its provenance legible.
+
+**Upgrading.** No dependency changes: the FastMCP 4 and MCP SDK 2 bounds are
+those of 0.4.0, and a stdio deployment runs exactly as before. The default
+`"exposure": "dynamic"` is byte-for-byte 0.4.0. Three names are now reserved
+and refused at construction where a configuration of 0.4.0 could have used
+them: `platform` as a downstream server's name, and `search_tools`,
+`call_tool` and `load_mcp_server` as a local tool's. `CallRequest` gains
+`verdict_only`, default `False`; a custom call filter whose effect goes beyond
+its answer, one that logs, counts or spends, must have none when it is set,
+since the shipped replay guard now honours the flag and a filter that does not
+would spend evidence on a question. A Cedar bundle that carried a top-level
+`entities` key in its fetch plan or a `schema.json` beside its policy was
+ignored on both counts by 0.4.0 and is read here: the block forms the store
+and the schema is a hard gate, so a bundle whose policy its own schema refuses
+no longer loads. The four supplied Cedar production bundles are re-pinned to
+the toolchain's current emission, which ships the schema; their ids, manifest,
+plan and guidance are byte-identical to the previous pin.
+
+**Added: static exposure.** Workflow and agent platforms load a server's tool
+set once and dispatch tools themselves: n8n's MCP Client Tool node sends
+`tools/list` on connect and hands the result to its agent as fixed tools; the
+LangChain, Google ADK and Strands MCP adapters list when the agent is built and
+bind the same way. Pointed at this proxy they saw three meta-tools and a
+discovery workflow their tool model does not expect. With `"exposure":
+"static"`, `tools/list` answers with the governed catalogue instead: every
+downstream tool under its qualified name and every local tool under its own,
+each with the schema `search_tools` would have printed for it, credential
+parameters marked required or required-when, scoped to the caller. The
+meta-tools are neither listed nor reachable, so there is no runtime loading in
+this mode. Nothing is registered on the server for a listed tool: the list is a
+view composed over the proxy's registry, the whole index through the search
+pipeline with the empty query, so one rule scopes listing and search, and
+every listed name dispatches through the path the `call_tool` meta-tool takes,
+with access control, role scoping, the bundle and single-use evidence
+unchanged. The structural rule changes shape rather than force: a
+`StaticCatalogueFilter` holds the `DiscoveredToolsFilter` slot and derives the
+callable set from the caller's view per call, with nothing to evict. The
+listing is a menu, not an allowance. A platform may list at activation before
+any user exists, call much later, or open a fresh connection per call, and
+none of it matters, because the token on each request says who is calling and
+the call is checked against that caller's view at that moment: a tool listed
+to a parent and called under a child whose roles exclude it is refused with
+the reason. A refusal is a tool-level error carrying the rendered sentence; an
+allowed call returns the downstream's native result. One client per user is
+the deployment precondition, and the README says why a client built once with
+a service credential makes every user one principal.
+
+**Added: `/decide`, `/call` and the `platform` pseudo-server.** A workflow also
+has steps that never cross MCP: a shell node, an HTTP Request node, a plain
+function tool. A platform's native actions are now tools of a reserved server
+named `platform` (`platform__exec`, `platform__http_request`, and declared
+functions with a schema), so a policy bundle, a role scope, an access-control
+pattern, a policy-set route and the augmenter apply to them with no second
+code path, because everything the proxy decides with is keyed on the server
+name. Two plain HTTP routes beside the MCP endpoint, mounted only under static
+exposure on the HTTP transport, each behind the same bearer requirement as the
+MCP path: `POST /decide` runs the whole call pipeline for the request's
+principal and stops where the proxy would dispatch. It is effect-free: nothing
+runs, no downstream is contacted, no evidence is spent, and the response is
+the verdict, the arguments as the filters left them with credential fields
+stripped, and the rendered reason. `POST /call` runs the same path to the end
+and returns the three values an MCP client receives; a refusal is the step's
+result. The proxy runs `platform__http_request` itself after the pipeline
+allows: to an origin declared under `hosts` only, with the methods, path
+prefixes and request headers the entry lists, presenting the bearer it
+acquired with the entry's credential, following no redirect, with the response
+capped and marked truncated past the cap, so the target's secret lives with
+the proxy and is never seen by the platform or the model. `platform__exec` is
+a program with arguments and never a shell: a `command` string is tokenized
+with POSIX rules into `argv` and refused before any filter runs if it carries
+an operator, redirection, substitution, glob or variable reference, and the
+proxy never runs it; the platform asks `/decide` and runs the command itself.
+There is no code shape, since no policy can say what a program does; a
+deployment that enforces a policy turns the platform's code tools off, and the
+README names which. The identity on both routes is the end user's, forwarded
+by the platform.
+
+**Added: token exchange, the delegated identity.** 0.4.0 said that over HTTP
+a grant credential is the proxy's service identity and that delegated identity
+was a later release. `token_exchange` (RFC 8693) is the third grant: the proxy
+presents the caller's verified inbound token as the `subject_token`,
+authenticated as itself by exactly one of `private_key_file` or
+`client_secret_env`, and is handed a token the authorization server issued
+about that person. The downstream sees the caller as `sub` and the proxy as
+`azp`, and `act` wherever the server asserts delegation; no `actor_token` is
+sent, since the client authentication is the actor. The exchange is per call
+and per person, cached per `(iss, sub)` for the exchanged token's lifetime
+capped by the inbound token's own expiry, so a delegated token never outlives
+the session it came from; a refused exchange fails the call, and the proxy
+never substitutes its own identity for the caller's. The one request made as
+the proxy itself is listing a server's tools at admission, where no caller
+exists. Because the exchange needs a caller on every call, the grant is
+refused wherever a call could arrive without one: on stdio, over HTTP with
+`--allow-anonymous`, from `create_server` unless `require_principal` is
+`True`, and as the credential of a `platform__http_request` host. The caller's
+token is read at dispatch, after the call pipeline has allowed the call, on
+the MCP path and `POST /call` alike, and reaches the client manager only; its
+repr shows `iss` and `sub`, it is never logged or compared, and the
+`Principal` never carries it. The README now states the three credential
+shapes and which identity each shows the downstream, and names the fourth
+case, a downstream outside the deployment's domain with per-person accounts
+reached over HTTP, as out of scope rather than leaving the exchange to seem to
+cover it. Measured against the demo's committed Keycloak realm (26.8.1), which
+gains the proxy's confidential client with standard token exchange on and
+nothing secret in the file: the exchanged token carries the subject's `sub`,
+`azp` for the proxy and no `act`; `scope` is what adds an audience and
+`audience` only filters; a token not addressed to the proxy is refused with a
+403; the proxy's key must be registered as a JWKS string. The recipe records
+each measurement.
+
+**Added: the Cedar entity store, and `in` held to a schema.** 0.4.0 shipped
+Cedar with an empty store and `in` refused at load. The store is now formed
+per call from the fetch plan's top-level `entities` block and from nothing
+else. The block names the head's two entity types and where their ids come
+from (`caller.sub` and the package by default, or an input field holding an
+entity reference), the manifest fields moved from `context` onto each entity
+as attributes (read as `resource.status` rather than `context.status`), the
+fields whose values are entity references, wrapped in Cedar's escape by the
+block and never by inspecting a value's shape, the membership fields, each a
+list of entity references assembled from a declared source like any other
+field that becomes that entity's parents, and attributes placed on a
+referenced entity. Nothing enters the store undeclared, and every edge's
+provenance is the plan entry that produced it: `principal in
+IdpRole::"parent"` comes from the IdP's roles claim through a `caller` entry
+and the new `entity_refs` primitive, under a type name the plan states
+literally; `resource in Org::"acme"` is the deployment's word, a `config`
+entry; `principal in Family::"<id>"` is a `derive` fold over a verified
+membership credential, so the edge exists only if the signature did. A bundle
+that ships `schema.json`, the manifest in Cedar's schema notation, is
+validated against it at load by Cedar's own validator as a hard gate, with the
+validator's messages, and may then test `in`; the loader additionally refuses
+every `in` over a relation the schema's `memberOfTypes` cannot reach from the
+subject's type, every `in` on an attribute subject and every `in` on the
+action, because the validator passes all three in a `when` clause, types them
+as `false` and reports nothing, which is measured and pinned. A bundle with no
+schema has every `in` refused as before and gets the empty store it always
+had. The schema is never passed to the evaluation, since its store parse is
+strict and a manifest with an open object cannot be typed; a store that
+cannot be formed as declared is a fault, never a denial. Hierarchy over an
+attribute subject, action groups and the toolchain's decision schema are not
+formed in this release. Beside the four re-pinned production bundles, two
+supplied loader-grammar fixtures are adopted on Cedar only, attributes on the
+resource in one and entity references with the principal as a value in the
+other, with a call-sourced principal that their provenance says is outside the
+proxy's threat model, so neither is attached to a server; and one bundle of
+this repo's own is the first to test `in`, with its three edges from the three
+sources and a schema declaring exactly those relations.
+
+**Documentation.** The README gains the static exposure section, the section
+on the two routes and the `platform` block, the three credential shapes under
+Authentication, the entity-store paragraph in place of the sentence that said
+the store was unused, and a hierarchy walk-through in Authoring a bundle;
+SECURITY.md states the store's structural consequence and what would count as
+a finding; the Keycloak README has the exchange recipe; the Status, overview
+and test-count statements are current.
+
+**Tests.** The proxy suite is 1463 passed and one skip. The demo suite is 243
+passed and two skips, one for a test that needs the workspace admin key and
+one that runs only against a live Keycloak. The identity suite is 55.
+Twenty-three directories under `tests/fixtures/`: twenty call-gate bundles,
+the three production policies and the teaching policy on all three engines
+among them, plus the selection classifier and two expression-shape tables that
+are not bundles. The static-exposure tests include a tool listed to one
+identity and called under another, and a call from a connection that never
+listed; the route tests include that `/decide` spends nothing and that a
+refused call exchanges nothing; the store tests carry the measurements behind
+each loader rule and run the supplier's scenario tables through this loader.
+
 ## [0.4.0] - 2026-11-11
 
 The proxy over Streamable HTTP, as a shared enforcement point that knows who

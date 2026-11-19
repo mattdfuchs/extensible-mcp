@@ -81,7 +81,7 @@ The larger negotiate → invoice → passkey → settle → fulfill commerce dem
 
 ## Status
 
-`0.0.1` — feature complete. 236 tests pass (2 skipped: one without a workspace admin key, one that runs only against a live Keycloak). Not yet on PyPI; resolved as an editable workspace member of the parent repo (see [`../../pyproject.toml`](../../pyproject.toml)).
+`0.0.1` — feature complete. 243 tests pass (2 skipped: one without a workspace admin key, one that runs only against a live Keycloak). Not yet on PyPI; resolved as an editable workspace member of the parent repo (see [`../../pyproject.toml`](../../pyproject.toml)).
 
 Deferred to later versions: StatusList revocation (currently relying on credential expiry), JSON-LD VCs (JWT-VC only for now). A web approval UI now ships (`wallet run --approve web`, and the WebAuthn passkey page for the commerce demo) alongside the original stdin prompt.
 
