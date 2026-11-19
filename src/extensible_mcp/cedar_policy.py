@@ -78,11 +78,20 @@ remember:
    input against that manifest before evaluation; a diagnostic means one of
    those two did not hold, and the call fails closed.
 
-Everything evidential travels in ``context``. The principal, action and
-resource are fixed labels (:data:`REQUEST_HEAD`), no entity store is passed,
-and no emitted policy tests ``principal in``; the empty-store hazard is
-unreachable by construction, which leaves the empty-*policy-set* hazard for
-the completeness check above.
+The request head is the proxy's own (:data:`REQUEST_HEAD` when the input says
+nothing more): ``principal`` is the caller, ``action`` is the tool,
+``resource`` is the server type the bundle governs. The **entity store** is
+formed per call from the plan's ``entities`` block (:mod:`.cedar_store`):
+the fields the block places leave ``context`` for their entity, a membership
+field becomes that entity's parents, and a bundle that ships no block gets
+the empty store every earlier bundle decided over. A bundle that ships
+``schema.json`` is validated against it at load -- Cedar's own validator, as
+a hard gate -- and may then test ``in``, which :func:`~.cedar_store.check_hierarchy`
+holds to the relations the schema declares; without a schema ``in`` is
+refused outright, since against no hierarchy it is silently inert. The
+schema is never passed to ``is_authorized`` (its store parse is strict, and a
+manifest with an open object cannot be typed), so the declaration, not a
+per-call check, is what makes the store the one the bundle means.
 """
 
 from __future__ import annotations
@@ -94,6 +103,17 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .cedar_store import (
+    ENTITIES_KEY,
+    SCHEMA_FILE,
+    EntityPlacement,
+    HierarchyError,
+    PlacementError,
+    check_hierarchy,
+    entity_literal,
+    form_store,
+    parse_placement,
+)
 from .wasm_policy import PolicyEvaluationError
 
 logger = logging.getLogger(__name__)
@@ -123,20 +143,12 @@ REQUEST_HEAD: dict[str, str] = {
 }
 
 
-def _entity(entity_type: str, entity_id: str) -> str:
-    """``Type::"id"`` with the id escaped as a Cedar string literal. A control
-    character is refused rather than escaped: no tool, subject or package name
-    legitimately carries one, and Cedar's escape forms differ from JSON's."""
-    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in entity_id):
-        raise PolicyEvaluationError(
-            f"{entity_type} id {entity_id!r} carries a control character"
-        )
-    escaped = entity_id.replace("\\", "\\\\").replace('"', '\\"')
-    return f'{entity_type}::"{escaped}"'
+_entity = entity_literal
 
 
 def request_head(input_obj: dict[str, Any], package: str) -> dict[str, str]:
-    """The PARC head for one evaluation (see :data:`REQUEST_HEAD`).
+    """The PARC head for one evaluation under the default placement (see
+    :data:`REQUEST_HEAD`): what a bundle with no ``entities`` block gets.
 
     The caller's attributes stay in ``context.caller`` for the ``when``
     clause; the head carries only the identity. A policy that reads
@@ -146,15 +158,7 @@ def request_head(input_obj: dict[str, Any], package: str) -> dict[str, str]:
     evidence, admin-vouched and cryptographic, and stays in the evidence
     fields, lexically apart from the IdP-asserted roles here.
     """
-    head = dict(REQUEST_HEAD)
-    caller = input_obj.get("caller")
-    if isinstance(caller, dict) and isinstance(caller.get("sub"), str) and caller["sub"]:
-        head["principal"] = _entity("Caller", caller["sub"])
-    tool = input_obj.get("tool")
-    if isinstance(tool, str) and tool:
-        head["action"] = _entity("Action", tool)
-    head["resource"] = _entity("Server", package)
-    return head
+    return form_store(input_obj, EntityPlacement.default(), package).head
 
 #: Cedar's JSON reader treats an object with one of these keys as an entity
 #: reference or an extension value rather than as a record. The assembled
@@ -205,6 +209,8 @@ class CedarPolicy:
         *,
         expected_ids_path: str | Path | None = None,
         package: str | None = None,
+        entities: Any = None,
+        schema_path: str | Path | None = None,
     ) -> None:
         try:
             import cedarpy
@@ -218,10 +224,30 @@ class CedarPolicy:
             if expected_ids_path is not None
             else policy_path.with_name(EXPECTED_IDS_FILE)
         )
+        schema_file = (
+            Path(schema_path) if schema_path is not None
+            else policy_path.with_name(SCHEMA_FILE)
+        )
         self._package = package or policy_path.parent.name
+        try:
+            self._placement = parse_placement(
+                entities, f"{policy_path.with_name('fetchplan.json')} {ENTITIES_KEY!r}"
+            )
+        except PlacementError as e:
+            raise CedarPolicyError(str(e)) from e
         text = policy_path.read_text()
-        policies = _parse_policies(cedarpy, text, policy_path)
-        _refuse_in(text, policy_path)
+        policies_json = _policies_json(cedarpy, text, policy_path)
+        policies = _parse_policies(policies_json)
+        self._schema: dict[str, Any] | None = None
+        if schema_file.exists():
+            self._schema = _read_schema(schema_file)
+            _validate_against_schema(cedarpy, text, self._schema, policy_path, schema_file)
+            try:
+                check_hierarchy(policies_json, self._placement, self._schema)
+            except HierarchyError as e:
+                raise CedarPolicyError(f"{policy_path}: {e}") from e
+        else:
+            _refuse_in(text, policy_path)
         self._declared = expected_path.exists()
         if self._declared:
             self._expected_ids, self._expected_tiers, self._shape, self._tier_ids = (
@@ -238,6 +264,19 @@ class CedarPolicy:
         self._policies = cedarpy.PolicySet.from_str(text)
 
     # -- what the loader verified ---------------------------------------- #
+
+    @property
+    def placement(self) -> EntityPlacement:
+        """How the store is formed per call: the plan's ``entities`` block,
+        parsed, or the default (``Caller``/``Server``, nothing placed)."""
+        return self._placement
+
+    @property
+    def schema_validated(self) -> bool:
+        """Whether the bundle shipped ``schema.json`` and the policy set
+        passed Cedar's validator against it at load. Such a bundle may test
+        ``in``; one without a schema had every ``in`` refused."""
+        return self._schema is not None
 
     @property
     def expected_ids(self) -> frozenset[str]:
@@ -366,8 +405,11 @@ class CedarPolicy:
         skipped, so whatever the decision says, it was not reached over the
         whole policy set. Fail closed as a fault, not as a denial.
         """
+        # StoreFormationError is a PolicyEvaluationError: a store that cannot
+        # be formed as declared is a fault before anything is evaluated.
+        formed = form_store(context, self._placement, self._package)
         result = self._cedarpy.is_authorized(
-            {**request_head(context, self._package), "context": context}, self._policies, []
+            {**formed.head, "context": formed.context}, self._policies, formed.entities
         )
         diagnostics = result.diagnostics
         errors = list(diagnostics.errors)
@@ -620,8 +662,9 @@ def refuse_reserved_plan_fields(fetchplan: dict[str, Any], path: Path | str) -> 
             )
 
 
-def _parse_policies(cedarpy: Any, text: str, path: Path) -> list[tuple[str, dict[str, Any]]]:
-    """Every static policy as ``(effect, annotations)``, via Cedar's own parser."""
+def _policies_json(cedarpy: Any, text: str, path: Path) -> dict[str, Any]:
+    """The policy set in Cedar's JSON form, via Cedar's own parser: the one
+    reading of the text the loader's structural checks work from."""
     try:
         parsed = json.loads(cedarpy.policies_to_json_str(text))
     except ValueError as e:
@@ -630,6 +673,54 @@ def _parse_policies(cedarpy: Any, text: str, path: Path) -> list[tuple[str, dict
         raise CedarPolicyError(
             f"{path} uses policy templates; a bundle is static policies only"
         )
+    return parsed
+
+
+def _read_schema(path: Path) -> dict[str, Any]:
+    try:
+        schema = json.loads(path.read_text())
+    except ValueError as e:
+        raise CedarPolicyError(f"{path} is not JSON: {e}") from e
+    if not isinstance(schema, dict):
+        raise CedarPolicyError(f"{path}: a Cedar JSON schema is an object of namespaces")
+    return schema
+
+
+def _validate_against_schema(
+    cedarpy: Any, text: str, schema: dict[str, Any], policy_path: Path, schema_path: Path
+) -> None:
+    """Cedar's validator as a hard gate: a bundle that ships a schema and
+    whose policy set the validator rejects does not load. The validator is a
+    *type* critic -- an undeclared attribute read, a comparison between
+    incompatible types, an unguarded optional read -- and under the guard
+    discipline the emitter proves it is not a presence critic; presence is
+    the ``has`` guards' job. What it refuses here is the first emission that
+    leaves its fragment, with its own message."""
+    try:
+        result = cedarpy.validate_policies(text, schema)
+    except (ValueError, TypeError) as e:
+        raise CedarPolicyError(
+            f"{schema_path} is not a schema Cedar can load: {e}"
+        ) from e
+    if not result.validation_passed:
+        errors = list(result.errors or [])
+        # A schema Cedar cannot parse comes back as a validation failure with
+        # no policy to blame; name the file rather than the policy.
+        schema_faults = [e.error for e in errors if not e.policy_id]
+        if schema_faults:
+            raise CedarPolicyError(
+                f"{schema_path} is not a schema Cedar can load: {schema_faults[0]}"
+            )
+        shown = "; ".join(f"{e.policy_id}: {e.error}" for e in errors[:5])
+        more = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
+        raise CedarPolicyError(
+            f"{policy_path} fails Cedar's validator against {schema_path.name}: "
+            f"{shown}{more}"
+        )
+
+
+def _parse_policies(parsed: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Every static policy as ``(effect, annotations)``."""
     out: list[tuple[str, dict[str, Any]]] = []
     for policy in (parsed.get("staticPolicies") or {}).values():
         out.append((policy.get("effect"), dict(policy.get("annotations") or {})))
@@ -641,19 +732,18 @@ _IN_TOKEN = re.compile(r"\bin\b")
 
 
 def _refuse_in(text: str, path: Path) -> None:
-    """Refuse a policy that uses ``in`` anywhere.
+    """Refuse a policy that uses ``in`` anywhere, for a bundle with no schema.
 
-    ``in`` is hierarchy membership and the hierarchy is the entity store,
-    which the proxy never passes: measured, ``forbid(principal in
-    Group::"kids", action, resource)`` against an empty store returns Allow
-    with no diagnostic. The forbid is inert and nothing reports it -- not a
-    load error, not an evaluation error, a policy hole that looks like a
-    passing test. In the scope, Cedar's own schema validation would catch
-    it; in a ``when`` clause nothing does, and cedarpy exposes a policy's
-    effect and annotations but not its conditions, so the text is the only
-    handle. Comments and string literals are stripped first; the one false
-    positive is an attribute literally named ``in``, which the author
-    renames.
+    ``in`` is hierarchy membership and the hierarchy is the entity store. A
+    bundle with no ``schema.json`` declares no relation, so its store has no
+    parents: measured, ``forbid(principal in Group::"kids", action,
+    resource)`` against such a store returns Allow with no diagnostic. The
+    forbid is inert and nothing reports it -- not a load error, not an
+    evaluation error, a policy hole that looks like a passing test. With a
+    schema the loader has the relations by name and
+    :func:`~.cedar_store.check_hierarchy` holds every ``in`` to them instead.
+    Comments and string literals are stripped first; the one false positive
+    is an attribute literally named ``in``, which the author renames.
     """
     stripped = _COMMENT_OR_STRING.sub(" ", text)
     match = _IN_TOKEN.search(stripped)
@@ -661,10 +751,13 @@ def _refuse_in(text: str, path: Path) -> None:
         return
     line = stripped.count("\n", 0, match.start()) + 1
     raise CedarPolicyError(
-        f"{path} line {line}: `in` is refused. The policy set is evaluated with "
-        "no entity hierarchy, so hierarchy membership can never hold and a rule "
-        "that tests it is silently inert; test the attribute in `context` "
-        "instead (an attribute literally named `in` must be renamed)."
+        f"{path} line {line}: `in` is refused. This bundle ships no {SCHEMA_FILE}, "
+        "so it declares no hierarchy and the policy set is evaluated against "
+        "none: membership can never hold and a rule that tests it is silently "
+        "inert. Ship a schema declaring the relation in memberOfTypes and a "
+        "`memberships` entry in the plan's `entities` block, or test the "
+        "attribute in `context` instead (an attribute literally named `in` "
+        "must be renamed)."
     )
 
 

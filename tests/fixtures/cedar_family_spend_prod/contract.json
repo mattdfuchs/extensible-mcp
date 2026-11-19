@@ -118,6 +118,11 @@
     {"literal": "∃ d ∈ p1, p0.claims.iss == p2",
      "head": "policybundle.examples.family_spend_prod.IssuedByTrustedAdmin"}]},
   {"says":
+   "where an `untruthy` literal tests a field the manifest types as anything but boolean, a value the host supplies there is not the boolean `false` — the manifest's own type claim. It is what lets the Cedar image of `= none` be `!(context has f)` alone, with no `== false` arm (§13.65); for a field with no manifest type both arms are emitted and nothing is assumed. Listed per path below; empty when the policy tests no such field",
+   "owner": "host",
+   "name": "typed",
+   "items": ["context.callerAccount"]},
+  {"says":
    "the decision pass evaluates with no `probe` key; the explaining pass sets it",
    "owner": "host",
    "name": "probe_absent"},

@@ -1,0 +1,39 @@
+{"input": "ChannelInput",
+ "entries":
+ [{"source": {"kind": "call"},
+   "schema": {"$ref": "#/definitions/User"},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "principal",
+    "deciding_checks": [],
+    "always": true},
+   "field": "principal"},
+  {"source": {"kind": "call"},
+   "schema": {"$ref": "#/definitions/User"},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "owner",
+    "deciding_checks": [],
+    "always": true},
+   "field": "owner"},
+  {"source": {"kind": "call"},
+   "schema": {"type": "array", "items": {"$ref": "#/definitions/User"}},
+   "guard":
+   {"required_in_tiers": [0],
+    "field": "moderators",
+    "deciding_checks": [],
+    "always": true},
+   "field": "moderators"}],
+ "entities":
+ {"resource":
+  {"type": "Channel",
+   "id": {"from": "package"},
+   "attributes": ["owner", "moderators"]},
+  "references":
+  [{"type": "User", "set": true, "field": "moderators"},
+   {"type": "User", "set": false, "field": "owner"},
+   {"type": "User", "set": false, "field": "principal"}],
+  "principal":
+  {"type": "User",
+   "id": {"from": "input", "field": "principal"},
+   "attributes": []}}}

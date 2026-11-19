@@ -1,0 +1,18 @@
+{"":
+ {"entityTypes":
+  {"User": {"shape": {"type": "Record", "attributes": {}}},
+   "Channel":
+   {"shape":
+    {"type": "Record",
+     "attributes":
+     {"owner": {"type": "Entity", "name": "User"},
+      "moderators":
+      {"type": "Set", "element": {"type": "Entity", "name": "User"}}}}}},
+  "actions":
+  {"deleteMessage":
+   {"appliesTo":
+    {"resourceTypes": ["Channel"],
+     "principalTypes": ["User"],
+     "context":
+     {"type": "Record",
+      "attributes": {"probe": {"type": "Boolean", "required": false}}}}}}}}

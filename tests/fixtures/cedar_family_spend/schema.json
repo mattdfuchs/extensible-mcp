@@ -1,0 +1,101 @@
+{"":
+ {"entityTypes":
+  {"Server": {"shape": {"type": "Record", "attributes": {}}},
+   "Caller": {"shape": {"type": "Record", "attributes": {}}}},
+  "actions":
+  {"call":
+   {"appliesTo":
+    {"resourceTypes": ["Server"],
+     "principalTypes": ["Caller"],
+     "context":
+     {"type": "Record",
+      "attributes":
+      {"trustRootJwk": {"type": "String"},
+       "trustRootDID": {"type": "String"},
+       "tool": {"type": "String"},
+       "requesterMembershipJwsTrustRootJwkKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "requesterMembership":
+       {"type": "Record",
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"sub": {"type": "String"},
+           "role": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"},
+           "accounts":
+           {"type": "Set",
+            "required": false,
+            "element":
+            {"type": "Record",
+             "attributes":
+             {"idp": {"type": "String"}, "account": {"type": "String"}}}}}}}},
+       "requestVCJwsTrustRootJwkKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "requestVCJwsDigest": {"type": "String", "required": false},
+       "requestVC":
+       {"type": "Record",
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"nbf": {"type": "Long"},
+           "jti": {"type": "String"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"},
+           "arguments":
+           {"type": "Record",
+            "attributes":
+            {"merchant": {"type": "String"}, "amountCents": {"type": "Long"}}},
+           "action": {"type": "String"}}}}},
+       "probe": {"type": "Boolean", "required": false},
+       "now": {"type": "Long"},
+       "callerIdp": {"type": "String", "required": false},
+       "callerAccount": {"type": "String", "required": false},
+       "authorizationVCJwsTrustRootJwkKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "authorizationVC":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"requestHash": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "jti": {"type": "String"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"}}}}},
+       "arguments":
+       {"type": "Record",
+        "attributes":
+        {"merchant": {"type": "String"}, "amountCents": {"type": "Long"}}},
+       "approverMembershipJwsTrustRootJwkKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "approverMembership":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"sub": {"type": "String"},
+           "role": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"},
+           "accounts":
+           {"type": "Set",
+            "required": false,
+            "element":
+            {"type": "Record",
+             "attributes":
+             {"idp": {"type": "String"},
+              "account": {"type": "String"}}}}}}}}}}}}}}}

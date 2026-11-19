@@ -143,28 +143,43 @@ class PolicyBundle:
                 else "cedar" if cedar_path.exists()
                 else "rego"
             )
+        manifest = json.loads((d / "manifest.json").read_text())
+        fetchplan = json.loads((d / "fetchplan.json").read_text())
         if engine == "cel":
             from .cel_policy import CelPolicy
 
             policy: PolicyEngine = CelPolicy(cel_path)
             package = json.loads(cel_path.read_text())["package"]
         elif engine == "cedar":
-            from .cedar_policy import CedarPolicy
+            from .cedar_policy import CedarPolicy, refuse_reserved_plan_fields
+            from .cedar_store import (
+                ENTITIES_KEY,
+                PlacementError,
+                check_placement_against_plan,
+            )
 
+            refuse_reserved_plan_fields(fetchplan, d / "fetchplan.json")
             # Cedar has no package construct and the bundle declares none; the
             # directory name labels the entrypoints, which is all a package
-            # does for a bundle whose denials render through guidance.
-            policy = CedarPolicy(cedar_path, package=d.name)
+            # does for a bundle whose denials render through guidance. The
+            # plan's `entities` block says how the store is formed per call,
+            # and `schema.json` beside the policy, when shipped, is the
+            # validator's gate; the engine reads both at construction.
+            policy = CedarPolicy(
+                cedar_path, package=d.name, entities=fetchplan.get(ENTITIES_KEY)
+            )
             package = d.name
+            try:
+                check_placement_against_plan(
+                    policy.placement, fetchplan, f"{d / 'fetchplan.json'} {ENTITIES_KEY!r}"
+                )
+            except PlacementError as e:
+                from .cedar_policy import CedarPolicyError
+
+                raise CedarPolicyError(str(e)) from e
         else:
             policy = OpaWasmPolicy(wasm_path, builtins=builtins)
             package = _derive_package(policy)
-        manifest = json.loads((d / "manifest.json").read_text())
-        fetchplan = json.loads((d / "fetchplan.json").read_text())
-        if engine == "cedar":
-            from .cedar_policy import refuse_reserved_plan_fields
-
-            refuse_reserved_plan_fields(fetchplan, d / "fetchplan.json")
         # A plan whose derived fields are shaped wrong is a bundle that must
         # never reach a call, so this is a load-time refusal, not a runtime one.
         validate_derive_plan(fetchplan, primitives=primitives)

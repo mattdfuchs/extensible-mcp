@@ -1,0 +1,136 @@
+{"":
+ {"entityTypes":
+  {"Server": {"shape": {"type": "Record", "attributes": {}}},
+   "Caller": {"shape": {"type": "Record", "attributes": {}}}},
+  "actions":
+  {"call":
+   {"appliesTo":
+    {"resourceTypes": ["Server"],
+     "principalTypes": ["Caller"],
+     "context":
+     {"type": "Record",
+      "attributes":
+      {"webauthnOrigin": {"type": "String"},
+       "trustedMerchants":
+       {"type": "Set",
+        "element":
+        {"type": "Record",
+         "attributes":
+         {"merchantId": {"type": "String"}, "key": {"type": "String"}}}},
+       "trustedAdminDids": {"type": "Set", "element": {"type": "String"}},
+       "tool": {"type": "String"},
+       "probe": {"type": "Boolean", "required": false},
+       "parentEnrollmentJwsAdminKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "parentEnrollment":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"vc":
+           {"type": "Record",
+            "attributes":
+            {"credentialSubject":
+             {"type": "Record",
+              "attributes":
+              {"role": {"type": "String"},
+               "publicKey": {"type": "String"},
+               "accounts":
+               {"type": "Set",
+                "required": false,
+                "element":
+                {"type": "Record",
+                 "attributes":
+                 {"idp": {"type": "String"},
+                  "account": {"type": "String"}}}}}}}},
+           "sub": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"}}},
+         "adminKey": {"type": "String"}}},
+       "parentApprovalClientDataJSONDecodedParsed":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"origin": {"type": "String", "required": false},
+         "challenge": {"type": "String", "required": false}}},
+       "parentApprovalAuthenticatorDataParentEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "parentApproval":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"signature": {"type": "String"},
+         "credentialId": {"type": "String"},
+         "clientDataJSON": {"type": "String"},
+         "authenticatorData": {"type": "String"}}},
+       "now": {"type": "Long"},
+       "invoiceCanonicalTrustedMerchantsMerchantIdWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "invoiceCanonicalParsed":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"totalCents": {"type": "Long", "required": false},
+         "merchantId": {"type": "String", "required": false},
+         "exp": {"type": "Long", "required": false}}},
+       "invoiceCanonicalDigestEncoded": {"type": "String", "required": false},
+       "invoice":
+       {"type": "Record",
+        "attributes":
+        {"signature": {"type": "String"}, "canonical": {"type": "String"}}},
+       "childEnrollmentJwsAdminKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "childEnrollment":
+       {"type": "Record",
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"vc":
+           {"type": "Record",
+            "attributes":
+            {"credentialSubject":
+             {"type": "Record",
+              "attributes":
+              {"role": {"type": "String"},
+               "publicKey": {"type": "String"},
+               "accounts":
+               {"type": "Set",
+                "required": false,
+                "element":
+                {"type": "Record",
+                 "attributes":
+                 {"idp": {"type": "String"},
+                  "account": {"type": "String"}}}}}}}},
+           "sub": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"}}},
+         "adminKey": {"type": "String"}}},
+       "childApprovalClientDataJSONDecodedParsed":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"origin": {"type": "String", "required": false},
+         "challenge": {"type": "String", "required": false}}},
+       "childApprovalAuthenticatorDataChildEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "childApproval":
+       {"type": "Record",
+        "attributes":
+        {"signature": {"type": "String"},
+         "credentialId": {"type": "String"},
+         "clientDataJSON": {"type": "String"},
+         "authenticatorData": {"type": "String"}}},
+       "callerIdp": {"type": "String", "required": false},
+       "callerAccount": {"type": "String", "required": false},
+       "arguments":
+       {"type": "Record",
+        "attributes":
+        {"merchantId": {"type": "String"},
+         "amountCents": {"type": "Long"}}}}}}}}}}

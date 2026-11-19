@@ -857,8 +857,9 @@ async def test_a_non_string_operand_is_still_a_fault_not_undefined():
 
 def test_the_registry_union_claim_is_exactly_the_seven():
     """``default_primitives`` shares seven implementations with the engines by
-    construction; the other four are reimplementations of OPA natives the
-    Rego engine never imports. Pinned so the docstring's count stays true."""
+    construction; four more are reimplementations of OPA natives the Rego
+    engine never imports; the last two mint Cedar entity references and have
+    no engine twin at all. Pinned so the docstring's counts stay true."""
     derive = default_primitives()
     rego = default_builtins()
     shared = {"sha256": "crypto.sha256", "verify_eddsa": "io.jwt.verify_eddsa",
@@ -870,14 +871,16 @@ def test_the_registry_union_claim_is_exactly_the_seven():
     for atom, builtin in shared.items():
         assert derive[atom] is rego[builtin], atom
     reimplemented = {"parse_json", "base64url_decode", "concat", "format_int"}
-    assert set(derive) - set(shared) == reimplemented
-    assert not (reimplemented | {"json.unmarshal", "base64url.decode"}) & set(rego)
+    store_only = {"entity_ref", "entity_refs"}
+    assert set(derive) - set(shared) == reimplemented | store_only
+    assert not (reimplemented | store_only | {"json.unmarshal", "base64url.decode"}) & set(rego)
     # CEL carries the seven plus the two parsers under the atom names -- as
     # adapters, which is why the parsers can answer an error value there and
     # None here. `concat` and `format_int` have no CEL twin: CEL concatenates
     # with `+` natively and formats nothing, so there is no function to adapt.
-    assert set(default_cel_functions()) >= set(derive) - {"concat", "format_int"}
-    assert not {"concat", "format_int"} & set(default_cel_functions())
+    # The entity-reference pair is the Cedar store's and is engine-free too.
+    assert set(default_cel_functions()) >= set(derive) - {"concat", "format_int"} - store_only
+    assert not ({"concat", "format_int"} | store_only) & set(default_cel_functions())
 
 
 
@@ -1181,12 +1184,19 @@ def test_load_still_accepts_every_shipped_fetch_plan():
     # The passkey bundles derive with verify_webauthn, which exists only once
     # a relying-party id is configured; the vocabulary is what is checked.
     primitives = default_primitives(webauthn_rp_id="approval.example")
+    # The two supplied loader-grammar fixtures for the Cedar entity block
+    # verify nothing -- no credential, no signature -- so they have no leaf
+    # to hoist; every other Cedar bundle has, and must.
+    no_crypto = {"cedar_approval", "cedar_channel"}
     for path in plans:
         plan = json.loads(path.read_text())
         validate_derive_plan(plan, primitives=primitives)
         derives = [e for e in plan["entries"] if e["source"]["kind"] == "derive"]
         if (path.parent / "policy.cedar").exists():
-            assert derives, f"{path} is a Cedar plan that hoists nothing"
+            if path.parent.name in no_crypto:
+                assert not derives, f"{path} is listed as verifying nothing but derives"
+            else:
+                assert derives, f"{path} is a Cedar plan that hoists nothing"
         else:
             assert not derives, f"{path} uses derive; the migration is explicitly out of scope"
     assert PolicyBundle.load(FIXTURE_DIR).fetchplan["entries"]

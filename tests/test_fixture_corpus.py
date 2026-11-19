@@ -65,19 +65,28 @@ EXPECTED_COUNTS = {
     "minimal_spend": (5, 2, 3),
     "cel_minimal_spend": (5, 2, 3),
     "cedar_minimal_spend": (5, 2, 3),
+    # The entity store: two supplied loader-grammar fixtures (attributes on
+    # the resource; entity references and the principal as a value), both
+    # ports of a public Cedar benchmark with call-sourced identities and
+    # never attached to a server, and this repo's own hierarchy bundle.
+    "cedar_approval": (3, 0, 3),
+    "cedar_channel": (1, 1, 0),
+    "cedar_family_hierarchy": (6, 5, 1),
 }
 ADOPTED = {"family_spend_prod", "family_spend_webauthn", "family_spend_invoice",
            "cel_family_spend_invoice", "cel_family_spend_prod",
            "cel_family_spend_webauthn", "cedar_family_spend_prod",
-           "cedar_family_spend_webauthn", "cedar_family_spend_invoice"}
+           "cedar_family_spend_webauthn", "cedar_family_spend_invoice",
+           "cedar_approval", "cedar_channel"}
 # The digest each adopted bundle is pinned at. The recomputation test below
 # holds a file to its own digest; this holds the corpus to the values that
 # were reviewed, so a re-pin has to change this table on purpose and the
 # diff says which bundle moved. A Rego bundle and its CEL twin share a value
 # because the three engine-independent files are byte-identical. Last
 # checked against upstream by scripts/check_adoption.py at upstream
-# `62c3ea0` (2026-10-28), after upstream's refusal of the fail-open negation
-# shapes (#35) landed: every adopted bundle verbatim, no regeneration.
+# `64c41c5` (2026-11-16): the four Cedar VC bundles re-pinned (policy and
+# contract; the engine-independent files verbatim), approval and channel
+# adopted on the Cedar engine only.
 PINNED_DIGESTS = {
     "family_spend_prod": "c776a057d78a4999",
     "cel_family_spend_prod": "c776a057d78a4999",
@@ -88,12 +97,17 @@ PINNED_DIGESTS = {
     "family_spend_invoice": "d511c75035a69d5a",
     "cel_family_spend_invoice": "d511c75035a69d5a",
     "cedar_family_spend_invoice": "d511c75035a69d5a",
+    # Cedar-only adoptions at upstream `64c41c5` (2026-11-16): no Rego or CEL
+    # twin is adopted, so each value stands alone.
+    "cedar_approval": "c68cd58bb37bbdb9",
+    "cedar_channel": "61d1888303dd18c7",
 }
 # The two teaching Cedar bundles' rules are supplied, but their guidance is
 # this repo's own teaching file, so they carry no digest either.
 TEACHING = {"family_spend", "cel_family_spend", "cel_family_spend_bound",
             "cedar_family_spend", "cedar_family_spend_forbid_only",
-            "minimal_spend", "cel_minimal_spend", "cedar_minimal_spend"}
+            "minimal_spend", "cel_minimal_spend", "cedar_minimal_spend",
+            "cedar_family_hierarchy"}
 REGO_BUNDLES = {"family_spend", "family_spend_prod", "family_spend_webauthn",
                 "family_spend_invoice", "minimal_spend"}
 CEL_BUNDLES = {"cel_family_spend", "cel_family_spend_bound", "cel_family_spend_invoice",
@@ -533,6 +547,9 @@ LOAD_CONFIG = {
     "minimal_spend": {},
     "cel_minimal_spend": {},
     "cedar_minimal_spend": {},
+    "cedar_approval": {},
+    "cedar_channel": {},
+    "cedar_family_hierarchy": {},
     "family_spend_prod": {},
     "cel_family_spend_prod": {},
     "family_spend_webauthn": {"builtins": default_builtins(webauthn_rp_id=RP_ID),

@@ -1,0 +1,46 @@
+{"status":
+ "CERTIFIED MODULO THIS CONTRACT. The bridge theorem is generated: `<Goal>.cedarFaithful` says this bundle's decision pass allows exactly when some tier's every leaf holds in the policy, with axioms [propext, Classical.choice, Quot.sound] and no `sorry`. Its hypotheses are this contract plus the host model — the decision pass evaluated with no `probe` key, each leaf's guards holding, each leaf's expression committing to a boolean. `obligations` below are the **derivation** ones and they are the host's: no proof here can discharge them, because a hoisted leaf reads a witness set the host computed rather than applying the primitive itself. Over-inclusion is the dangerous direction — a witness set that is too LARGE makes a leaf hold where the policy does not — so each carries the three clauses the bridge step needs (`clauses`); `claim` is the first of them, kept as the headline. **`obligations` is not the whole hypothesis.** `hypotheses` below enumerates every component of the theorem's contract, who owns each, and which are still undischarged on our side — until 2026-11-05 this field said \"its hypotheses are this contract\" and listed only the derivation ones, which read as though they were all of them.",
+ "obligations": [],
+ "hypotheses":
+ [{"says":
+   "the term-atom oracle answers what the host's primitive computes, for every atom the policy reaches",
+   "owner": "host",
+   "name": "atoms",
+   "enumerated_in": "obligations"},
+  {"says":
+   "the same, for Prop-level atoms: the oracle agrees with the host's verification",
+   "owner": "host",
+   "name": "patoms",
+   "enumerated_in": "obligations"},
+  {"says":
+   "every argument of a reached atom navigates in the context — what the leaf's `has` guards establish, and `guards_hold` is the matching half",
+   "owner": "host",
+   "name": "present"},
+  {"says":
+   "each reached call's actuals evaluate, and its rules' arity matches the call. The arity half is a fact about the policy and is ours; the evaluation half depends on the context and is the host's",
+   "owner": "shared",
+   "name": "calls"},
+  {"says":
+   "each reached quantifier's Cedar image decides what the quantifier decides. Ours to discharge, and **not yet discharged per bundle**: nothing instantiates the tools. The tools now cover every shape the emitter produces — `CedarCorrect.ex_mem_sound` and `ex_mem_left_sound` for membership against a value, `ex_fold_sound` for the hoisted fold, `ex_record_sound` for membership against a built record. `ex_record_sound` carries the manifest's field-set closure on the collection's elements and no key-order hypothesis; the fold ones carry canonicality of the host's witness set. Listed per literal below",
+   "owner": "supplier",
+   "name": "exSound",
+   "items":
+   [{"literal": "∃ m ∈ p1.moderators, p2 == p0",
+     "head": "policybundle.examples.channel.Moderates"}]},
+  {"says":
+   "where an `untruthy` literal tests a field the manifest types as anything but boolean, a value the host supplies there is not the boolean `false` — the manifest's own type claim. It is what lets the Cedar image of `= none` be `!(context has f)` alone, with no `== false` arm (§13.65); for a field with no manifest type both arms are emitted and nothing is assumed. Listed per path below; empty when the policy tests no such field",
+   "owner": "host",
+   "name": "typed",
+   "items": []},
+  {"says":
+   "the decision pass evaluates with no `probe` key; the explaining pass sets it",
+   "owner": "host",
+   "name": "probe_absent"},
+  {"says": "every leaf's `has` guards evaluate true",
+   "owner": "host",
+   "name": "guards_hold"},
+  {"says":
+   "every leaf's condition commits to a boolean rather than raising. `CedarSem.eval_safe` is why it can: every emitted condition is `safe`, which `derive_cedar` checks per bundle",
+   "owner": "host",
+   "name": "total"}],
+ "goal": "policybundle.examples.channel"}

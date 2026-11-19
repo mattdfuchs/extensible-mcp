@@ -1,0 +1,18 @@
+{"type": "object",
+ "title": "ChannelInput",
+ "required": ["principal", "owner", "moderators"],
+ "properties":
+ {"principal": {"$ref": "#/definitions/User"},
+  "owner": {"$ref": "#/definitions/User"},
+  "moderators": {"type": "array", "items": {"$ref": "#/definitions/User"}}},
+ "description":
+ "A channel deleteMessage request, validated by CanDeleteMessage (CedarBench group_chat_moderator, requirement 3). Cedar bundle: the fields named in `derived_fields` are computed by the fetch plan's `derive` entries rather than supplied by a caller, and are absent when their primitive matched nothing — so they are in `properties` and never in `required`.",
+ "derived_fields": [],
+ "definitions":
+ {"User":
+  {"type": "object",
+   "required": ["type", "id"],
+   "properties": {"type": {"const": "User"}, "id": {"type": "string"}},
+   "additionalProperties": false}},
+ "additionalProperties": false,
+ "$schema": "http://json-schema.org/draft-07/schema#"}

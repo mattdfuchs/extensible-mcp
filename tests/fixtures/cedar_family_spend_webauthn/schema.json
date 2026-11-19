@@ -1,0 +1,129 @@
+{"":
+ {"entityTypes":
+  {"Server": {"shape": {"type": "Record", "attributes": {}}},
+   "Caller": {"shape": {"type": "Record", "attributes": {}}}},
+  "actions":
+  {"call":
+   {"appliesTo":
+    {"resourceTypes": ["Server"],
+     "principalTypes": ["Caller"],
+     "context":
+     {"type": "Record",
+      "attributes":
+      {"webauthnOrigin": {"type": "String"},
+       "trustedAdminDids": {"type": "Set", "element": {"type": "String"}},
+       "toolFormattedConcatDigestEncoded":
+       {"type": "String", "required": false},
+       "toolFormattedConcatDigest": {"type": "String", "required": false},
+       "toolFormattedConcat": {"type": "String", "required": false},
+       "tool": {"type": "String"},
+       "requesterMembershipJwsAdminKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "requesterMembership":
+       {"type": "Record",
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"vc":
+           {"type": "Record",
+            "attributes":
+            {"credentialSubject":
+             {"type": "Record",
+              "attributes":
+              {"role": {"type": "String"},
+               "accounts":
+               {"type": "Set",
+                "required": false,
+                "element":
+                {"type": "Record",
+                 "attributes":
+                 {"idp": {"type": "String"},
+                  "account": {"type": "String"}}}}}}}},
+           "sub": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"}}},
+         "adminKey": {"type": "String"}}},
+       "requestVCJwsClaimsIssDidWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "requestVC":
+       {"type": "Record",
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"vc":
+           {"type": "Record",
+            "attributes":
+            {"credentialSubject":
+             {"type": "Record",
+              "attributes":
+              {"requests":
+               {"type": "Record",
+                "attributes":
+                {"type": {"type": "String"},
+                 "merchant": {"type": "String"},
+                 "amountCents": {"type": "Long"}}},
+               "id": {"type": "String"}}}}},
+           "nbf": {"type": "Long"},
+           "jti": {"type": "String"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"}}}}},
+       "probe": {"type": "Boolean", "required": false},
+       "now": {"type": "Long"},
+       "callerIdp": {"type": "String", "required": false},
+       "callerAccount": {"type": "String", "required": false},
+       "arguments":
+       {"type": "Record",
+        "attributes":
+        {"merchant": {"type": "String"}, "amountCents": {"type": "Long"}}},
+       "approverEnrollmentJwsAdminKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "approverEnrollment":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"jws": {"type": "String"},
+         "claims":
+         {"type": "Record",
+          "attributes":
+          {"vc":
+           {"type": "Record",
+            "attributes":
+            {"credentialSubject":
+             {"type": "Record",
+              "attributes":
+              {"role": {"type": "String"},
+               "publicKey": {"type": "String"},
+               "accounts":
+               {"type": "Set",
+                "required": false,
+                "element":
+                {"type": "Record",
+                 "attributes":
+                 {"idp": {"type": "String"},
+                  "account": {"type": "String"}}}}}}}},
+           "sub": {"type": "String"},
+           "nbf": {"type": "Long"},
+           "iss": {"type": "String"},
+           "exp": {"type": "Long"}}},
+         "adminKey": {"type": "String"}}},
+       "approvalClientDataJSONDecodedParsed":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"origin": {"type": "String", "required": false},
+         "challenge": {"type": "String", "required": false}}},
+       "approvalAuthenticatorDataApproverEnrollmentClaimsVcCredentialSubjectPublicKeyWitnesses":
+       {"type": "Set", "required": false, "element": {"type": "String"}},
+       "approval":
+       {"type": "Record",
+        "required": false,
+        "attributes":
+        {"signature": {"type": "String"},
+         "credentialId": {"type": "String"},
+         "clientDataJSON": {"type": "String"},
+         "authenticatorData": {"type": "String"}}}}}}}}}}
